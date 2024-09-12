@@ -166,6 +166,7 @@ void Request::Private::reset()
 	pending_.clear();
 	notifiers_.clear();
 	timer_.reset();
+	notifiedMetadata_.clear();
 }
 
 /*
@@ -257,6 +258,33 @@ void Request::Private::prepare(std::chrono::milliseconds timeout)
  * function which queues Request after they have been prepared or cancel them
  * if they have failed preparing.
  */
+
+/**
+ * \brief Accumulate metadata keys and compute a list of not yet notified metadata
+ * \param[in] metadata The completed metadata list
+ *
+ * Accumulate the metadata keys from \a metadata in an internal list of completed
+ * metadata and compute a list of metadata that has not yet been notified to the
+ * application.
+ *
+ * A metadata can only be notified once and gets ignored if completed multiple
+ * times.
+ *
+ * \return A ControlList of metadata that hasn't been notified to the
+ * application yet
+ */
+ControlList Request::Private::recordAndGetUnnotifiedMetadata(const ControlList &metadata)
+{
+	ControlList resultMetadata;
+	for (auto &[id, value] : metadata) {
+		if (!notifiedMetadata_.count(id)) {
+			resultMetadata.set(id, value);
+			notifiedMetadata_.emplace(id);
+		}
+	}
+
+	return resultMetadata;
+}
 
 void Request::Private::notifierActivated(FrameBuffer *buffer)
 {

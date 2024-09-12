@@ -534,69 +534,35 @@ void PipelineHandler::doQueueRequests()
  */
 bool PipelineHandler::completeBuffer(Request *request, FrameBuffer *buffer)
 {
-	Result result(request);
-	result.addBuffer(buffer);
-	completePartialResult(request, std::move(result));
-
-	return !request->_d()->hasPendingBuffers();
+	Camera *camera = request->_d()->camera();
+	camera->bufferCompleted.emit(request, buffer);
+	return request->_d()->completeBuffer(buffer);
 }
 
 /**
  * \brief Complete part of metadata for a request
- * \param[in] request The request the buffer belongs to
+ * \param[in] request The request the metadata belongs to
  * \param[in] metadata The partial metadata that has completed
  *
- * This function could be called by pipeline handlers to signal completion of
- * the \a metadata part of the \a request. It notifies applications of metadata
- * completion. The function notifies completion of a partial result including
- * the metadata. The request is not completed automatically when the last
- * metadata completes to give pipeline handlers a chance to perform any
- * operation that may still be needed. They shall complete requests explicitly
- * with completeRequest().
+ * This function could be called by pipeline handlers to signal availability of
+ * \a metadata before \a request completes. Early metadata completion allows to
+ * notify applications about the availability of a partial metadata buffer
+ * before the associated Request has completed.
+ *
+ * A metadata is expected to be completed at most once. If completed
+ * more than once it will be ignored.
  *
  * \context This function shall be called from the CameraManager thread.
  */
-void PipelineHandler::completeMetadata(Request *request, const ControlList &metadata)
+void PipelineHandler::metadataAvailable(Request *request, const ControlList &metadata)
 {
-	Result result = Result(request);
-	result.merge(metadata);
-	completePartialResult(request, std::move(result));
-}
+	const ControlList validMetadata = request->_d()->recordAndGetUnnotifiedMetadata(metadata);
+	if (!validMetadata.empty()) {
+		request->metadata().merge(validMetadata);
 
-/**
- * \brief Complete part of metadata and buffer for a request
- * \param[in] request The request the buffer belongs to
- * \param[in] result The partial result that has completed
- *
- * This function could be called by pipeline handlers to signal completion of
- * the \a result part of the \a request. It notifies applications of partial
- * completion. The function notifies completion of buffers and metadata included
- * in the result. The request is not completed automatically when the last
- * result completes to give pipeline handlers a chance to perform any operation
- * that may still be needed. They shall complete requests explicitly with
- * completeRequest(). The function only accepts rvalue of a Result type and
- * its interval content will be moved to the internal store to avoid copying
- * big metadata.
- *
- * \context This function shall be called from the CameraManager thread.
- */
-void PipelineHandler::completePartialResult(Request *request, Result &&result)
-{
-	ASSERT(result.request() == request);
-	ASSERT(!result.buffers().empty() || !result.metadata().empty());
-
-	Camera *camera = request->_d()->camera();
-	Result *movedResult = request->addResult(std::move(result));
-
-	for (auto buffer : movedResult->buffers()) {
-		request->_d()->completeBuffer(buffer);
-		camera->bufferCompleted.emit(request, buffer);
+		Camera *camera = request->_d()->camera();
+		camera->metadataAvailable.emit(request, validMetadata);
 	}
-
-	if (!movedResult->metadata().empty())
-		request->metadata().merge(movedResult->metadata());
-
-	camera->partialResultCompleted.emit(request, movedResult);
 }
 
 /**
@@ -619,34 +585,19 @@ void PipelineHandler::completeRequest(Request *request)
 
 	request->_d()->complete();
 
-	Camera::Private *data = camera->_d();
-
 	/*
 	 * Collect metadata which is not yet completed by the Camera, and
 	 * create one partial result to cover the missing metadata before
 	 * completing the whole request. This guarantees the aggregation of
 	 * metadata in completed partial results equals to the global metadata
 	 * in the request.
-	 *
-	 * \todo: Forbid merging metadata into request.metadata() directly and
-	 * force calling completeMetadata() and completePartialResult() to
-	 * report metadata.
 	 */
-	std::unordered_set<unsigned int> completedMetadata;
-	for (auto &result : request->resultList()) {
-		for (auto &[id, _] : result.metadata())
-			completedMetadata.insert(id);
-	}
+	const ControlList validMetadata = request->_d()->recordAndGetUnnotifiedMetadata(
+		request->metadata());
+	if (!validMetadata.empty())
+		camera->metadataAvailable.emit(request, validMetadata);
 
-	ControlList &requestMetadata = request->metadata();
-	if (requestMetadata.size() > completedMetadata.size()) {
-		Result result(request);
-		for (auto &[id, value] : requestMetadata)
-			if (!completedMetadata.count(id))
-				result.set(id, value);
-
-		completePartialResult(request, std::move(result));
-	}
+	Camera::Private *data = camera->_d();
 
 	if (camera->requestCompletionMode() == Camera::Immediately) {
 		camera->requestComplete(request);

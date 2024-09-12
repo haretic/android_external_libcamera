@@ -500,7 +500,8 @@ CameraDevice::CameraDevice(unsigned int id, std::shared_ptr<Camera> camera)
 	camera_->setRequestCompletionMode(Camera::Immediately);
 
 	camera_->requestCompleted.connect(this, &CameraDevice::requestComplete);
-	camera_->partialResultCompleted.connect(this, &CameraDevice::partialResultComplete);
+	camera_->bufferCompleted.connect(this, &CameraDevice::bufferComplete);
+	camera_->metadataAvailable.connect(this, &CameraDevice::metadataAvailable);
 	camera_->disconnected.connect(this, &CameraDevice::cameraDisconnected);
 #ifdef HAVE_ANDROID_OS
 	mBufferAdapter = std::make_shared<android::BufferAdapter>();
@@ -1554,83 +1555,65 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	return 0;
 }
 
-void CameraDevice::partialResultComplete(Request *request, Result *result)
+void CameraDevice::bufferComplete(libcamera::Request *request, libcamera::FrameBuffer *frameBuffer)
 {
-	ASSERT(!result->buffers().empty() || !result->metadata().empty());
-
 	Camera3RequestDescriptor *descriptor =
 		reinterpret_cast<Camera3RequestDescriptor *>(request->cookie());
 
 	descriptor->partialResults_.emplace_back(new Camera3ResultDescriptor(descriptor));
 	Camera3ResultDescriptor *camera3Result = descriptor->partialResults_.back().get();
 
-	const ControlList &metadata = result->metadata();
-	if (!metadata.empty()) {
-		/*
-		 * Notify shutter as soon as we have received SensorTimestamp.
-		 */
-		const auto &timestamp = metadata.get(controls::SensorTimestamp);
-		if (timestamp) {
-			notifyShutter(descriptor->frameNumber_, *timestamp);
-			LOG(HAL, Debug) << "Request " << request->cookie() << " notifies shutter";
-		}
-
-		camera3Result->resultMetadata_ = getPartialResultMetadata(metadata);
-	}
-
 	for (auto &buffer : descriptor->buffers_) {
 		CameraStream *cameraStream = buffer.stream;
-		for (auto *frameBuffer : result->buffers()) {
-			if (buffer.srcBuffer != frameBuffer &&
-			    buffer.frameBuffer.get() != frameBuffer)
-				continue;
+		if (buffer.srcBuffer != frameBuffer &&
+		    buffer.frameBuffer.get() != frameBuffer)
+			continue;
 
-			buffer.result = camera3Result;
-			camera3Result->buffers_.emplace_back(&buffer);
+		buffer.result = camera3Result;
+		camera3Result->buffers_.emplace_back(&buffer);
 
-			StreamBuffer::Status status = StreamBuffer::Status::Success;
-			if (frameBuffer->metadata().status != FrameMetadata::FrameSuccess) {
-				status = StreamBuffer::Status::Error;
-			}
-			setBufferStatus(buffer, status);
+		StreamBuffer::Status status = StreamBuffer::Status::Success;
+		if (frameBuffer->metadata().status != FrameMetadata::FrameSuccess) {
+			status = StreamBuffer::Status::Error;
+		}
+		setBufferStatus(buffer, status);
 
-			switch (cameraStream->type()) {
-			case CameraStream::Type::Direct: {
-				ASSERT(buffer.frameBuffer.get() == frameBuffer);
-				/*
-				 * Streams of type Direct have been queued to the
-				 * libcamera::Camera and their acquire fences have
-				 * already been waited on by the library.
-				 */
-				std::unique_ptr<Fence> fence = buffer.frameBuffer->releaseFence();
-				if (fence)
-					buffer.fence = fence->release();
+		switch (cameraStream->type()) {
+		case CameraStream::Type::Direct: {
+			ASSERT(buffer.frameBuffer.get() == frameBuffer);
+			/*
+			 * Streams of type Direct have been queued to the
+			 * libcamera::Camera and their acquire fences have
+			 * already been waited on by the library.
+			 */
+			std::unique_ptr<Fence> fence = buffer.frameBuffer->releaseFence();
+			if (fence)
+				buffer.fence = fence->release();
+			break;
+		}
+		case CameraStream::Type::Mapped:
+		case CameraStream::Type::Internal:
+			ASSERT(buffer.srcBuffer == frameBuffer);
+			if (status == StreamBuffer::Status::Error)
 				break;
-			}
-			case CameraStream::Type::Mapped:
-			case CameraStream::Type::Internal:
-				ASSERT(buffer.srcBuffer == frameBuffer);
-				if (status == StreamBuffer::Status::Error)
-					break;
+
+			/*
+			 * Acquire fences of streams of type Internal and Mapped
+			 * will be handled during post-processing.
+			 */
+			camera3Result->pendingBuffersToProcess_.emplace_back(&buffer);
+
+			if (cameraStream->isJpegStream()) {
+				generateJpegExifMetadata(descriptor, &buffer);
 
 				/*
-				 * Acquire fences of streams of type Internal and Mapped
-				 * will be handled during post-processing.
+				 * Allocate for post-processor to fill
+				 * in JPEG related metadata.
 				 */
-				camera3Result->pendingBuffersToProcess_.emplace_back(&buffer);
-
-				if (cameraStream->isJpegStream()) {
-					generateJpegExifMetadata(descriptor, &buffer);
-
-					/*
-					 * Allocate for post-processor to fill
-					 * in JPEG related metadata.
-					 */
-					if (!camera3Result->resultMetadata_)
-						camera3Result->resultMetadata_ = getPartialResultMetadata(metadata);
-				}
-				break;
+				camera3Result->resultMetadata_ = getJpegPartialResultMetadata();
 			}
+
+			break;
 		}
 	}
 
@@ -1650,6 +1633,31 @@ void CameraDevice::partialResultComplete(Request *request, Result *result)
 
 	if (camera3Result->pendingBuffersToProcess_.empty())
 		checkAndCompleteReadyPartialResults(camera3Result);
+}
+
+void CameraDevice::metadataAvailable(libcamera::Request *request,
+				     const libcamera::ControlList &metadata)
+{
+	ASSERT(!metadata.empty());
+
+	Camera3RequestDescriptor *descriptor =
+		reinterpret_cast<Camera3RequestDescriptor *>(request->cookie());
+
+	descriptor->partialResults_.emplace_back(new Camera3ResultDescriptor(descriptor));
+	Camera3ResultDescriptor *camera3Result = descriptor->partialResults_.back().get();
+
+	/*
+	 * Notify shutter as soon as we have received SensorTimestamp.
+	 */
+	const auto &timestamp = metadata.get(controls::SensorTimestamp);
+	if (timestamp) {
+		notifyShutter(descriptor->frameNumber_, *timestamp);
+		LOG(HAL, Debug) << "Request " << request->cookie() << " notifies shutter";
+	}
+
+	camera3Result->resultMetadata_ = getPartialResultMetadata(metadata);
+
+	completePartialResultDescriptor(camera3Result);
 }
 
 void CameraDevice::requestComplete(Request *request)
@@ -1983,6 +1991,32 @@ void CameraDevice::notifyError(uint32_t frameNumber, camera3_stream_t *stream,
 	notify.message.error.error_code = code;
 
 	callbacks_->notify(callbacks_, &notify);
+}
+
+std::unique_ptr<CameraMetadata> CameraDevice::getJpegPartialResultMetadata() const
+{
+	/*
+         * Reserve more capacity for the JPEG metadata set by the post-processor.
+         * Currently: 8 entries, 82 bytes extra capaticy.
+         *
+         * ANDROID_JPEG_GPS_COORDINATES (double x 3) = 24 bytes
+         * ANDROID_JPEG_GPS_PROCESSING_METHOD (byte x 32) = 32 bytes
+         * ANDROID_JPEG_GPS_TIMESTAMP (int64) = 8 bytes
+         * ANDROID_JPEG_SIZE (int32_t) = 4 bytes
+         * ANDROID_JPEG_QUALITY (byte) = 1 byte
+         * ANDROID_JPEG_ORIENTATION (int32_t) = 4 bytes
+         * ANDROID_JPEG_THUMBNAIL_QUALITY (byte) = 1 byte
+         * ANDROID_JPEG_THUMBNAIL_SIZE (int32 x 2) = 8 bytes
+         * Total bytes for JPEG metadata: 82
+         */
+	std::unique_ptr<CameraMetadata> resultMetadata =
+		std::make_unique<CameraMetadata>(8, 82);
+	if (!resultMetadata->isValid()) {
+		LOG(HAL, Error) << "Failed to allocate result metadata";
+		return nullptr;
+	}
+
+	return resultMetadata;
 }
 
 std::unique_ptr<CameraMetadata>

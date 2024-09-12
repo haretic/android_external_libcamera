@@ -225,7 +225,7 @@ void SofTask::trigger()
 			LOG(MtkISP7, Debug) << "Lens is staionary: " << lensFocusDistance;
 		}
 		metadata.set(controls::draft::LensFocusDistance, lensFocusDistance);
-		manager_->pipe_->completeMetadata(request_, metadata);
+		manager_->pipe_->metadataAvailable(request_, metadata);
 	}
 
 	trigger_ = true;
@@ -250,7 +250,7 @@ void QueueTask::run()
 			metadata.set(controls::AfState, 0);
 		}
 
-		manager_->pipe_->completeMetadata(request_, metadata);
+		manager_->pipe_->metadataAvailable(request_, metadata);
 	}
 
 	CamSysDevice *camSys = manager_->camSys_;

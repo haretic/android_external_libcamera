@@ -63,9 +63,8 @@ public:
 	void registerRequest(Request *request);
 	void queueRequest(Request *request);
 
-	void completeMetadata(Request *request, const ControlList &metadata);
+	void metadataAvailable(Request *request, const ControlList &metadata);
 	bool completeBuffer(Request *request, FrameBuffer *buffer);
-	void completePartialResult(Request *request, Result &&result);
 	void completeRequest(Request *request);
 
 	std::string configurationFile(const std::string &subdir,

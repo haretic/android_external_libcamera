@@ -13,8 +13,6 @@
 #include <ostream>
 #include <string>
 
-#include <libcamera/base/compiler.h>
-
 namespace libcamera {
 
 class Rectangle;
@@ -112,8 +110,8 @@ public:
 		return *this;
 	}
 
-	__nodiscard constexpr Size alignedDownTo(unsigned int hAlignment,
-						 unsigned int vAlignment) const
+	[[nodiscard]] constexpr Size alignedDownTo(unsigned int hAlignment,
+						   unsigned int vAlignment) const
 	{
 		return {
 			width / hAlignment * hAlignment,
@@ -121,8 +119,8 @@ public:
 		};
 	}
 
-	__nodiscard constexpr Size alignedUpTo(unsigned int hAlignment,
-					       unsigned int vAlignment) const
+	[[nodiscard]] constexpr Size alignedUpTo(unsigned int hAlignment,
+						 unsigned int vAlignment) const
 	{
 		return {
 			(width + hAlignment - 1) / hAlignment * hAlignment,
@@ -130,7 +128,7 @@ public:
 		};
 	}
 
-	__nodiscard constexpr Size boundedTo(const Size &bound) const
+	[[nodiscard]] constexpr Size boundedTo(const Size &bound) const
 	{
 		return {
 			std::min(width, bound.width),
@@ -138,7 +136,7 @@ public:
 		};
 	}
 
-	__nodiscard constexpr Size expandedTo(const Size &expand) const
+	[[nodiscard]] constexpr Size expandedTo(const Size &expand) const
 	{
 		return {
 			std::max(width, expand.width),
@@ -146,7 +144,7 @@ public:
 		};
 	}
 
-	__nodiscard constexpr Size grownBy(const Size &margins) const
+	[[nodiscard]] constexpr Size grownBy(const Size &margins) const
 	{
 		return {
 			width + margins.width,
@@ -154,7 +152,7 @@ public:
 		};
 	}
 
-	__nodiscard constexpr Size shrunkBy(const Size &margins) const
+	[[nodiscard]] constexpr Size shrunkBy(const Size &margins) const
 	{
 		return {
 			width > margins.width ? width - margins.width : 0,
@@ -162,10 +160,10 @@ public:
 		};
 	}
 
-	__nodiscard Size boundedToAspectRatio(const Size &ratio) const;
-	__nodiscard Size expandedToAspectRatio(const Size &ratio) const;
+	[[nodiscard]] Size boundedToAspectRatio(const Size &ratio) const;
+	[[nodiscard]] Size expandedToAspectRatio(const Size &ratio) const;
 
-	__nodiscard Rectangle centeredTo(const Point &center) const;
+	[[nodiscard]] Rectangle centeredTo(const Point &center) const;
 
 	Size operator*(float factor) const;
 	Size operator/(float factor) const;
@@ -296,11 +294,11 @@ public:
 	Rectangle &scaleBy(const Size &numerator, const Size &denominator);
 	Rectangle &translateBy(const Point &point);
 
-	__nodiscard Rectangle boundedTo(const Rectangle &bound) const;
-	__nodiscard Rectangle enclosedIn(const Rectangle &boundary) const;
-	__nodiscard Rectangle scaledBy(const Size &numerator,
-				       const Size &denominator) const;
-	__nodiscard Rectangle translatedBy(const Point &point) const;
+	[[nodiscard]] Rectangle boundedTo(const Rectangle &bound) const;
+	[[nodiscard]] Rectangle enclosedIn(const Rectangle &boundary) const;
+	[[nodiscard]] Rectangle scaledBy(const Size &numerator,
+					 const Size &denominator) const;
+	[[nodiscard]] Rectangle translatedBy(const Point &point) const;
 };
 
 bool operator==(const Rectangle &lhs, const Rectangle &rhs);

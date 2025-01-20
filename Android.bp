@@ -249,6 +249,7 @@ cc_defaults {
         "libcamera_tracepoint_gen_h",
     ],
     header_libs: [
+        "libandroid_sensor_headers",
         "libcamera_headers",
     ],
     export_header_lib_headers: [
@@ -270,12 +271,18 @@ cc_defaults {
         "-DLIBCAMERA_DATA_DIR=\"/usr/share/libcamera\"",
     ],
     rtti: true,
+    shared_libs: [
+        "android.frameworks.sensorservice-V1-ndk",
+        "libbinder_ndk",
+        "libsensorndkbridge",
+    ],
     defaults: [
         "libcamera_src_base_defaults",
     ],
     srcs: [
         ":libcamera_controls_gen_src",
         ":libcamera_properties_gen_src",
+        "src/libcamera/al_gyro_sensor.cpp",
         "src/libcamera/bayer_format.cpp",
         "src/libcamera/byte_stream_buffer.cpp",
         "src/libcamera/camera.cpp",

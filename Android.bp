@@ -211,8 +211,13 @@ cc_defaults {
     cflags: [
         "-DLIBCAMERA_BASE_PRIVATE",
         "-DHAVE_LOCALE_T=1",
+        "-DHAVE_ANDROID_OS",
     ],
     rtti: true,
+
+    shared_libs: [
+        "liblog",
+    ],
     srcs: [
         "src/libcamera/base/backtrace.cpp",
         "src/libcamera/base/class.cpp",

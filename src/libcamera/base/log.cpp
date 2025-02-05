@@ -5,8 +5,6 @@
  * log.cpp - Logging infrastructure
  */
 
-#include <libcamera/base/log.h>
-
 #include <array>
 #include <fstream>
 #include <iostream>
@@ -18,12 +16,17 @@
 #include <time.h>
 #include <unordered_set>
 
-#include <libcamera/logging.h>
-
 #include <libcamera/base/backtrace.h>
+#include <libcamera/base/log.h>
 #include <libcamera/base/mutex.h>
 #include <libcamera/base/thread.h>
 #include <libcamera/base/utils.h>
+
+#include <libcamera/logging.h>
+
+#ifdef HAVE_ANDROID_OS
+#include <android/log.h>
+#endif
 
 /**
  * \file base/log.h
@@ -109,6 +112,7 @@ public:
 	LogOutput(std::ostream *stream, bool color);
 	LogOutput(bool color);
 	LogOutput();
+	LogOutput(int android);
 	~LogOutput();
 
 	bool isValid() const;
@@ -118,6 +122,9 @@ public:
 private:
 	void writeSyslog(LogSeverity severity, const std::string &msg);
 	void writeStream(const std::string &msg);
+
+	void writeAndroid(LogSeverity severity, const std::string &msg);
+	void writeAndroid(const std::string &msg);
 
 	std::ostream *stream_;
 	LoggingTarget target_;
@@ -162,6 +169,14 @@ LogOutput::LogOutput()
 	: stream_(nullptr), target_(LoggingTargetSyslog), color_(false)
 {
 	openlog("libcamera", LOG_PID, 0);
+}
+
+/**
+ * \brief Construct a log output to Android
+ */
+LogOutput::LogOutput(int)
+	: stream_(nullptr), target_(LoggingTargetAndroid), color_(false)
+{
 }
 
 LogOutput::~LogOutput()
@@ -244,6 +259,7 @@ void LogOutput::write(const LogMessage &msg)
 
 	bool toStream = false;
 	bool toSyslog = false;
+	bool toAndroid = false;
 
 	switch (target_) {
 	case LoggingTargetSyslog:
@@ -257,16 +273,15 @@ void LogOutput::write(const LogMessage &msg)
 		toSyslog = true;
 		toStream = true;
 		break;
+	case LoggingTargetAndroid:
+		toAndroid = true;
+		break;
 	default:
 		break;
 	}
 
 	if (toStream) {
-		str = "[" + utils::time_point_to_string(msg.timestamp()) + "] ["
-		    + std::to_string(Thread::currentId()) + "] "
-		    + severityColor + log_severity_name(severity) + " "
-		    + categoryColor + msg.category().name() + " "
-		    + fileColor + msg.fileInfo() + " ";
+		str = "[" + utils::time_point_to_string(msg.timestamp()) + "] [" + std::to_string(Thread::currentId()) + "] " + severityColor + log_severity_name(severity) + " " + categoryColor + msg.category().name() + " " + fileColor + msg.fileInfo() + " ";
 		if (!msg.prefix().empty())
 			str += prefixColor + msg.prefix() + ": ";
 		str += resetColor + msg.msg();
@@ -274,12 +289,19 @@ void LogOutput::write(const LogMessage &msg)
 	}
 
 	if (toSyslog) {
-		str = std::string(log_severity_name(severity)) + " "
-		    + msg.category().name() + " " + msg.fileInfo() + " ";
+		str = std::string(log_severity_name(severity)) + " " + msg.category().name() + " " + msg.fileInfo() + " ";
 		if (!msg.prefix().empty())
 			str += msg.prefix() + ": ";
 		str += msg.msg();
 		writeSyslog(severity, str);
+	}
+
+	if (toAndroid) {
+		str = msg.category().name() + " " + msg.fileInfo() + " ";
+		if (!msg.prefix().empty())
+			str += msg.prefix() + ": ";
+		str += msg.msg();
+		writeAndroid(severity, str);
 	}
 }
 
@@ -315,6 +337,38 @@ void LogOutput::writeStream(const std::string &str)
 {
 	stream_->write(str.c_str(), str.size());
 	stream_->flush();
+}
+
+void LogOutput::writeAndroid(LogSeverity severity, const std::string &msg)
+{
+	switch (severity) {
+	case LogSeverity::LogDebug:
+		__android_log_print(ANDROID_LOG_DEBUG, "libcamera", "%s", msg.c_str());
+		break;
+
+	case LogSeverity::LogInfo:
+		__android_log_print(ANDROID_LOG_INFO, "libcamera", "%s", msg.c_str());
+		break;
+
+	case LogSeverity::LogWarning:
+		__android_log_print(ANDROID_LOG_WARN, "libcamera", "%s", msg.c_str());
+		break;
+
+	case LogSeverity::LogError:
+		__android_log_print(ANDROID_LOG_ERROR, "libcamera", "%s", msg.c_str());
+		break;
+
+	case LogSeverity::LogFatal:
+		__android_log_print(ANDROID_LOG_FATAL, "libcamera", "%s", msg.c_str());
+		break;
+	default:
+		break;
+	}
+}
+
+void LogOutput::writeAndroid(const std::string &msg)
+{
+	writeAndroid(LogSeverity::LogDebug, msg);
 }
 
 /**
@@ -583,6 +637,9 @@ int Logger::logSetTarget(enum LoggingTarget target)
 	case LoggingTargetCros:
 		std::atomic_store(&output_, std::make_shared<LogOutput>(true));
 		break;
+	case LoggingTargetAndroid:
+		std::atomic_store(&output_, std::make_shared<LogOutput>(0));
+		break;
 	default:
 		return -EINVAL;
 	}
@@ -620,6 +677,11 @@ void Logger::logSetLevel(const char *category, const char *level)
  */
 Logger::Logger()
 {
+#ifdef HAVE_ANDROID_OS
+	logSetTarget(LoggingTargetAndroid);
+	parseLogLevels();
+	return;
+#endif
 #if defined(OS_CHROMEOS)
 	logSetTarget(LoggingTargetCros);
 	parseLogLevels();

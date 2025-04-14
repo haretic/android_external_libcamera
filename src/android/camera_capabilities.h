@@ -54,7 +54,7 @@ private:
 	bool validateBurstCaptureCapability();
 
 	std::set<camera_metadata_enum_android_request_available_capabilities>
-		computeCapabilities();
+	computeCapabilities();
 
 	void computeHwLevel(
 		const std::set<camera_metadata_enum_android_request_available_capabilities> &caps);

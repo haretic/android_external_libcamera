@@ -201,6 +201,7 @@ genrule {
 
 cc_defaults {
     name: "libcamera_src_base_defaults",
+    vendor: true,
     header_libs: [
         "libcamera_headers",
     ],
@@ -343,26 +344,14 @@ cc_defaults {
     ],
 }
 
-cc_library_headers {
-    name: "libcamera_android_headers",
-    vendor: true,
-    export_include_dirs: [
-        "include/android/hardware/libhardware/include",
-        "include/android/metadata",
-        "include/android/system/core/include",
-    ],
-}
-
 cc_defaults {
     name: "libcamera_android_src_defaults",
     relative_install_path: "hw",
     vendor: true,
     header_libs: [
-        "libcamera_android_headers",
         "libcamera_headers",
     ],
     export_header_lib_headers: [
-        "libcamera_android_headers",
         "libcamera_headers",
     ],
 
@@ -379,6 +368,7 @@ cc_defaults {
         "libyuv_static",
     ],
     shared_libs: [
+        "libcamera_metadata",
         "libexif",
         "libhardware",
         "libjpeg",
@@ -406,7 +396,6 @@ cc_defaults {
         "src/android/jpeg/thumbnailer.cpp",
         "src/android/mm/generic_camera_buffer.cpp",
         "src/android/mm/generic_frame_buffer_allocator.cpp",
-        "src/android/metadata/camera_metadata.c",
     ],
 }
 

@@ -28,8 +28,6 @@
 
 #include <system/camera_metadata.h>
 
-#include "android/metadata/system/camera_metadata.h"
-
 #include "camera_buffer.h"
 #include "camera_capabilities.h"
 #include "camera_hal_config.h"

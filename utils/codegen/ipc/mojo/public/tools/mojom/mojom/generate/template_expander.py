@@ -14,9 +14,7 @@ import jinja2
 
 
 def ApplyTemplate(mojo_generator, path_to_template, params, **kwargs):
-  loader = jinja2.ModuleLoader(
-      os.path.join(mojo_generator.bytecode_path,
-                   "%s.zip" % mojo_generator.GetTemplatePrefix()))
+  loader = jinja2.ModuleLoader(mojo_generator.bytecode_path)
   final_kwargs = dict(mojo_generator.GetJinjaParameters())
   final_kwargs.update(kwargs)
 
@@ -66,17 +64,16 @@ def UseJinjaForImportedTemplate(func):
   return wrapper
 
 
-def PrecompileTemplates(generator_modules, output_dir):
+def PrecompileTemplates(generator_modules, output_file, sample_precompile_template):
   for module in generator_modules.values():
     generator = module.Generator(None)
     jinja_env = jinja2.Environment(
         loader=jinja2.FileSystemLoader([
             os.path.join(
-                os.path.dirname(module.__file__), generator.GetTemplatePrefix())
+                os.path.dirname(sample_precompile_template))
         ]))
     jinja_env.filters.update(generator.GetFilters())
-    jinja_env.compile_templates(os.path.join(
-        output_dir, "%s.zip" % generator.GetTemplatePrefix()),
+    jinja_env.compile_templates(output_file,
                                 extensions=["tmpl"],
                                 zip="stored",
                                 ignore_errors=False)

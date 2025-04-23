@@ -21,15 +21,15 @@ import sys
 # Disable lint check for finding modules:
 # pylint: disable=F0401
 
-def _GetDirAbove(dirname):
-  """Returns the directory "above" this file containing |dirname| (which must
-  also be "above" this file)."""
-  path = os.path.abspath(__file__)
-  while True:
-    path, tail = os.path.split(path)
-    assert tail
-    if tail == dirname:
-      return path
+# def _GetDirAbove(dirname):
+#   """Returns the directory "above" this file containing |dirname| (which must
+#   also be "above" this file)."""
+#   path = os.path.abspath(__file__)
+#   while True:
+#     path, tail = os.path.split(path)
+#     assert tail
+#     if tail == dirname:
+#       return path
 
 
 sys.path.insert(
@@ -44,9 +44,9 @@ from mojom.generate import template_expander
 from mojom.generate import translate
 from mojom.generate.generator import WriteFile
 
-sys.path.append(
-    os.path.join(_GetDirAbove("mojo"), "tools", "diagnosis"))
-import crbug_1001171
+# sys.path.append(
+#     os.path.join(_GetDirAbove("mojo"), "tools", "diagnosis"))
+# import crbug_1001171
 
 
 _BUILTIN_GENERATORS = {
@@ -69,7 +69,7 @@ def LoadGenerators(generators_string):
       print("Unknown generator name %s" % generator_name)
       sys.exit(1)
     generator_module = importlib.import_module(
-        "generators.%s" % _BUILTIN_GENERATORS[language])
+        "%s" % _BUILTIN_GENERATORS[language])
     generators[language] = generator_module
   return generators
 
@@ -255,7 +255,7 @@ def _Generate(args, remaining_args):
 def _Precompile(args, _):
   generator_modules = LoadGenerators(",".join(_BUILTIN_GENERATORS.keys()))
 
-  template_expander.PrecompileTemplates(generator_modules, args.output_dir)
+  template_expander.PrecompileTemplates(generator_modules, args.output_file, args.sample_precompile_template)
   return 0
 
 
@@ -379,6 +379,14 @@ def main():
 
   precompile_parser = subparsers.add_parser("precompile",
       description="Precompile templates for the mojom bindings generator.")
+  precompile_parser.add_argument(
+      "--sample_precompile_template",
+      help="Only used in Android.bp: This script will take the directory and "
+      "precompile templates.")
+  precompile_parser.add_argument(
+      "--output_file",
+      help="Only used in Android.bp: The output path of the precompiled zip file.")
+
   precompile_parser.set_defaults(func=_Precompile)
 
   args, remaining_args = parser.parse_known_args()

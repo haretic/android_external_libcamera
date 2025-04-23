@@ -13,22 +13,21 @@ import os
 import sys
 
 def main(argv):
-    if len(argv) < 4:
-        print(f'Usage: {argv[0]} include_build_dir output template tp_files...')
+    if len(argv) < 3:
+        print(f'Usage: {argv[0]} output template tp_files...')
         return 1
 
-    output = argv[2]
-    template = argv[3]
+    output = argv[1]
+    template = argv[2]
 
     year = datetime.datetime.now().year
-    path = pathlib.Path(output).absolute().relative_to(argv[1])
 
     source = ''
-    for fname in argv[4:]:
+    for fname in argv[3:]:
         source += open(fname, 'r', encoding='utf-8').read() + '\n\n'
 
     template = jinja2.Template(open(template, 'r', encoding='utf-8').read())
-    string = template.render(year=year, path=path, source=source)
+    string = template.render(year=year, path=output, source=source)
 
     f = open(output, 'w', encoding='utf-8').write(string)
 

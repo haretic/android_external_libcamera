@@ -9,9 +9,7 @@
 import os
 import sys
 
-sys.path.insert(0, f'{os.path.dirname(__file__)}/mojo/public/tools/bindings')
-
-import mojo.public.tools.bindings.mojom_bindings_generator as generator
+import mojom_bindings_generator as generator
 
 def _GetModulePath(path, output_dir):
     return os.path.join(output_dir, path.relative_path())

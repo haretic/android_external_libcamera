@@ -369,7 +369,9 @@ cc_defaults {
     ],
     shared_libs: [
         "libcamera_metadata",
+        "libdrm",
         "libexif",
+        "libgbm",
         "libhardware",
         "libjpeg",
     ],
@@ -396,6 +398,9 @@ cc_defaults {
         "src/android/jpeg/thumbnailer.cpp",
         "src/android/mm/generic_camera_buffer.cpp",
         "src/android/mm/generic_frame_buffer_allocator.cpp",
+        "src/android/mm/allocator.cpp",
+        "src/android/mm/camera_buffer_manager_impl.cpp",
+        "src/android/mm/minigbm_allocator.cpp",
     ],
 }
 

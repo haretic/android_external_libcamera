@@ -1,5 +1,5 @@
 package {
-    default_visibility: ["__subpackages__"],
+    default_visibility: [":__subpackages__"],
 }
 
 cc_library_headers {

@@ -26,8 +26,6 @@
 #include <hardware/camera3.h>
 #include <system/camera_metadata.h>
 
-#include "android/metadata/system/camera_metadata.h"
-
 using namespace libcamera;
 
 LOG_DECLARE_CATEGORY(HAL)

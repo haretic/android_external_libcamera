@@ -201,6 +201,7 @@ genrule {
 
 cc_defaults {
     name: "libcamera_src_base_defaults",
+    vendor: true,
     header_libs: [
         "libcamera_headers",
     ],
@@ -211,8 +212,13 @@ cc_defaults {
     cflags: [
         "-DLIBCAMERA_BASE_PRIVATE",
         "-DHAVE_LOCALE_T=1",
+        "-DHAVE_ANDROID_OS",
     ],
     rtti: true,
+
+    shared_libs: [
+        "liblog",
+    ],
     srcs: [
         "src/libcamera/base/backtrace.cpp",
         "src/libcamera/base/class.cpp",
@@ -249,6 +255,7 @@ cc_defaults {
         "libcamera_tracepoint_gen_h",
     ],
     header_libs: [
+        "libandroid_sensor_headers",
         "libcamera_headers",
     ],
     export_header_lib_headers: [
@@ -270,12 +277,18 @@ cc_defaults {
         "-DLIBCAMERA_DATA_DIR=\"/usr/share/libcamera\"",
     ],
     rtti: true,
+    shared_libs: [
+        "android.frameworks.sensorservice-V1-ndk",
+        "libbinder_ndk",
+        "libsensorndkbridge",
+    ],
     defaults: [
         "libcamera_src_base_defaults",
     ],
     srcs: [
         ":libcamera_controls_gen_src",
         ":libcamera_properties_gen_src",
+        "src/libcamera/al_gyro_sensor.cpp",
         "src/libcamera/bayer_format.cpp",
         "src/libcamera/byte_stream_buffer.cpp",
         "src/libcamera/camera.cpp",
@@ -331,26 +344,14 @@ cc_defaults {
     ],
 }
 
-cc_library_headers {
-    name: "libcamera_android_headers",
-    vendor: true,
-    export_include_dirs: [
-        "include/android/hardware/libhardware/include",
-        "include/android/metadata",
-        "include/android/system/core/include",
-    ],
-}
-
 cc_defaults {
     name: "libcamera_android_src_defaults",
     relative_install_path: "hw",
     vendor: true,
     header_libs: [
-        "libcamera_android_headers",
         "libcamera_headers",
     ],
     export_header_lib_headers: [
-        "libcamera_android_headers",
         "libcamera_headers",
     ],
 
@@ -367,6 +368,7 @@ cc_defaults {
         "libyuv_static",
     ],
     shared_libs: [
+        "libcamera_metadata",
         "libexif",
         "libhardware",
         "libjpeg",
@@ -394,7 +396,6 @@ cc_defaults {
         "src/android/jpeg/thumbnailer.cpp",
         "src/android/mm/generic_camera_buffer.cpp",
         "src/android/mm/generic_frame_buffer_allocator.cpp",
-        "src/android/metadata/camera_metadata.c",
     ],
 }
 

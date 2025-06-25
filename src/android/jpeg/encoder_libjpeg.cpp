@@ -38,24 +38,24 @@ struct JPEGPixelFormatInfo {
 	bool nvSwap;
 };
 
-const std::map<PixelFormat, JPEGPixelFormatInfo> pixelInfo{
-	{ formats::R8, { JCS_GRAYSCALE, PixelFormatInfo::info(formats::R8), false } },
-
-	{ formats::RGB888, { JCS_EXT_BGR, PixelFormatInfo::info(formats::RGB888), false } },
-	{ formats::BGR888, { JCS_EXT_RGB, PixelFormatInfo::info(formats::BGR888), false } },
-
-	{ formats::NV12, { JCS_YCbCr, PixelFormatInfo::info(formats::NV12), false } },
-	{ formats::NV21, { JCS_YCbCr, PixelFormatInfo::info(formats::NV21), true } },
-	{ formats::NV16, { JCS_YCbCr, PixelFormatInfo::info(formats::NV16), false } },
-	{ formats::NV61, { JCS_YCbCr, PixelFormatInfo::info(formats::NV61), true } },
-	{ formats::NV24, { JCS_YCbCr, PixelFormatInfo::info(formats::NV24), false } },
-	{ formats::NV42, { JCS_YCbCr, PixelFormatInfo::info(formats::NV42), true } },
-};
-
 const struct JPEGPixelFormatInfo &findPixelInfo(const PixelFormat &format)
 {
 	static const struct JPEGPixelFormatInfo invalidPixelFormat {
 		JCS_UNKNOWN, PixelFormatInfo(), false
+	};
+
+	static const std::map<PixelFormat, JPEGPixelFormatInfo> pixelInfo{
+		{ formats::R8, { JCS_GRAYSCALE, PixelFormatInfo::info(formats::R8), false } },
+
+		{ formats::RGB888, { JCS_EXT_BGR, PixelFormatInfo::info(formats::RGB888), false } },
+		{ formats::BGR888, { JCS_EXT_RGB, PixelFormatInfo::info(formats::BGR888), false } },
+
+		{ formats::NV12, { JCS_YCbCr, PixelFormatInfo::info(formats::NV12), false } },
+		{ formats::NV21, { JCS_YCbCr, PixelFormatInfo::info(formats::NV21), true } },
+		{ formats::NV16, { JCS_YCbCr, PixelFormatInfo::info(formats::NV16), false } },
+		{ formats::NV61, { JCS_YCbCr, PixelFormatInfo::info(formats::NV61), true } },
+		{ formats::NV24, { JCS_YCbCr, PixelFormatInfo::info(formats::NV24), false } },
+		{ formats::NV42, { JCS_YCbCr, PixelFormatInfo::info(formats::NV42), true } },
 	};
 
 	const auto iter = pixelInfo.find(format);

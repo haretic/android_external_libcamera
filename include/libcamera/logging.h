@@ -15,6 +15,7 @@ enum LoggingTarget {
 	LoggingTargetFile,
 	LoggingTargetStream,
 	LoggingTargetCros,
+	LoggingTargetAndroid,
 };
 
 int logSetFile(const char *path, bool color = false);

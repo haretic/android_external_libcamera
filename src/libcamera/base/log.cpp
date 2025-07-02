@@ -679,7 +679,6 @@ Logger::Logger()
 {
 #ifdef HAVE_ANDROID_OS
 	logSetTarget(LoggingTargetAndroid);
-	parseLogLevels();
 	return;
 #endif
 #if defined(OS_CHROMEOS)
@@ -1023,8 +1022,12 @@ LogMessage::~LogMessage()
 
 	msgStream_ << std::endl;
 
+#ifdef HAVE_ANDROID_OS
+	logger->write(*this);
+#elif
 	if (severity_ >= category_.severity())
 		logger->write(*this);
+#endif
 
 	if (severity_ == LogSeverity::LogFatal) {
 		logger->backtrace();

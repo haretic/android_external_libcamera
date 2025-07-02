@@ -441,3 +441,129 @@ cc_library_shared {
         "libcamera_virtual_src_defaults",
     ],
 }
+
+genrule {
+    name: "libcamera_mojom_ipu7_ipa_module",
+    srcs: [
+        "include/libcamera/ipa/core.mojom",
+        "include/libcamera/ipa/ipu7.mojom",
+    ],
+    tools: ["libcamera_ipc_parser_host"],
+    cmd: "$(location libcamera_ipc_parser_host)" +
+        " --output-root $(genDir)" +
+        " --input-root ./external/libcamera" +
+        " --mojoms $(location include/libcamera/ipa/core.mojom) $(location include/libcamera/ipa/ipu7.mojom)",
+    out: [
+        "include/libcamera/ipa/ipu7.mojom-module",
+    ],
+    export_include_dirs: [".", "include"],
+}
+
+genrule {
+    name: "libcamera_mojom_ipu7_ipa_interface_h",
+    srcs: [
+        ":libcamera_mojom_ipu7_ipa_module",
+        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
+    ],
+    tools: ["libcamera_ipc_generate_host"],
+    cmd: "$(location libcamera_ipc_generate_host)" +
+        " generate -g libcamera" +
+        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
+        " --libcamera_generate_header" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_ipu7_ipa_module)",
+    out: [
+        "include/libcamera/ipa/ipu7_ipa_interface.h",
+    ],
+    export_include_dirs: [".", "include"],
+}
+
+genrule {
+    name: "libcamera_mojom_ipu7_ipa_serializer_h",
+    srcs: [
+        ":libcamera_mojom_ipu7_ipa_module",
+        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
+    ],
+    tools: ["libcamera_ipc_generate_host"],
+    cmd: "$(location libcamera_ipc_generate_host)" +
+        " generate -g libcamera" +
+        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
+        " --libcamera_generate_serializer" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_ipu7_ipa_module)",
+    out: [
+        "include/libcamera/ipa/ipu7_ipa_serializer.h",
+    ],
+    export_include_dirs: [".", "include"],
+}
+
+genrule {
+    name: "libcamera_mojom_ipu7_ipa_proxy_h",
+    srcs: [
+        ":libcamera_mojom_ipu7_ipa_module",
+        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
+    ],
+    tools: ["libcamera_ipc_generate_host"],
+    cmd: "$(location libcamera_ipc_generate_host)" +
+        " generate -g libcamera" +
+        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
+        " --libcamera_generate_proxy_h" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_ipu7_ipa_module)",
+    out: [
+        "include/libcamera/ipa/ipu7_ipa_proxy.h",
+    ],
+    export_include_dirs: [".", "include"],
+}
+
+genrule {
+    name: "libcamera_mojom_ipu7_ipa_proxy_cpp",
+    srcs: [
+        ":libcamera_mojom_ipu7_ipa_module",
+        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
+    ],
+    tools: ["libcamera_ipc_generate_host"],
+    cmd: "$(location libcamera_ipc_generate_host)" +
+        " generate -g libcamera" +
+        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
+        " --libcamera_generate_proxy_cpp" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_ipu7_ipa_module)",
+    out: [
+        "include/libcamera/ipa/ipu7_ipa_proxy.cpp",
+    ],
+    export_include_dirs: [".", "include"],
+}
+
+genrule {
+    name: "libcamera_mojom_ipu7_ipa_proxy_worker_cpp",
+    srcs: [
+        ":libcamera_mojom_ipu7_ipa_module",
+        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
+    ],
+    tools: ["libcamera_ipc_generate_host"],
+    cmd: "$(location libcamera_ipc_generate_host)" +
+        " generate -g libcamera" +
+        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
+        " --libcamera_generate_proxy_worker" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_ipu7_ipa_module)",
+    out: [
+        "include/libcamera/ipa/ipu7_ipa_proxy_worker.cpp",
+    ],
+    export_include_dirs: [".", "include"],
+}
+
+cc_defaults {
+    name: "libipu7_ipa_proxy",
+    generated_headers: [
+        "libcamera_mojom_ipu7_ipa_interface_h",
+        "libcamera_mojom_ipu7_ipa_serializer_h",
+        "libcamera_mojom_ipu7_ipa_proxy_h",
+    ],
+    srcs: [
+        ":libcamera_mojom_ipu7_ipa_proxy_cpp",
+        ":libcamera_mojom_ipu7_ipa_proxy_worker_cpp",
+    ],
+}
+

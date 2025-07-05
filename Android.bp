@@ -272,9 +272,9 @@ cc_defaults {
         // TODO: make sure we don't use configurationFile for IPA
         "-DIPA_CONFIG_DIR=\"\"",
         // TODO: check relative_install_path of the upcoming ipa impl.
-        "-DIPA_MODULE_DIR=\"/vendor/lib/libcamera\"",
+        "-DIPA_MODULE_DIR=\"/vendor/lib64/libcamera/ipa\"",
         // TODO: check how pipeline handlers' configuration files are used.
-        "-DLIBCAMERA_DATA_DIR=\"/usr/share/libcamera\"",
+        "-DLIBCAMERA_DATA_DIR=\"/vendor/etc/camera/libcamera\"",
     ],
     rtti: true,
     shared_libs: [
@@ -360,7 +360,7 @@ cc_defaults {
     ],
     cppflags: [
         // TODO: check how camera sysconf configuration file is used
-        "-DLIBCAMERA_SYSCONF_DIR=\"\"",
+        "-DLIBCAMERA_SYSCONF_DIR=\"/vendor/etc/camera/libcamera\"",
     ],
     rtti: true,
     static_libs: [

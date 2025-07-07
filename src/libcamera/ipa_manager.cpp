@@ -319,7 +319,11 @@ bool IPAManager::isSignatureValid([[maybe_unused]] IPAModule *ipa) const
 
 	return valid;
 #else
+#ifdef HAVE_ANDROID_OS
+	return true;
+#else
 	return false;
+#endif
 #endif
 }
 

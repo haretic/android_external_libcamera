@@ -34,6 +34,9 @@
 #include "camera_metadata.h"
 #include "camera_stream.h"
 #include "hal_framebuffer.h"
+#ifdef HAVE_ANDROID_OS
+#include "mm/BufferAdapter.h"
+#endif
 
 class Camera3RequestDescriptor;
 struct CameraConfigData;
@@ -128,6 +131,9 @@ private:
 
 	unsigned int id_;
 	camera3_device_t camera3Device_;
+#ifdef HAVE_ANDROID_OS
+	std::shared_ptr<android::BufferAdapter> mBufferAdapter;
+#endif
 
 	/* Protects access to the camera state. */
 	libcamera::Mutex stateMutex_;

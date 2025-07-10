@@ -9,7 +9,7 @@
 
 #include <libcamera/base/log.h>
 
-#include "cros-camera/camera_buffer_manager.h"
+#include "camera_buffer_manager.h"
 
 using namespace libcamera;
 
@@ -40,7 +40,7 @@ public:
 private:
 	void map();
 
-	cros::CameraBufferManager *bufferManager_;
+	crosLibcamera::CameraBufferManager *bufferManager_;
 	buffer_handle_t handle_;
 	unsigned int numPlanes_;
 	bool mapped_;
@@ -59,7 +59,7 @@ CameraBuffer::Private::Private([[maybe_unused]] CameraBuffer *cameraBuffer,
 	: handle_(camera3Buffer), numPlanes_(0), mapped_(false),
 	  registered_(false)
 {
-	bufferManager_ = cros::CameraBufferManager::GetInstance();
+	bufferManager_ = crosLibcamera::CameraBufferManager::GetInstance();
 	if (!bufferManager_) {
 		LOG(HAL, Fatal)
 			<< "Failed to get cros CameraBufferManager instance";
@@ -132,17 +132,17 @@ Span<uint8_t> CameraBuffer::Private::plane(unsigned int plane)
 
 unsigned int CameraBuffer::Private::stride(unsigned int plane) const
 {
-	return cros::CameraBufferManager::GetPlaneStride(handle_, plane);
+	return crosLibcamera::CameraBufferManager::GetPlaneStride(handle_, plane);
 }
 
 unsigned int CameraBuffer::Private::offset(unsigned int plane) const
 {
-	return cros::CameraBufferManager::GetPlaneOffset(handle_, plane);
+	return crosLibcamera::CameraBufferManager::GetPlaneOffset(handle_, plane);
 }
 
 unsigned int CameraBuffer::Private::size(unsigned int plane) const
 {
-	return cros::CameraBufferManager::GetPlaneSize(handle_, plane);
+	return crosLibcamera::CameraBufferManager::GetPlaneSize(handle_, plane);
 }
 
 size_t CameraBuffer::Private::jpegBufferSize([[maybe_unused]] size_t maxJpegBufferSize) const

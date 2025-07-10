@@ -502,6 +502,9 @@ CameraDevice::CameraDevice(unsigned int id, std::shared_ptr<Camera> camera)
 	camera_->requestCompleted.connect(this, &CameraDevice::requestComplete);
 	camera_->partialResultCompleted.connect(this, &CameraDevice::partialResultComplete);
 	camera_->disconnected.connect(this, &CameraDevice::cameraDisconnected);
+#ifdef HAVE_ANDROID_OS
+	mBufferAdapter = std::make_shared<android::BufferAdapter>();
+#endif
 }
 
 CameraDevice::~CameraDevice() = default;
@@ -524,6 +527,12 @@ std::unique_ptr<CameraDevice> CameraDevice::create(unsigned int id,
  */
 int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
 {
+#ifdef HAVE_ANDROID_OS
+	if (!mBufferAdapter->init()) {
+		LOG(HAL, Error) << "Failed to initialize mBufferAdapter";
+		return -EINVAL;
+	}
+#endif
 	/*
 	 * Initialize orientation and facing side of the camera.
 	 *
@@ -1322,8 +1331,13 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	 * The descriptor and the associated memory reserved here are freed
 	 * at request complete time.
 	 */
+#ifdef HAVE_ANDROID_OS
+	auto descriptor = std::make_unique<Camera3RequestDescriptor>(camera_.get(),
+				mBufferAdapter, camera3Request);
+#else
 	auto descriptor = std::make_unique<Camera3RequestDescriptor>(camera_.get(),
 								     camera3Request);
+#endif
 
 	/*
 	 * \todo The Android request model is incremental, settings passed in
@@ -1854,15 +1868,21 @@ void CameraDevice::sendCaptureResult(Camera3ResultDescriptor *result) const
 		if (buffer->status == StreamBuffer::Status::Success)
 			status = CAMERA3_BUFFER_STATUS_OK;
 
+		camera3_stream_buffer_t outputBuffer = { buffer->stream->camera3Stream(),
+							 buffer->camera3Buffer, status,
+							 -1, buffer->fence.release() };
+
+#ifdef HAVE_ANDROID_OS
+		camera3_stream_buffer_t outputBufferInternal = outputBuffer;
+		mBufferAdapter->decodeStreamBufferPtr(&outputBufferInternal, &outputBuffer);
+#endif
 		/*
 		 * Pass the buffer fence back to the camera framework as
 		 * a release fence. This instructs the framework to wait
 		 * on the acquire fence in case we haven't done so
 		 * ourselves for any reason.
 		 */
-		resultBuffers.push_back({ buffer->stream->camera3Stream(),
-					  buffer->camera3Buffer, status,
-					  -1, buffer->fence.release() });
+		resultBuffers.push_back(outputBuffer);
 	}
 
 	camera3_capture_result_t captureResult = {};

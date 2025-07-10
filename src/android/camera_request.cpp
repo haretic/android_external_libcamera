@@ -111,7 +111,11 @@ using namespace libcamera;
  */
 
 Camera3RequestDescriptor::Camera3RequestDescriptor(
-	Camera *camera, const camera3_capture_request_t *camera3Request)
+	Camera *camera,
+#ifdef HAVE_ANDROID_OS
+	std::shared_ptr<android::BufferAdapter> bufferAdaptor,
+#endif
+	const camera3_capture_request_t *camera3Request)
 	: status_(Status::Pending), nextPartialResultIndex_(1), completed_(false)
 {
 	frameNumber_ = camera3Request->frame_number;
@@ -128,7 +132,12 @@ Camera3RequestDescriptor::Camera3RequestDescriptor(
 		CameraStream *stream =
 			static_cast<CameraStream *>(buffer.stream->priv);
 
+#ifdef HAVE_ANDROID_OS
+		camera3_stream_buffer_t outputBuffer = bufferAdaptor->prepareStreamBufferPtr(&buffer);
+		buffers_.emplace_back(stream, outputBuffer, this);
+#else
 		buffers_.emplace_back(stream, buffer, this);
+#endif
 	}
 
 	/* Clone the controls associated with the camera3 request. */

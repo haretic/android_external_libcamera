@@ -450,6 +450,18 @@ cc_library_shared {
     ],
 }
 
+cc_library_shared {
+    name: "camera.libcamera_hal_base",
+    cppflags: [
+        "-DPIPELINE_PROXY_DIR=\"/vendor/lib64/libcamera/pipeline\"",
+    ],
+    defaults: [
+        "libcamera_src_defaults",
+        "libcamera_android_src_defaults",
+        "libipu7_ipa_proxy",
+    ],
+}
+
 genrule {
     name: "libcamera_mojom_ipu7_ipa_module",
     srcs: [

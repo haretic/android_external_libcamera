@@ -5,6 +5,10 @@
  * camera_manager.h - Camera management
  */
 
+#include <dlfcn.h>
+#include <string.h>
+#include <dirent.h>
+
 #include "libcamera/internal/camera_manager.h"
 
 #include <libcamera/base/log.h>
@@ -91,10 +95,53 @@ int CameraManager::Private::init()
 	if (!enumerator_ || enumerator_->enumerate())
 		return -ENODEV;
 
+	loadPipelineHandlerFromLibrary();
+
 	createPipelineHandlers();
 	enumerator_->devicesAdded.connect(this, &Private::createPipelineHandlers);
 
 	return 0;
+}
+
+void CameraManager::Private::loadPipelineHandlerFromLibrary() {
+	LOG(Camera, Info) << "pipeline handler loader";
+	std::string libpath = PIPELINE_PROXY_DIR;
+	std::vector<std::string> libfiles;
+	DIR *dir = opendir(libpath.c_str());
+	if (dir) {
+		struct dirent *ent;
+		while ((ent = readdir(dir)) != nullptr) {
+			if (ent->d_type == DT_DIR)
+				continue;
+
+			if (strlen(ent->d_name) <= 3)
+				continue;
+
+			size_t offset = strlen(ent->d_name) - 3;
+			if (strcmp(&ent->d_name[offset], ".so"))
+				continue;
+
+			libfiles.push_back(libpath + "/" + ent->d_name);
+			LOG(Camera, Info) << ent->d_name << " is found";
+		}
+		closedir(dir);
+	}
+
+	for (const std::string &libfile : libfiles) {
+		void* dlHandler = dlopen(libfile.c_str(), RTLD_LAZY | RTLD_GLOBAL);
+		if (dlHandler) {
+			LOG(Camera, Info) << "dlopen " << libfile.c_str() << " successfully";
+			handleVector_.push_back(dlHandler);
+		}
+	}
+}
+
+void CameraManager::Private::closeLibraryHandles() {
+	for (const auto handle : handleVector_) {
+		dlclose(handle);
+	}
+
+	handleVector_.clear();
 }
 
 void CameraManager::Private::createPipelineHandlers()
@@ -148,6 +195,8 @@ void CameraManager::Private::cleanup()
 	dispatchMessages(Message::Type::DeferredDelete);
 
 	enumerator_.reset(nullptr);
+
+	closeLibraryHandles();
 }
 
 /**

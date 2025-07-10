@@ -43,6 +43,8 @@ protected:
 
 private:
 	int init();
+	void loadPipelineHandlerFromLibrary();
+	void closeLibraryHandles();
 	void createPipelineHandlers();
 	void cleanup() LIBCAMERA_TSA_EXCLUDES(mutex_);
 
@@ -63,6 +65,8 @@ private:
 
 	IPAManager ipaManager_;
 	ProcessManager processManager_;
+
+	std::vector<void*> handleVector_;
 };
 
 } /* namespace libcamera */

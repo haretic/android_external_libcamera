@@ -17,7 +17,7 @@
 #include "../camera_device.h"
 #include "../frame_buffer_allocator.h"
 #include "../hal_framebuffer.h"
-#include "cros-camera/camera_buffer_manager.h"
+#include "camera_buffer_manager.h"
 
 using namespace libcamera;
 
@@ -29,14 +29,14 @@ class CrosFrameBufferData : public FrameBuffer::Private
 	LIBCAMERA_DECLARE_PUBLIC(FrameBuffer)
 
 public:
-	CrosFrameBufferData(cros::ScopedBufferHandle scopedHandle,
+	CrosFrameBufferData(crosLibcamera::ScopedBufferHandle scopedHandle,
 			    const std::vector<FrameBuffer::Plane> &planes)
 		: FrameBuffer::Private(planes), scopedHandle_(std::move(scopedHandle))
 	{
 	}
 
 private:
-	cros::ScopedBufferHandle scopedHandle_;
+	crosLibcamera::ScopedBufferHandle scopedHandle_;
 };
 } /* namespace */
 
@@ -58,8 +58,8 @@ PlatformFrameBufferAllocator::Private::allocate(int halPixelFormat,
 						const libcamera::Size &size,
 						uint32_t usage)
 {
-	cros::ScopedBufferHandle scopedHandle =
-		cros::CameraBufferManager::AllocateScopedBuffer(
+	crosLibcamera::ScopedBufferHandle scopedHandle =
+		crosLibcamera::CameraBufferManager::AllocateScopedBuffer(
 			size.width, size.height, halPixelFormat, usage);
 	if (!scopedHandle) {
 		LOG(HAL, Error) << "Failed to allocate buffer handle";
@@ -74,12 +74,12 @@ PlatformFrameBufferAllocator::Private::allocate(int halPixelFormat,
 	}
 
 	/* This code assumes all the planes are located in the same buffer. */
-	const size_t numPlanes = cros::CameraBufferManager::GetNumPlanes(handle);
+	const size_t numPlanes = crosLibcamera::CameraBufferManager::GetNumPlanes(handle);
 	std::vector<FrameBuffer::Plane> planes(numPlanes);
 	for (auto [i, plane] : utils::enumerate(planes)) {
 		plane.fd = fd;
-		plane.offset = cros::CameraBufferManager::GetPlaneOffset(handle, i);
-		plane.length = cros::CameraBufferManager::GetPlaneSize(handle, i);
+		plane.offset = crosLibcamera::CameraBufferManager::GetPlaneOffset(handle, i);
+		plane.length = crosLibcamera::CameraBufferManager::GetPlaneSize(handle, i);
 	}
 
 	return std::make_unique<HALFrameBuffer>(

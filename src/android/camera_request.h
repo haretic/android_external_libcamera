@@ -22,6 +22,9 @@
 
 #include "camera_metadata.h"
 #include "hal_framebuffer.h"
+#ifdef HAVE_ANDROID_OS
+#include "mm/BufferAdapter.h"
+#endif
 
 class CameraBuffer;
 class CameraStream;
@@ -96,6 +99,9 @@ public:
 	};
 
 	Camera3RequestDescriptor(libcamera::Camera *camera,
+#ifdef HAVE_ANDROID_OS
+				 std::shared_ptr<android::BufferAdapter> bufferAdaptor,
+#endif
 				 const camera3_capture_request_t *camera3Request);
 	~Camera3RequestDescriptor();
 

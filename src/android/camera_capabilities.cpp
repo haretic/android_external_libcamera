@@ -1886,15 +1886,16 @@ std::unique_ptr<CameraMetadata> CameraCapabilities::requestTemplatePreview() con
 				  captureIntent);
 
 	{
-		const ControlList &properties = camera_->properties();
-		const Rectangle &rect =
-			properties.get(controls::ScalerCrop).value_or(Rectangle{ 0, 0, 0, 0 });
-		std::vector<int32_t> data{
-			static_cast<int32_t>(rect.x),
-			static_cast<int32_t>(rect.y),
-			static_cast<int32_t>(rect.width),
-			static_cast<int32_t>(rect.height)
-		};
+		const ControlInfoMap &controlsInfo = camera_->controls();
+		const auto scalerCrop = controlsInfo.find(&controls::ScalerCrop);
+		std::vector<int32_t> data(4,0);
+		if(scalerCrop != controlsInfo.end()) {
+			Rectangle maxCrop = scalerCrop->second.max().get<Rectangle>();
+			data[0] = maxCrop.x;
+			data[1] = maxCrop.y;
+			data[2] = maxCrop.width;
+			data[3] = maxCrop.height;
+		}
 		requestTemplate->addEntry(ANDROID_SCALER_CROP_REGION, data);
 	}
 

@@ -260,20 +260,20 @@ controls:
   # - Auto-generate max enum value.
   # - Better handling of custom types.
   - AwbMode:
-      type: int32_t
+      type: uint8_t
       description: |
         Specify the range of illuminants to use for the AWB algorithm. The modes
         supported are platform specific, and not all modes may be supported.
       enum:
-        - name: AwbAuto
+        - name: AwbOff
           value: 0
+          description: Disable AWB mode.
+        - name: AwbAuto
+          value: 1
           description: Search over the whole colour temperature range.
         - name: AwbIncandescent
-          value: 1
-          description: Incandescent AWB lamp mode.
-        - name: AwbTungsten
           value: 2
-          description: Tungsten AWB lamp mode.
+          description: Incandescent AWB lamp mode.
         - name: AwbFluorescent
           value: 3
           description: Fluorescent AWB lamp mode.
@@ -286,8 +286,17 @@ controls:
         - name: AwbCloudy
           value: 6
           description: Cloudy AWB lighting mode.
-        - name: AwbCustom
+        - name: AwbTwilight
           value: 7
+          description: Twilight AWB lighting mode.
+        - name: AwbShade
+          value: 8
+          description: Shade AWB lighting mode.
+        - name: AwbTungsten
+          value: 9
+          description: Tungsten AWB lamp mode.
+        - name: AwbCustom
+          value: 10
           description: Custom AWB mode.
 
   - AwbLocked:

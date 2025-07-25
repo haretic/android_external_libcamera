@@ -1111,8 +1111,8 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
 	}
 
 	if (settings.getEntry(ANDROID_CONTROL_AWB_MODE, &entry)) {
-		const int32_t *data = entry.data.i32;
-		controls.set(controls::AwbMode, static_cast<int>(data[0]));
+		const uint8_t *data = entry.data.u8;
+		controls.set(controls::AwbMode, data[0]);
 	}
 
 	if (settings.getEntry(ANDROID_CONTROL_AWB_LOCK, &entry)) {

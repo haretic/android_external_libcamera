@@ -623,7 +623,7 @@ static const std::map<int32_t, std::string> ExposureModeTable = {
 	{ controls::ExposureCustom, "custom" },
 };
 
-static const std::map<int32_t, std::string> AwbModeTable = {
+static const std::map<uint8_t, std::string> AwbModeTable = {
 	{ controls::AwbAuto, "auto" },
 	{ controls::AwbIncandescent, "incandescent" },
 	{ controls::AwbTungsten, "tungsten" },
@@ -915,7 +915,7 @@ void IpaBase::applyControls(const ControlList &controls)
 				break;
 			}
 
-			int32_t idx = ctrl.second.get<int32_t>();
+			uint8_t idx = ctrl.second.get<uint8_t>();
 			if (AwbModeTable.count(idx)) {
 				awb->setMode(AwbModeTable.at(idx));
 				libcameraMetadata_.set(controls::AwbMode, idx);

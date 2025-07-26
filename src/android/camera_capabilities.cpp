@@ -2020,6 +2020,35 @@ std::unique_ptr<CameraMetadata> CameraCapabilities::requestTemplateStill() const
 	return stillTemplate;
 }
 
+std::unique_ptr<CameraMetadata> CameraCapabilities::requestTemplateZsl() const
+{
+	std::unique_ptr<CameraMetadata> zslTemplate = requestTemplatePreview();
+	if (!zslTemplate)
+		return nullptr;
+
+	uint8_t noiseReductionMode = ANDROID_NOISE_REDUCTION_MODE_ZERO_SHUTTER_LAG;
+	zslTemplate->updateEntry(ANDROID_NOISE_REDUCTION_MODE,
+				 noiseReductionMode);
+
+	uint8_t colorCorrectionMode = ANDROID_COLOR_CORRECTION_MODE_HIGH_QUALITY;
+	zslTemplate->updateEntry(ANDROID_COLOR_CORRECTION_MODE,
+				 colorCorrectionMode);
+
+	uint8_t edgeMode = ANDROID_EDGE_MODE_ZERO_SHUTTER_LAG;
+	zslTemplate->updateEntry(ANDROID_EDGE_MODE, edgeMode);
+
+	uint8_t hotPixelMode = ANDROID_HOT_PIXEL_MODE_HIGH_QUALITY;
+	zslTemplate->updateEntry(ANDROID_HOT_PIXEL_MODE, hotPixelMode);
+
+	uint8_t shadingMode = ANDROID_SHADING_MODE_HIGH_QUALITY;
+	zslTemplate->updateEntry(ANDROID_SHADING_MODE, shadingMode);
+
+	uint8_t toneMapMode = ANDROID_TONEMAP_MODE_HIGH_QUALITY;
+	zslTemplate->updateEntry(ANDROID_TONEMAP_MODE, toneMapMode);
+
+	return zslTemplate;
+}
+
 std::unique_ptr<CameraMetadata> CameraCapabilities::requestTemplateVideo() const
 {
 	std::unique_ptr<CameraMetadata> previewTemplate = requestTemplatePreview();

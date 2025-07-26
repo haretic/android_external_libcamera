@@ -1219,6 +1219,14 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
 		controls.set(controls::draft::StillCaptureMultiFrameNoiseReduction, static_cast<bool>(data[0]));
 	}
 
+	if (settings.getEntry(ANDROID_CONTROL_CAPTURE_INTENT, &entry) &&
+	    entry.data.u8[0] == ANDROID_CONTROL_CAPTURE_INTENT_STILL_CAPTURE) {
+		if (settings.getEntry(ANDROID_CONTROL_ENABLE_ZSL, &entry)) {
+			const uint8_t *data = entry.data.u8;
+			controls.set(controls::draft::EnableZsl, static_cast<bool>(data[0]));
+		}
+	}
+
 	return 0;
 }
 
@@ -1333,7 +1341,7 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	 */
 #ifdef HAVE_ANDROID_OS
 	auto descriptor = std::make_unique<Camera3RequestDescriptor>(camera_.get(),
-				mBufferAdapter, camera3Request);
+								     mBufferAdapter, camera3Request);
 #else
 	auto descriptor = std::make_unique<Camera3RequestDescriptor>(camera_.get(),
 								     camera3Request);

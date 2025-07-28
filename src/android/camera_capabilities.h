@@ -37,6 +37,7 @@ public:
 	std::unique_ptr<CameraMetadata> requestTemplateManual() const;
 	std::unique_ptr<CameraMetadata> requestTemplatePreview() const;
 	std::unique_ptr<CameraMetadata> requestTemplateStill() const;
+	std::unique_ptr<CameraMetadata> requestTemplateZsl() const;
 	std::unique_ptr<CameraMetadata> requestTemplateVideo() const;
 
 private:

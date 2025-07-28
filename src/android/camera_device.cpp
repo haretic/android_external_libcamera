@@ -748,8 +748,12 @@ const camera_metadata_t *CameraDevice::constructDefaultRequestSettings(int type)
 		captureIntent = ANDROID_CONTROL_CAPTURE_INTENT_MANUAL;
 		requestTemplate = capabilities_.requestTemplateManual();
 		break;
-	/* \todo Implement templates generation for the remaining use cases. */
+	/* \todo Debug the exception of android.camera.cts.api25test.EnableZslTest. */
 	case CAMERA3_TEMPLATE_ZERO_SHUTTER_LAG:
+		captureIntent = ANDROID_CONTROL_CAPTURE_INTENT_ZERO_SHUTTER_LAG;
+		requestTemplate = capabilities_.requestTemplateZsl();
+		break;
+	/* \todo Implement templates generation for the remaining use cases. */
 	default:
 		LOG(HAL, Error) << "Unsupported template request type: " << type;
 		return nullptr;

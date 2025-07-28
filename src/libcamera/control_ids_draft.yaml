@@ -481,6 +481,13 @@ controls:
 
         \sa NoiseReductionMode
 
+  - EnableZsl:
+      type: bool
+      description: |
+        Enable or disable Zero Shutter Lag for Still Capture.
+
+        \sa ANDROID_CONTROL_ENABLE_ZSL
+
   - FaceDetectMode:
       type: int32_t
       description: |

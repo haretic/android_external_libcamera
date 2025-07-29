@@ -517,6 +517,30 @@ void PostProcessorJpeg::process(StreamBuffer *streamBuffer)
 					 entry.data.u8, entry.count);
 	}
 
+	ret = requestMetadata.getEntry(ANDROID_CONTROL_AE_MODE, &entry);
+	if (ret) {
+		if (entry.data.u8[0] == ANDROID_CONTROL_AE_MODE_OFF) {
+			exif.setShort(EXIF_IFD_EXIF, EXIF_TAG_EXPOSURE_PROGRAM, 1);
+			exif.setShort(EXIF_IFD_EXIF, EXIF_TAG_EXPOSURE_MODE, 2);
+		} else {
+			exif.setShort(EXIF_IFD_EXIF, EXIF_TAG_EXPOSURE_PROGRAM, 2);
+			exif.setShort(EXIF_IFD_EXIF, EXIF_TAG_EXPOSURE_MODE, 1);
+		}
+	}
+	ret = requestMetadata.getEntry(ANDROID_SENSOR_EXPOSURE_TIME, &entry);
+	if (ret && entry.data.i64[0] > 0) {
+		// us -> second
+		double tv = static_cast<double>(entry.data.i64[0]) / 1000000;
+		// exposure time -> shutter speed
+		tv = -1.0 * (log(tv) / log(2.0));
+		ExifRational rational = { static_cast<ExifLong>(tv * 65536), 65536};
+		exif.setRational(EXIF_IFD_EXIF, EXIF_TAG_SHUTTER_SPEED_VALUE, rational);
+	} else {
+		ExifRational rational = { static_cast<ExifLong>(0), 1};
+		exif.setRational(EXIF_IFD_EXIF, EXIF_TAG_SHUTTER_SPEED_VALUE, rational);
+	}
+
+
 	if (exif.generate() != 0)
 		LOG(JPEG, Error) << "Failed to generate valid EXIF data";
 

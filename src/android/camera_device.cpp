@@ -14,6 +14,10 @@
 #include <unistd.h>
 #include <vector>
 
+#ifdef HAVE_ANDROID_OS
+#include <cutils/properties.h>
+#endif
+
 #include <libcamera/base/log.h>
 #include <libcamera/base/span.h>
 #include <libcamera/base/unique_fd.h>
@@ -2481,6 +2485,15 @@ void CameraDevice::cameraDisconnected()
 
 void CameraDevice::queryManufacturerInfo()
 {
+#ifdef HAVE_ANDROID_OS
+	char model[255] = { '\0' };
+	property_get("ro.product.model", model, defaultModel_.c_str());
+	model_ = model;
+
+	char maker[255] = { '\0' };
+	property_get("ro.product.manufacturer", maker, defaultMaker_.c_str());
+	maker_ = maker;
+#else
 	/* \todo Support getting properties on Android */
 	std::ifstream fstream("/var/cache/camera/camera.prop");
 	if (!fstream.is_open())
@@ -2499,4 +2512,5 @@ void CameraDevice::queryManufacturerInfo()
 		else if (!key.compare("ro.product.manufacturer"))
 			maker_ = val;
 	}
+#endif
 }

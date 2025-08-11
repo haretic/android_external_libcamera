@@ -1024,7 +1024,7 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
 	if (settings.getEntry(ANDROID_CONTROL_AF_REGIONS, &entry)) {
 		const int32_t *data = entry.data.i32;
 		std::vector<Rectangle> afWindows;
-		for (size_t i = 0; i < entry.count; i++) {
+		for (size_t i = 0; i + 4 < entry.count; i += 5) {
 			size_t j = i * 5;
 			afWindows.push_back(Rectangle{
 				data[j], data[j + 1],

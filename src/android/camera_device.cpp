@@ -12,6 +12,7 @@
 #include <fstream>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <unordered_set>
 #include <vector>
 
 #include <libcamera/base/log.h>
@@ -41,6 +42,8 @@ using namespace libcamera;
 LOG_DECLARE_CATEGORY(HAL)
 
 namespace {
+
+const std::vector<uint32_t> kDuplicatedMetadata = { ANDROID_LENS_FOCUS_RANGE };
 
 /*
  * \struct Camera3StreamConfig
@@ -1678,7 +1681,7 @@ void CameraDevice::requestComplete(Request *request)
 	 * the submission order of the requests. Create a result as the final
 	 * result which is guranteed be sent in order by CompleteRequestDescriptor().
 	 */
-	result->resultMetadata_ = getFinalResultMetadata(camera3Request->settings_,
+	result->resultMetadata_ = getFinalResultMetadata(camera3Request,
 							 request->metadata());
 	result->metadataPackIndex_ = CameraCapabilities::MaxMetadataPackIndex;
 
@@ -2201,8 +2204,9 @@ void CameraDevice::generateJpegExifMetadata(Camera3RequestDescriptor *request,
  * Produce a result metadata for the final result.
  */
 std::unique_ptr<CameraMetadata>
-CameraDevice::getFinalResultMetadata(const CameraMetadata &settings,
-				     const libcamera::ControlList &metadata) const
+CameraDevice::getFinalResultMetadata(
+	Camera3RequestDescriptor *camera3Request,
+	const libcamera::ControlList &metadata) const
 {
 	camera_metadata_ro_entry_t entry;
 	bool found;
@@ -2226,6 +2230,16 @@ CameraDevice::getFinalResultMetadata(const CameraMetadata &settings,
 		LOG(HAL, Error) << "Failed to allocate result metadata";
 		return nullptr;
 	}
+
+	std::unordered_set<uint32_t> tagsToAvoid;
+	for (const auto &partialResult : camera3Request->partialResults_) {
+		for (auto tag : kDuplicatedMetadata) {
+			if (partialResult->resultMetadata_->hasEntry(tag))
+				tagsToAvoid.insert(tag);
+		}
+	}
+
+	resultMetadata->addTagsToAvoid(tagsToAvoid);
 
 	if (!metadata.contains(controls::draft::AE_STATE))
 		resultMetadata->addEntry(ANDROID_CONTROL_AE_STATE,
@@ -2259,6 +2273,8 @@ CameraDevice::getFinalResultMetadata(const CameraMetadata &settings,
 	int32_t value32 = 0;
 	resultMetadata->addEntry(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION,
 				 value32);
+
+	const CameraMetadata &settings = camera3Request->settings_;
 
 	if (settings.getEntry(ANDROID_CONTROL_AE_LOCK, &entry)) {
 		value = *entry.data.u8;

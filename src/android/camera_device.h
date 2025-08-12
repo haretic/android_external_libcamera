@@ -123,7 +123,7 @@ private:
 	std::unique_ptr<CameraMetadata> getPartialResultMetadata(
 		const libcamera::ControlList &metadata) const;
 	std::unique_ptr<CameraMetadata> getFinalResultMetadata(
-		const CameraMetadata &settings,
+		Camera3RequestDescriptor *camera3Request,
 		const libcamera::ControlList &metadata) const;
 
 	void cameraDisconnected();

@@ -667,7 +667,8 @@ int CameraCapabilities::initializeStreamConfigurations()
 			maxFrameDuration = 1e9 / calculateFps(maxFrameDuration);
 
 			//Todo, read resolution and frame duration from table
-			if (res == maxRes) {
+			//Full HD 1080p is mandatory for CTS testAvailableStreamConfigs
+			if (res == maxRes && res.width != 1920 && res.height != 1080) {
 				streamConfigurations_.push_back({
 					res,
 					androidFormat,
@@ -701,7 +702,8 @@ int CameraCapabilities::initializeStreamConfigurations()
 			 */
 			if (androidFormat == HAL_PIXEL_FORMAT_YCbCr_420_888) {
 				//Todo, read resolution and frame duration from table
-				if (res == maxRes) {
+				//Full HD 1080p is mandatory for CTS testAvailableStreamConfigs
+				if (res == maxRes && res.width != 1920 && res.height != 1080) {
 					streamConfigurations_.push_back({
 						res,
 						HAL_PIXEL_FORMAT_BLOB,

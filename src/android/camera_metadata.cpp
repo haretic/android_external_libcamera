@@ -147,6 +147,9 @@ bool CameraMetadata::addEntry(uint32_t tag, const void *data, size_t count,
 	if (!valid_)
 		return false;
 
+	if (tagsToAvoid_.contains(tag))
+		return false;
+
 	if (!resize(1, count * elementSize)) {
 		LOG(CameraMetadata, Error) << "Failed to resize";
 		valid_ = false;

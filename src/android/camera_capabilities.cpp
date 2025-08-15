@@ -1526,7 +1526,14 @@ int CameraCapabilities::initializeStaticMetadata()
 		if (entry.androidFormat != HAL_PIXEL_FORMAT_BLOB && fps < 30 && entry.resolution != maxRes)
 			continue;
 
+		/*
+                 * Fill correct ranges to AE_AVAILABLE_TARGET_FPS_RANGE to meet
+		 * requirement of CTS testJpegBurst:
+		 * ranges should include (15, X) for still capture.
+                 */
 		availableFps.insert(fps);
+		availableFps.insert(calculateFps(entry.maxFrameDurationNsec));
+
 		/*
 		 * Collect the FPS of the maximum YUV output size to populate
 		 * AE_AVAILABLE_TARGET_FPS_RANGE

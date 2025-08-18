@@ -2242,6 +2242,8 @@ CameraDevice::getFinalResultMetadata(
 
 	std::unordered_set<uint32_t> tagsToAvoid;
 	for (const auto &partialResult : camera3Request->partialResults_) {
+		if (!partialResult->resultMetadata_) continue;
+
 		for (auto tag : kDuplicatedMetadata) {
 			if (partialResult->resultMetadata_->hasEntry(tag))
 				tagsToAvoid.insert(tag);

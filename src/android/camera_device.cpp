@@ -2061,6 +2061,11 @@ CameraDevice::getPartialResultMetadata(const ControlList &metadata) const
 		resultMetadata->addEntry(ANDROID_LENS_FOCUS_DISTANCE, lensFocusDistance.value_or(0));
 	}
 
+	if (metadata.contains(controls::draft::LENS_FOCUS_RANGE)) {
+		const auto &lensFocusRange = metadata.get(controls::draft::LensFocusRange);
+		resultMetadata->addEntry(ANDROID_LENS_FOCUS_RANGE, *lensFocusRange);
+	}
+
 	if (metadata.contains(controls::ANALOGUE_GAIN)) {
 		const auto &sensorSensitivity = metadata.get(controls::AnalogueGain).value_or(100);
 		resultMetadata->addEntry(ANDROID_SENSOR_SENSITIVITY, static_cast<int>(sensorSensitivity));

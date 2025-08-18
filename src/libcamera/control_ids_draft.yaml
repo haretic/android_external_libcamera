@@ -456,6 +456,14 @@ controls:
 
         \sa ANDROID_LENS_FOCUS_DISTANCE
 
+  - LensFocusRange:
+      type: float
+      description: |
+        The range of scene distances in sharp focus (depth of field)
+
+        \sa ANDROID_LENS_FOCUS_RANGE
+      size: [2]
+
   - LensState:
       type: int32_t
       description: |

@@ -917,8 +917,9 @@ const std::string &Camera::id() const
  */
 
 /**
- * \var Camera::partialResultCompleted
- * \brief Signal emitted when a partial result for a request is completed
+ * \var Camera::metadataAvailable
+ * \brief Signal emitted when some metadata for a request is available as a
+ * partial result
  */
 
 /**

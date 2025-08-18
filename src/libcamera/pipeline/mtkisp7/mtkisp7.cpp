@@ -411,7 +411,7 @@ void CompleteRequestTask::run()
 		metadata.merge(debugMetadata);
 	}
 
-	pipe_->completeMetadata(request_, metadata);
+	pipe_->metadataAvailable(request_, metadata);
 
 	for (auto it : request_->buffers()) {
 		FrameBuffer *buffer = it.second;

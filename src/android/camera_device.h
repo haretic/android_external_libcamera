@@ -78,8 +78,9 @@ public:
 	const camera_metadata_t *constructDefaultRequestSettings(int type);
 	int configureStreams(camera3_stream_configuration_t *stream_list);
 	int processCaptureRequest(camera3_capture_request_t *request);
-	void partialResultComplete(libcamera::Request *request,
-				   libcamera::Result *result);
+
+	void bufferComplete(libcamera::Request *request, libcamera::FrameBuffer *frameBuffer);
+	void metadataAvailable(libcamera::Request *request, const libcamera::ControlList &metadata);
 	void requestComplete(libcamera::Request *request);
 	void streamProcessingCompleteDelegate(StreamBuffer *bufferStream,
 					      StreamBuffer::Status status);
@@ -120,6 +121,7 @@ private:
 	void generateJpegExifMetadata(Camera3RequestDescriptor *request,
 				      StreamBuffer *buffer) const;
 
+	std::unique_ptr<CameraMetadata> getJpegPartialResultMetadata() const;
 	std::unique_ptr<CameraMetadata> getPartialResultMetadata(
 		const libcamera::ControlList &metadata) const;
 	std::unique_ptr<CameraMetadata> getFinalResultMetadata(

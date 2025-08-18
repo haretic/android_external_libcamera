@@ -135,7 +135,7 @@ public:
 
 	const std::string &id() const;
 
-	Signal<Request *, Result *> partialResultCompleted;
+	Signal<Request *, const ControlList &> metadataAvailable;
 	Signal<Request *, FrameBuffer *> bufferCompleted;
 	Signal<Request *> requestCompleted;
 	Signal<> disconnected;

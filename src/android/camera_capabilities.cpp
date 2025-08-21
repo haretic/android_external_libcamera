@@ -495,8 +495,9 @@ int CameraCapabilities::initializeStreamConfigurations()
 	 * maximum one.
 	 */
 
-	/* TODO: Read configure file when camera has custom resolution list */
-	std::vector<Size> cameraResolutions;
+	const StreamFormats &customFormats = cfg.formats();
+	PixelFormat defaultPixelFormat(formats::NV12);
+	std::vector<Size> cameraResolutions = customFormats.sizes(defaultPixelFormat);
 	std::copy_if(camera3Resolutions.begin(), camera3Resolutions.end(),
 		     std::back_inserter(cameraResolutions),
 		     [&](const Size &res) { return res < maxRes; });
@@ -668,7 +669,7 @@ int CameraCapabilities::initializeStreamConfigurations()
 
 			//Todo, read resolution and frame duration from table
 			//Full HD 1080p is mandatory for CTS testAvailableStreamConfigs
-			if (res == maxRes && res.width != 1920 && res.height != 1080) {
+			if (res == maxRes && (res.width > 1920 || res.height > 1080)) {
 				streamConfigurations_.push_back({
 					res,
 					androidFormat,
@@ -703,7 +704,7 @@ int CameraCapabilities::initializeStreamConfigurations()
 			if (androidFormat == HAL_PIXEL_FORMAT_YCbCr_420_888) {
 				//Todo, read resolution and frame duration from table
 				//Full HD 1080p is mandatory for CTS testAvailableStreamConfigs
-				if (res == maxRes && res.width != 1920 && res.height != 1080) {
+				if (res == maxRes && (res.width > 1920 || res.height > 1080)) {
 					streamConfigurations_.push_back({
 						res,
 						HAL_PIXEL_FORMAT_BLOB,

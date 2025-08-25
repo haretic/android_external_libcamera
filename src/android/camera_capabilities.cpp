@@ -803,6 +803,7 @@ int CameraCapabilities::initializeStaticMetadata()
 		ANDROID_SENSOR_INFO_SENSITIVITY_RANGE,
 		ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE,
 		ANDROID_SENSOR_ORIENTATION,
+		ANDROID_SENSOR_READOUT_TIMESTAMP,
 		ANDROID_STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES,
 		ANDROID_STATISTICS_INFO_MAX_FACE_COUNT,
 		ANDROID_SYNC_MAX_LATENCY,
@@ -1185,6 +1186,9 @@ int CameraCapabilities::initializeStaticMetadata()
 
 	staticMetadata_->addEntry(ANDROID_SENSOR_INFO_MAX_FRAME_DURATION,
 				  maxFrameDuration_);
+
+	uint8_t readoutTimestampSupport = ANDROID_SENSOR_READOUT_TIMESTAMP_NOT_SUPPORTED;
+	staticMetadata_->addEntry(ANDROID_SENSOR_READOUT_TIMESTAMP, readoutTimestampSupport);
 
 	auto mode3AIter =
 		camera_->controls().find(controls::Mode3A.id());

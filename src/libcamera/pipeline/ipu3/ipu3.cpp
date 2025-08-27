@@ -407,6 +407,7 @@ PipelineHandlerIPU3::generateConfiguration(Camera *camera, Span<const StreamRole
 		Size size;
 
 		switch (role) {
+		case StreamRole::YuvSnapshot:
 		case StreamRole::StillCapture:
 			/*
 			 * Use as default full-frame configuration a value

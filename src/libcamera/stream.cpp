@@ -416,6 +416,9 @@ std::string StreamConfiguration::toString() const
  * The stream is intended to capture video for the purpose of display on the
  * local screen. Trade-offs between quality and usage of system resources are
  * acceptable.
+ * \var YuvSnapshot
+ * The stream is intended to capture high-resolution, high-quality YUV images
+ * with low frame rate.
  */
 
 /**
@@ -426,11 +429,12 @@ std::string StreamConfiguration::toString() const
  */
 std::ostream &operator<<(std::ostream &out, StreamRole role)
 {
-	static constexpr std::array<const char *, 4> names{
+	static constexpr std::array<const char *, 5> names{
 		"Raw",
 		"StillCapture",
 		"VideoRecording",
 		"Viewfinder",
+		"YuvSnapshot",
 	};
 
 	out << names[static_cast<std::underlying_type_t<StreamRole>>(role)];

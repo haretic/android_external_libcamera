@@ -214,6 +214,13 @@ bool isVideoStream(camera3_stream_t *stream)
 	return (GRALLOC_USAGE_HW_VIDEO_ENCODER & stream->usage);
 }
 
+// Vendor extended buffer usage bit for the HAL to identify the still capture YUV stream
+#define IS_STILL_USAGE(usage) (((usage)&GRALLOC_USAGE_PRIVATE_1) == GRALLOC_USAGE_PRIVATE_1)
+bool hasStillCaptureFlag(camera3_stream_t *stream)
+{
+	return (IS_STILL_USAGE(stream->usage));
+}
+
 bool isYuvSnapshotStream(camera3_stream_t *stream)
 {
 	return (!isVideoStream(stream) && !isPreviewStream(stream) &&
@@ -374,9 +381,12 @@ int buildStreamConfigsNoMap(const CameraCapabilities &capabilities,
 
 		if (isJpegStream(stream)) {
 			continue;
-		} else if (isYuvSnapshotStream(stream)) {
+		} else if (hasStillCaptureFlag(stream)) {
 			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
 			streamConfig.config.role = StreamRole::StillCapture;
+		} else if (isYuvSnapshotStream(stream)) {
+			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
+			streamConfig.config.role = StreamRole::YuvSnapshot;
 		} else if (isPreviewStream(stream)) {
 			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
 			streamConfig.config.role = StreamRole::Viewfinder;

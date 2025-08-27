@@ -221,6 +221,7 @@ PipelineHandlerVirtual::generateConfiguration(Camera *camera,
 	for (const StreamRole role : roles) {
 		switch (role) {
 		case StreamRole::StillCapture:
+		case StreamRole::YuvSnapshot:
 		case StreamRole::VideoRecording:
 		case StreamRole::Viewfinder:
 			break;

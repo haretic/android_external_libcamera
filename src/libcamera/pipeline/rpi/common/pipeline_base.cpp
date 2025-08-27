@@ -398,6 +398,7 @@ PipelineHandlerBase::generateConfiguration(Camera *camera, Span<const StreamRole
 			bufferCount = 2;
 			break;
 
+		case StreamRole::YuvSnapshot:
 		case StreamRole::StillCapture:
 			fmts = data->ispFormats();
 			pixelFormat = formats::YUV420;

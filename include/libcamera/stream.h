@@ -69,6 +69,7 @@ enum class StreamRole {
 	StillCapture,
 	VideoRecording,
 	Viewfinder,
+	YuvSnapshot,
 };
 
 std::ostream &operator<<(std::ostream &out, StreamRole role);

@@ -511,7 +511,8 @@ bool validateCropRotate(const camera3_stream_configuration_t &streamList)
 
 CameraDevice::CameraDevice(unsigned int id, std::shared_ptr<Camera> camera)
 	: id_(id), state_(State::Stopped), camera_(std::move(camera)),
-	  facing_(CAMERA_FACING_FRONT), orientation_(0)
+	  facing_(CAMERA_FACING_FRONT), orientation_(0), resourceCost_(100),
+	  opened_(false)
 {
 	/* Set RequestCompletionMode to Immediately to send results early */
 	camera_->setRequestCompletionMode(Camera::Immediately);
@@ -632,6 +633,13 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
 		orientation_ = 0;
 	}
 
+	const auto &resourceCost = properties.get(properties::ResourceCost);
+	if (resourceCost) {
+		resourceCost_ = *resourceCost;
+	} else {
+		resourceCost_ = 100;  // Allowing only one camera
+	}
+
 	return capabilities_.initialize(camera_, orientation_, facing_);
 }
 
@@ -639,7 +647,6 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
  * Open a camera device. The static information on the camera shall have been
  * initialized with a call to CameraDevice::initialize().
  */
-static bool opened_ = false;
 int CameraDevice::open(const hw_module_t *hardwareModule)
 {
 	if (opened_)

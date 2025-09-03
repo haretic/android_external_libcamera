@@ -265,7 +265,7 @@ int CameraHalManager::getCameraInfo(unsigned int id, struct camera_info *info)
 	info->facing = camera->facing();
 	info->orientation = camera->orientation();
 	info->device_version = CAMERA_DEVICE_API_VERSION_3_5;
-	info->resource_cost = 51;
+	info->resource_cost = camera->resourceCost();
 	info->static_camera_characteristics = camera->getStaticMetadata();
 	info->conflicting_devices = nullptr;
 	info->conflicting_devices_length = 0;

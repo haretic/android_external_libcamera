@@ -484,6 +484,7 @@ CameraConfiguration::Status MtkISP7CameraConfiguration::validate()
 			}
 			cfg.setStream(const_cast<Stream *>(vidStreams[videoCnt++]));
 			break;
+		case StreamRole::YuvSnapshot:
 		case StreamRole::StillCapture:
 			if (stillCnt >= 2) {
 				LOG(MtkISP7, Error)
@@ -562,6 +563,7 @@ PipelineHandlerMtkISP7::generateConfiguration(Camera *camera, Span<const StreamR
 
 		switch (role) {
 		case StreamRole::StillCapture:
+		case StreamRole::YuvSnapshot:
 			cfg.setStream(&data->still1Stream_);
 			cfg.role = StreamRole::StillCapture;
 			break;

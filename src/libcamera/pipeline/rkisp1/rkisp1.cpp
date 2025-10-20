@@ -638,6 +638,7 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 		Size size;
 
 		switch (role) {
+		case StreamRole::YuvSnapshot:
 		case StreamRole::StillCapture:
 			/* JPEG encoders typically expect sYCC. */
 			if (!colorSpace)

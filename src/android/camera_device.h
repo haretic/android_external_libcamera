@@ -71,6 +71,7 @@ public:
 
 	int facing() const { return facing_; }
 	int orientation() const { return orientation_; }
+	int resourceCost() const { return resourceCost_; }
 	unsigned int maxJpegBufferSize() const;
 
 	void setCallbacks(const camera3_callback_ops_t *callbacks);
@@ -168,7 +169,10 @@ private:
 
 	int facing_;
 	int orientation_;
+	int resourceCost_;
 
 	CameraMetadata lastSettings_;
 	CameraMetadata sessionSettings_;
+
+	bool opened_;
 };

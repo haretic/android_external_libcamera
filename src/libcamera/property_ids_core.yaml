@@ -701,4 +701,9 @@ controls:
 
         Different cameras may report identical devices.
 
+  - ResourceCost:
+      type: int32_t
+      description : |
+        Resource Cost for the camera. Currently identical to Android
+        resource_cost.
 ...

@@ -214,6 +214,13 @@ bool isVideoStream(camera3_stream_t *stream)
 	return (GRALLOC_USAGE_HW_VIDEO_ENCODER & stream->usage);
 }
 
+// Vendor extended buffer usage bit for the HAL to identify the still capture YUV stream
+#define IS_STILL_USAGE(usage) (((usage)&GRALLOC_USAGE_PRIVATE_1) == GRALLOC_USAGE_PRIVATE_1)
+bool hasStillCaptureFlag(camera3_stream_t *stream)
+{
+	return (IS_STILL_USAGE(stream->usage));
+}
+
 bool isYuvSnapshotStream(camera3_stream_t *stream)
 {
 	return (!isVideoStream(stream) && !isPreviewStream(stream) &&
@@ -374,9 +381,12 @@ int buildStreamConfigsNoMap(const CameraCapabilities &capabilities,
 
 		if (isJpegStream(stream)) {
 			continue;
-		} else if (isYuvSnapshotStream(stream)) {
+		} else if (hasStillCaptureFlag(stream)) {
 			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
 			streamConfig.config.role = StreamRole::StillCapture;
+		} else if (isYuvSnapshotStream(stream)) {
+			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
+			streamConfig.config.role = StreamRole::YuvSnapshot;
 		} else if (isPreviewStream(stream)) {
 			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
 			streamConfig.config.role = StreamRole::Viewfinder;
@@ -501,7 +511,8 @@ bool validateCropRotate(const camera3_stream_configuration_t &streamList)
 
 CameraDevice::CameraDevice(unsigned int id, std::shared_ptr<Camera> camera)
 	: id_(id), state_(State::Stopped), camera_(std::move(camera)),
-	  facing_(CAMERA_FACING_FRONT), orientation_(0)
+	  facing_(CAMERA_FACING_FRONT), orientation_(0), resourceCost_(100),
+	  opened_(false)
 {
 	/* Set RequestCompletionMode to Immediately to send results early */
 	camera_->setRequestCompletionMode(Camera::Immediately);
@@ -622,6 +633,13 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
 		orientation_ = 0;
 	}
 
+	const auto &resourceCost = properties.get(properties::ResourceCost);
+	if (resourceCost) {
+		resourceCost_ = *resourceCost;
+	} else {
+		resourceCost_ = 100;  // Allowing only one camera
+	}
+
 	return capabilities_.initialize(camera_, orientation_, facing_);
 }
 
@@ -629,7 +647,6 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
  * Open a camera device. The static information on the camera shall have been
  * initialized with a call to CameraDevice::initialize().
  */
-static bool opened_ = false;
 int CameraDevice::open(const hw_module_t *hardwareModule)
 {
 	if (opened_)

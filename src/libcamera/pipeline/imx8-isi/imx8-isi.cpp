@@ -765,6 +765,7 @@ PipelineHandlerISI::generateConfiguration(Camera *camera,
 
                 switch (role) {
                 case StreamRole::StillCapture:
+		case StreamRole::YuvSnapshot:
                 case StreamRole::Viewfinder:
                 case StreamRole::VideoRecording: {
                         Size size = role == StreamRole::StillCapture

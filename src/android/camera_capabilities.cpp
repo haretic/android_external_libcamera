@@ -495,8 +495,9 @@ int CameraCapabilities::initializeStreamConfigurations()
 	 * maximum one.
 	 */
 
-	/* TODO: Read configure file when camera has custom resolution list */
-	std::vector<Size> cameraResolutions;
+	const StreamFormats &customFormats = cfg.formats();
+	PixelFormat defaultPixelFormat(formats::NV12);
+	std::vector<Size> cameraResolutions = customFormats.sizes(defaultPixelFormat);
 	std::copy_if(camera3Resolutions.begin(), camera3Resolutions.end(),
 		     std::back_inserter(cameraResolutions),
 		     [&](const Size &res) { return res < maxRes; });
@@ -668,7 +669,7 @@ int CameraCapabilities::initializeStreamConfigurations()
 
 			//Todo, read resolution and frame duration from table
 			//Full HD 1080p is mandatory for CTS testAvailableStreamConfigs
-			if (res == maxRes && res.width != 1920 && res.height != 1080) {
+			if (res == maxRes && (res.width > 1920 || res.height > 1080)) {
 				streamConfigurations_.push_back({
 					res,
 					androidFormat,
@@ -703,7 +704,7 @@ int CameraCapabilities::initializeStreamConfigurations()
 			if (androidFormat == HAL_PIXEL_FORMAT_YCbCr_420_888) {
 				//Todo, read resolution and frame duration from table
 				//Full HD 1080p is mandatory for CTS testAvailableStreamConfigs
-				if (res == maxRes && res.width != 1920 && res.height != 1080) {
+				if (res == maxRes && (res.width > 1920 || res.height > 1080)) {
 					streamConfigurations_.push_back({
 						res,
 						HAL_PIXEL_FORMAT_BLOB,
@@ -802,6 +803,7 @@ int CameraCapabilities::initializeStaticMetadata()
 		ANDROID_SENSOR_INFO_SENSITIVITY_RANGE,
 		ANDROID_SENSOR_INFO_TIMESTAMP_SOURCE,
 		ANDROID_SENSOR_ORIENTATION,
+		ANDROID_SENSOR_READOUT_TIMESTAMP,
 		ANDROID_STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES,
 		ANDROID_STATISTICS_INFO_MAX_FACE_COUNT,
 		ANDROID_SYNC_MAX_LATENCY,
@@ -1184,6 +1186,9 @@ int CameraCapabilities::initializeStaticMetadata()
 
 	staticMetadata_->addEntry(ANDROID_SENSOR_INFO_MAX_FRAME_DURATION,
 				  maxFrameDuration_);
+
+	uint8_t readoutTimestampSupport = ANDROID_SENSOR_READOUT_TIMESTAMP_NOT_SUPPORTED;
+	staticMetadata_->addEntry(ANDROID_SENSOR_READOUT_TIMESTAMP, readoutTimestampSupport);
 
 	auto mode3AIter =
 		camera_->controls().find(controls::Mode3A.id());

@@ -13,6 +13,8 @@
 
 #include <libcamera/base/signal.h>
 
+#include "libcamera/internal/media_device.h"
+
 namespace libcamera {
 
 class MediaDevice;

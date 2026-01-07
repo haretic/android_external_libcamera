@@ -31,7 +31,7 @@ DmaHeap::DmaHeap()
 {
 	valid_ = false;
 
-	int fd = ::open(kHeapName, O_RDWR, O_RDONLY | O_CLOEXEC);
+	int fd = ::open(kHeapName, O_RDWR | O_CLOEXEC);
 	if (fd < 0) {
 		LOG(DmaHeap, Error) << "Failed to open " << kHeapName << ": "
 				    << strerror(errno);
@@ -40,7 +40,7 @@ DmaHeap::DmaHeap()
 
 	UniqueFD systemHeap(fd);
 
-	fd = ::open(kHeapCmaName, O_RDWR, O_RDONLY | O_CLOEXEC);
+	fd = ::open(kHeapCmaName, O_RDWR | O_CLOEXEC);
 	if (fd < 0) {
 		LOG(DmaHeap, Error) << "Failed to open " << kHeapCmaName << ": "
 				    << strerror(errno);

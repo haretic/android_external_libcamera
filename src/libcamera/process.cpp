@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <iostream>
 #include <list>
+#include <sched.h>
 #include <signal.h>
 #include <string.h>
 #include <sys/socket.h>

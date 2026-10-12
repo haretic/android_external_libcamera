@@ -525,6 +525,8 @@ class CameraSensorHelperHi846 : public CameraSensorHelper
 public:
 	CameraSensorHelperHi846()
 	{
+		/* Measured on a dark frame: 64 at 10 bits. */
+		blackLevel_ = 4096;
 		/* Analogue gain = 1 + code / 16, codes 0 to 240. */
 		gain_ = AnalogueGainLinear{ 1, 16, 0, 16 };
 	}

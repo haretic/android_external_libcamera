@@ -68,6 +68,7 @@ private:
 	unsigned int lineBufferIndex_;
 	unsigned int inputPadding_;
 	std::vector<uint8_t> lineBuffers_[kMaxLineBuffers];
+	std::vector<uint8_t> packedLine_;
 	std::vector<uint8_t> rgbLines_[2];
 	bool enableInputMemcpy_;
 	bool copyInput_;
@@ -805,6 +806,16 @@ void DebayerCpuThread::configure(unsigned int yStart, unsigned int yEnd)
 
 	copyInput_ = enableInputMemcpy_ || debayer_->unpackMtisp_;
 
+	/*
+	 * Unpacking reads the source one byte at a time, which is very slow
+	 * from uncached memory. When input copies are enabled, copy each
+	 * packed line in bulk to a bounce buffer first. The line buffers hold
+	 * groups of 4 samples, stored in 5 bytes in the source.
+	 */
+	packedLine_.resize(debayer_->unpackMtisp_ && enableInputMemcpy_
+				   ? lineBufferLength_ / sizeof(uint16_t) / 4 * 5
+				   : 0);
+
 	for (std::vector<uint8_t> &line : rgbLines_)
 		line.resize(debayer_->yuvOutput_ ? debayer_->window_.width * 4 : 0);
 
@@ -866,11 +877,17 @@ void DebayerCpuThread::copyLine(unsigned int index, const uint8_t *linePointers[
 	uint8_t *buffer = lineBuffers_[index].data();
 	const uint8_t *src = linePointers[line] - inputPadding_;
 
-	if (debayer_->unpackMtisp_)
+	if (debayer_->unpackMtisp_) {
+		if (!packedLine_.empty()) {
+			memcpy(packedLine_.data(), src, packedLine_.size());
+			src = packedLine_.data();
+		}
+
 		unpackMtisp10(reinterpret_cast<uint16_t *>(buffer), src,
 			      lineBufferLength_ / sizeof(uint16_t));
-	else
+	} else {
 		memcpy(buffer, src, lineBufferLength_);
+	}
 
 	linePointers[line] = buffer + lineBufferPadding_;
 }

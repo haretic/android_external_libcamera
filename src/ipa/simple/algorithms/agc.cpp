@@ -65,14 +65,48 @@ Agc::Agc()
 {
 }
 
+void Agc::queueRequest(IPAContext &context,
+		       [[maybe_unused]] const uint32_t frame,
+		       [[maybe_unused]] IPAFrameContext &frameContext,
+		       const ControlList &controls)
+{
+	const auto &agc = context.configuration.agc;
+	const auto &frameDurationLimits = controls.get(controls::FrameDurationLimits);
+
+	if (!frameDurationLimits || !agc.vblankMax)
+		return;
+
+	/* Keep frames from getting shorter than the shortest duration. */
+	const int64_t height = context.sensorInfo.outputSize.height;
+	const utils::Duration minFrameDuration =
+		std::chrono::microseconds((*frameDurationLimits).front());
+	context.activeState.agc.vblankMin =
+		std::clamp<int64_t>(minFrameDuration / agc.lineDuration - height,
+				    agc.vblankMin, agc.vblankMax);
+
+	/*
+	 * Allow exposures up to the longest frame duration requested, within
+	 * what the sensor blanking can stretch the frame to.
+	 */
+	const utils::Duration maxFrameDuration =
+		std::chrono::microseconds((*frameDurationLimits).back());
+	const int64_t frameLength = maxFrameDuration / agc.lineDuration;
+	const int64_t exposureLimit = height + agc.vblankMax - agc.exposureMargin;
+
+	context.activeState.agc.exposureMax =
+		std::clamp<int64_t>(frameLength - agc.exposureMargin,
+				    agc.exposureMax, std::max<int64_t>(agc.exposureMax, exposureLimit));
+}
+
 void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
 {
 	int32_t &exposure = frameContext.sensor.exposure;
 	double &again = frameContext.sensor.gain;
 
+	const int32_t exposureMax = context.activeState.agc.exposureMax;
 	double error = kExposureOptimal - exposureMSV;
 
-	if (std::abs(error) <= kExposureSatisfactory)
+	if (std::abs(error) <= kExposureSatisfactory && exposure <= exposureMax)
 		return;
 
 	/*
@@ -86,7 +120,7 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
 
 	if (factor > 1.0f) {
 		/* Scene too dark: increase exposure first, then gain. */
-		if (exposure < context.configuration.agc.exposureMax) {
+		if (exposure < exposureMax) {
 			int32_t next = static_cast<int32_t>(exposure * factor);
 			exposure = std::max(next, exposure + 1);
 		} else {
@@ -111,7 +145,7 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
 	}
 
 	exposure = std::clamp(exposure, context.configuration.agc.exposureMin,
-			      context.configuration.agc.exposureMax);
+			      exposureMax);
 	again = std::clamp(again, context.configuration.agc.againMin,
 			   context.configuration.agc.againMax);
 
@@ -134,6 +168,11 @@ void Agc::process(IPAContext &context,
 		context.configuration.agc.lineDuration * frameContext.sensor.exposure;
 	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
 	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
+	if (context.configuration.agc.vblankMax) {
+		utils::Duration frameDuration = context.configuration.agc.lineDuration *
+			(context.sensorInfo.outputSize.height + frameContext.sensor.vblank);
+		metadata.set(controls::FrameDuration, frameDuration.get<std::micro>());
+	}
 
 	if (!context.activeState.agc.valid) {
 		/*

@@ -29,6 +29,12 @@ struct IPASessionConfiguration {
 		int32_t exposureMin, exposureMax;
 		double againMin, againMax, again10, againMinStep;
 		utils::Duration lineDuration;
+		/*
+		 * Exposure longer than exposureMax lengthens the frame, if the
+		 * sensor has a vertical blanking control (vblankMax > 0).
+		 */
+		int32_t exposureMargin;
+		int32_t vblankMin, vblankMax;
 	} agc;
 	struct {
 		std::optional<uint8_t> level;
@@ -40,6 +46,10 @@ struct IPAActiveState {
 		int32_t exposure;
 		double again;
 		bool valid;
+		/* The longest exposure the frame duration limits allow. */
+		int32_t exposureMax;
+		/* The blanking the shortest frame duration allowed needs. */
+		int32_t vblankMin;
 	} agc;
 
 	struct {
@@ -69,6 +79,7 @@ struct IPAFrameContext : public FrameContext {
 	struct {
 		int32_t exposure;
 		double gain;
+		int32_t vblank;
 	} sensor;
 
 	RGB<float> gains;

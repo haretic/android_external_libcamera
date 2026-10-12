@@ -584,6 +584,12 @@ SimpleCameraData::SimpleCameraData(SimplePipelineHandler *pipe,
 		{ V4L2_CID_ANALOGUE_GAIN, { delays.gainDelay, false } },
 		{ V4L2_CID_EXPOSURE, { delays.exposureDelay, false } },
 	};
+	/*
+	 * The soft IPA lengthens the vertical blanking for exposures longer
+	 * than a frame. Write it ahead of the exposure, whose limit it sets.
+	 */
+	if (sensor_->controls().count(V4L2_CID_VBLANK))
+		params[V4L2_CID_VBLANK] = { delays.vblankDelay, true };
 	delayedCtrls_ = std::make_unique<DelayedControls>(sensor_->device(), params);
 
 	LOG(SimplePipeline, Debug)
@@ -892,36 +898,48 @@ int SimpleCameraData::setupFormats(V4L2SubdeviceFormat *format,
 }
 
 /*
- * Report the frame duration of the current sensor configuration in the
+ * Report the frame durations of the current sensor configuration in the
  * FrameDurationLimits control, which applications such as the Android camera
- * HAL require. The pipeline doesn't control the sensor blanking, the sensor
- * runs with the frame duration of the configured mode, so report it as the
- * only supported value.
+ * HAL require. The shortest is the configured mode's with the least vertical
+ * blanking. The soft IPA lengthens the blanking for longer exposures in low
+ * light, so with it report up to kMaxFrameDuration; otherwise the sensor runs
+ * with the shortest duration only.
  */
 void SimpleCameraData::updateFrameDurationLimits()
 {
+	/* The lowest frame rate the soft IPA slows down to, 10 fps. */
+	static constexpr int64_t kMaxFrameDuration = 100000;
+
 	ControlInfoMap::Map ctrlMap(controlInfo_.begin(), controlInfo_.end());
 	ctrlMap.erase(&controls::FrameDurationLimits);
 
 	IPACameraSensorInfo sensorInfo;
-	const std::array<uint32_t, 2> blankingIds{ V4L2_CID_HBLANK, V4L2_CID_VBLANK };
-	ControlList blanking = sensor_->getControls(blankingIds);
+	const ControlInfoMap &sensorControls = sensor_->controls();
+	const auto hblank = sensorControls.find(V4L2_CID_HBLANK);
+	const auto vblank = sensorControls.find(V4L2_CID_VBLANK);
 
 	if (!sensor_->sensorInfo(&sensorInfo) && sensorInfo.pixelRate &&
-	    blanking.contains(V4L2_CID_HBLANK) && blanking.contains(V4L2_CID_VBLANK)) {
+	    hblank != sensorControls.end() && vblank != sensorControls.end()) {
 		uint64_t lineLength = sensorInfo.outputSize.width +
-				      blanking.get(V4L2_CID_HBLANK).get<int32_t>();
-		uint64_t frameLength = sensorInfo.outputSize.height +
-				       blanking.get(V4L2_CID_VBLANK).get<int32_t>();
-		int64_t duration = lineLength * frameLength * 1000000 /
-				   sensorInfo.pixelRate;
+				      hblank->second.min().get<int32_t>();
+		auto duration = [&](int32_t blanking) {
+			uint64_t frameLength = sensorInfo.outputSize.height + blanking;
+			return static_cast<int64_t>(lineLength * frameLength * 1000000 /
+						    sensorInfo.pixelRate);
+		};
+		int64_t minDuration = duration(vblank->second.min().get<int32_t>());
+		int64_t maxDuration = minDuration;
+		if (swIsp_)
+			maxDuration = std::clamp(duration(vblank->second.max().get<int32_t>()),
+						 minDuration, std::max(minDuration, kMaxFrameDuration));
 
 		ctrlMap[&controls::FrameDurationLimits] =
-			ControlInfo(duration, duration,
-				    ControlValue(Span<const int64_t, 2>{ { duration, duration } }));
+			ControlInfo(minDuration, maxDuration,
+				    ControlValue(Span<const int64_t, 2>{ { minDuration, minDuration } }));
 
 		LOG(SimplePipeline, Debug)
-			<< "Frame duration " << duration << " us";
+			<< "Frame durations " << minDuration << " - "
+			<< maxDuration << " us";
 	}
 
 	controlInfo_ = ControlInfoMap(std::move(ctrlMap), controls::controls);
@@ -1118,6 +1136,12 @@ void SimpleCameraData::setSensorControls(const ControlList &sensorControls)
 	 */
 	if (!frameStartEmitter_) {
 		ControlList ctrls(sensorControls);
+		/* Set the blanking first, it limits the exposure. */
+		if (ctrls.contains(V4L2_CID_VBLANK)) {
+			ControlList vblank(sensor_->controls());
+			vblank.set(V4L2_CID_VBLANK, ctrls.get(V4L2_CID_VBLANK));
+			sensor_->setControls(&vblank);
+		}
 		sensor_->setControls(&ctrls);
 	}
 }
@@ -1693,6 +1717,9 @@ int SimplePipelineHandler::configure(Camera *camera, CameraConfiguration *c)
 		return data->converter_->configure(inputCfg, outputCfgs);
 	} else {
 		ipa::soft::IPAConfigInfo configInfo;
+		int ret = data->sensor_->sensorInfo(&configInfo.sensorInfo);
+		if (ret)
+			return ret;
 		configInfo.sensorControls = data->sensor_->controls();
 		return data->swIsp_->configure(inputCfg, outputCfgs, configInfo);
 	}

@@ -918,6 +918,15 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
 		controls.set(controls::ScalerCrop, cropRegion);
 	}
 
+	if (settings.getEntry(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, &entry) &&
+	    camera_->controls().count(&controls::FrameDurationLimits)) {
+		const int32_t *fps = entry.data.i32;
+		if (fps[0] > 0 && fps[1] >= fps[0])
+			controls.set(controls::FrameDurationLimits,
+				     { static_cast<int64_t>(1000000 / fps[1]),
+				       static_cast<int64_t>(1000000 / fps[0]) });
+	}
+
 	if (settings.getEntry(ANDROID_STATISTICS_FACE_DETECT_MODE, &entry) &&
 	    camera_->controls().count(&controls::draft::FaceDetectMode)) {
 		const uint8_t *data = entry.data.u8;

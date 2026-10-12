@@ -202,6 +202,7 @@ int IPASoftSimple::init(const IPASettings &settings,
 int IPASoftSimple::configure(const IPAConfigInfo &configInfo)
 {
 	sensorInfoMap_ = configInfo.sensorControls;
+	context_.sensorInfo = configInfo.sensorInfo;
 
 	const ControlInfo &exposureInfo = sensorInfoMap_.find(V4L2_CID_EXPOSURE)->second;
 	const ControlInfo &gainInfo = sensorInfoMap_.find(V4L2_CID_ANALOGUE_GAIN)->second;
@@ -218,6 +219,23 @@ int IPASoftSimple::configure(const IPAConfigInfo &configInfo)
 	if (!context_.configuration.agc.exposureMin) {
 		LOG(IPASoft, Warning) << "Minimum exposure is zero, that can't be linear";
 		context_.configuration.agc.exposureMin = 1;
+	}
+	context_.activeState.agc.exposureMax = context_.configuration.agc.exposureMax;
+
+	/*
+	 * The sensor format was just set, which puts the vertical blanking at
+	 * its default and the exposure limit at the frame length less the
+	 * sensor's exposure margin.
+	 */
+	const auto vblankInfo = sensorInfoMap_.find(V4L2_CID_VBLANK);
+	if (vblankInfo != sensorInfoMap_.end()) {
+		context_.configuration.agc.vblankMin = vblankInfo->second.min().get<int32_t>();
+		context_.configuration.agc.vblankMax = vblankInfo->second.max().get<int32_t>();
+		context_.activeState.agc.vblankMin = context_.configuration.agc.vblankMin;
+		context_.configuration.agc.exposureMargin =
+			context_.sensorInfo.outputSize.height +
+			vblankInfo->second.def().get<int32_t>() -
+			context_.configuration.agc.exposureMax;
 	}
 
 	int32_t againMin = gainInfo.min().get<int32_t>();
@@ -303,6 +321,9 @@ void IPASoftSimple::processStats(const uint32_t frame,
 
 	frameContext.sensor.exposure =
 		sensorControls.get(V4L2_CID_EXPOSURE).get<int32_t>();
+	if (sensorControls.contains(V4L2_CID_VBLANK))
+		frameContext.sensor.vblank =
+			sensorControls.get(V4L2_CID_VBLANK).get<int32_t>();
 	int32_t again = sensorControls.get(V4L2_CID_ANALOGUE_GAIN).get<int32_t>();
 	frameContext.sensor.gain = camHelper_ ? camHelper_->gain(again) : again;
 
@@ -324,6 +345,18 @@ void IPASoftSimple::processStats(const uint32_t frame,
 	ctrls.set(V4L2_CID_EXPOSURE, frameContext.sensor.exposure);
 	ctrls.set(V4L2_CID_ANALOGUE_GAIN,
 		  static_cast<int32_t>(camHelper_ ? camHelper_->gainCode(againNew) : againNew));
+
+	/*
+	 * Make the frame long enough for the exposure, and no shorter than
+	 * the frame duration limits allow.
+	 */
+	const auto &agc = context_.configuration.agc;
+	if (agc.vblankMax) {
+		int32_t vblank = frameContext.sensor.exposure + agc.exposureMargin -
+				 static_cast<int32_t>(context_.sensorInfo.outputSize.height);
+		ctrls.set(V4L2_CID_VBLANK, std::clamp(vblank, context_.activeState.agc.vblankMin,
+						      agc.vblankMax));
+	}
 
 	setSensorControls.emit(ctrls);
 }

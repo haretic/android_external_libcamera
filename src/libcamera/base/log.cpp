@@ -18,6 +18,9 @@
 #include <string.h>
 #include <string_view>
 #include <syslog.h>
+#ifdef __ANDROID__
+#include <sys/system_properties.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 #include <unordered_set>
@@ -604,6 +607,15 @@ Logger::Logger()
 
 	logSetStream(&std::cerr, wantColor);
 
+#ifdef __ANDROID__
+	/*
+	 * Android services have no standard error output, log them to logcat,
+	 * which receives the syslog output on Android.
+	 */
+	if (isatty(STDERR_FILENO) != 1)
+		logSetTarget(LoggingTargetSyslog);
+#endif
+
 	parseLogFile();
 	parseLogLevels();
 }
@@ -641,6 +653,14 @@ void Logger::parseLogFile()
 void Logger::parseLogLevels()
 {
 	const char *debug = utils::secure_getenv("LIBCAMERA_LOG_LEVELS");
+
+#ifdef __ANDROID__
+	/* Services can't be given an environment, fall back to a property. */
+	char property[PROP_VALUE_MAX];
+	if (!debug && __system_property_get("vendor.camera.libcamera.log_levels", property) > 0)
+		debug = property;
+#endif
+
 	if (!debug)
 		return;
 

@@ -1194,6 +1194,24 @@ CameraConfiguration::Status SimpleCameraConfiguration::validate()
 		status = Adjusted;
 	}
 
+	/* The software ISP produces a single processed stream. */
+	if (data_->swIsp_) {
+		bool processed = false;
+		for (auto it = config_.begin(); it != config_.end();) {
+			if (isRaw(*it) || !processed) {
+				processed |= !isRaw(*it);
+				++it;
+				continue;
+			}
+
+			LOG(SimplePipeline, Debug)
+				<< "Dropping processed stream " << it->toString()
+				<< ", the software ISP has a single output";
+			it = config_.erase(it);
+			status = Adjusted;
+		}
+	}
+
 	/* Find the largest stream sizes. */
 	Size maxProcessedStreamSize;
 	Size maxRawStreamSize;

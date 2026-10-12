@@ -160,6 +160,18 @@ int64_t componentOffset(const android::ui::PlaneLayout &layout,
 	return -1;
 }
 
+/*
+ * Return the size of the plane described by \a layout. MediaTek's mapper
+ * under-reports chroma planes, as 81920 bytes for the 240 rows of 640 bytes of
+ * a 640x480 NV21 buffer, so cover at least the rows at the stride.
+ */
+unsigned int planeSize(const android::ui::PlaneLayout &layout)
+{
+	return static_cast<unsigned int>(std::max(layout.totalSizeInBytes,
+						  layout.strideInBytes *
+						  layout.heightInSamples));
+}
+
 } /* namespace */
 
 /*
@@ -176,6 +188,15 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 	if (ret != android::OK || layouts.empty())
 		return false;
 
+	for (const auto &[i, layout] : utils::enumerate(layouts))
+		LOG(HAL, Debug)
+			<< "Gralloc plane " << i << ": offset " << layout.offsetInBytes
+			<< ", stride " << layout.strideInBytes << ", size "
+			<< layout.totalSizeInBytes << ", " << layout.widthInSamples
+			<< "x" << layout.heightInSamples << ", increment "
+			<< layout.sampleIncrementInBits << " bits, "
+			<< layout.components.size() << " components";
+
 	const auto &info = PixelFormatInfo::info(pixelFormat);
 	std::vector<PlaneInfo> planes;
 
@@ -184,7 +205,7 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 			planes.push_back({
 				static_cast<unsigned int>(layout.strideInBytes),
 				static_cast<unsigned int>(layout.offsetInBytes),
-				static_cast<unsigned int>(layout.totalSizeInBytes),
+				planeSize(layout),
 			});
 	} else if (layouts.size() == 3 && info.numPlanes() == 2 &&
 		   layouts[1].sampleIncrementInBits == 8 &&
@@ -202,7 +223,7 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 			planes.push_back({
 				static_cast<unsigned int>(layouts[i].strideInBytes),
 				static_cast<unsigned int>(layouts[i].offsetInBytes),
-				static_cast<unsigned int>(layouts[i].totalSizeInBytes),
+				planeSize(layouts[i]),
 			});
 	} else if (layouts.size() == 3 && info.numPlanes() == 2) {
 		/*
@@ -223,16 +244,10 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 			static_cast<unsigned int>(layouts[0].offsetInBytes),
 			static_cast<unsigned int>(layouts[0].totalSizeInBytes),
 		});
-		/*
-		 * MediaTek's mapper reports the size of a single chroma
-		 * component, short of the interleaved rows.
-		 */
 		planes.push_back({
 			static_cast<unsigned int>(cb.strideInBytes),
 			static_cast<unsigned int>(first),
-			static_cast<unsigned int>(std::max({ cb.totalSizeInBytes,
-							     cr.totalSizeInBytes,
-							     cb.strideInBytes * cb.heightInSamples })),
+			std::max(planeSize(cb), planeSize(cr)),
 		});
 	} else {
 		return false;

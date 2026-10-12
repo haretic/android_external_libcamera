@@ -1523,7 +1523,11 @@ void CameraDevice::sendCaptureResults()
 		captureResult.num_output_buffers = resultBuffers.size();
 		captureResult.output_buffers = resultBuffers.data();
 
-		if (descriptor->status_ == Camera3RequestDescriptor::Status::Success)
+		/*
+		 * The metadata is the one partial result. A request whose
+		 * buffer failed post-processing still has it.
+		 */
+		if (captureResult.result)
 			captureResult.partial_result = 1;
 
 		callbacks_->process_capture_result(callbacks_, &captureResult);

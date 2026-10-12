@@ -1427,11 +1427,16 @@ CameraConfiguration::Status SimpleCameraConfiguration::validate()
 		else if (bufferCount > kNumBuffersMax)
 			cfg.bufferCount = kNumBuffersMax;
 
+		/*
+		 * Like the color space, filling in an unspecified buffer count
+		 * isn't an adjustment; only clamping a requested one is.
+		 */
 		if (cfg.bufferCount != bufferCount) {
 			LOG(SimplePipeline, Debug)
 				<< "Adjusting bufferCount from " << bufferCount
 				<< " to " << cfg.bufferCount;
-			status = Adjusted;
+			if (bufferCount)
+				status = Adjusted;
 		}
 	}
 

@@ -913,7 +913,8 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
 		controls.set(controls::ScalerCrop, cropRegion);
 	}
 
-	if (settings.getEntry(ANDROID_STATISTICS_FACE_DETECT_MODE, &entry)) {
+	if (settings.getEntry(ANDROID_STATISTICS_FACE_DETECT_MODE, &entry) &&
+	    camera_->controls().count(&controls::draft::FaceDetectMode)) {
 		const uint8_t *data = entry.data.u8;
 		controls.set(controls::draft::FaceDetectMode, data[0]);
 	}

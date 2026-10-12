@@ -59,6 +59,71 @@ struct Camera3StreamConfig {
 };
 
 /*
+ * Produce NV12 streams in software from the largest NV12 configuration, for
+ * cameras with fewer processed streams than requested. JPEG streams are left
+ * alone, the encoder doesn't scale.
+ */
+void mergeCamera3StreamConfigs(std::vector<Camera3StreamConfig> &streamConfigs,
+			       const camera3_stream_t *jpegStream)
+{
+	auto hasJpeg = [jpegStream](const Camera3StreamConfig &streamConfig) {
+		return std::any_of(streamConfig.streams.begin(),
+				   streamConfig.streams.end(),
+				   [jpegStream](const auto &stream) {
+					   return stream.stream == jpegStream;
+				   });
+	};
+
+	auto source = streamConfigs.end();
+	for (auto it = streamConfigs.begin(); it != streamConfigs.end(); ++it) {
+		if (it->config.pixelFormat != formats::NV12)
+			continue;
+		if (source == streamConfigs.end() ||
+		    it->config.size.width * it->config.size.height >
+		    source->config.size.width * source->config.size.height)
+			source = it;
+	}
+	if (source == streamConfigs.end())
+		return;
+
+	const Size sourceSize = source->config.size;
+	std::vector<Camera3StreamConfig> merged;
+	std::vector<Camera3StreamConfig::Camera3Stream> mapped;
+
+	for (auto it = streamConfigs.begin(); it != streamConfigs.end(); ++it) {
+		if (it == source || it->config.pixelFormat != formats::NV12 ||
+		    hasJpeg(*it) || it->config.size.width > sourceSize.width ||
+		    it->config.size.height > sourceSize.height) {
+			merged.push_back(std::move(*it));
+			continue;
+		}
+
+		LOG(HAL, Info) << "Producing " << it->config.toString()
+			       << " from the " << sourceSize << " stream";
+
+		for (auto &stream : it->streams) {
+			stream.type = CameraStream::Type::Mapped;
+			stream.stream->usage |= GRALLOC_USAGE_SW_WRITE_OFTEN;
+			mapped.push_back(stream);
+		}
+	}
+
+	for (auto &streamConfig : merged) {
+		if (streamConfig.config.size != sourceSize ||
+		    streamConfig.config.pixelFormat != formats::NV12 ||
+		    mapped.empty())
+			continue;
+
+		streamConfig.streams[0].stream->usage |= GRALLOC_USAGE_SW_READ_OFTEN;
+		streamConfig.streams.insert(streamConfig.streams.end(),
+					    mapped.begin(), mapped.end());
+		break;
+	}
+
+	streamConfigs = std::move(merged);
+}
+
+/*
  * Reorder the configurations so that libcamera::Camera can accept them as much
  * as possible. The sort rule is as follows.
  * 1.) The configuration for NV12 request whose resolution is the largest.
@@ -706,6 +771,20 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 		streamConfigs[index].streams.push_back({ jpegStream, type });
 	}
 
+	/*
+	 * A pipeline can produce fewer processed streams than requested, the
+	 * software ISP has a single output. Validating drops the others.
+	 */
+	if (streamConfigs.size() > 1) {
+		std::unique_ptr<CameraConfiguration> trial =
+			camera_->generateConfiguration();
+		for (const auto &streamConfig : streamConfigs)
+			trial->addConfiguration(streamConfig.config);
+		trial->validate();
+		if (trial->size() < streamConfigs.size())
+			mergeCamera3StreamConfigs(streamConfigs, jpegStream);
+	}
+
 	sortCamera3StreamConfigs(streamConfigs, jpegStream);
 	for (const auto &streamConfig : streamConfigs) {
 		config->addConfiguration(streamConfig.config);
@@ -720,12 +799,11 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 			/*
 			 * The streamConfig.streams vector contains as its first
 			 * element a Direct (or Internal) stream, and then an
-			 * optional set of Mapped streams derived from the
-			 * Direct stream. Cache the Direct stream pointer, to
-			 * be used when constructing the subsequent mapped
-			 * streams.
+			 * optional set of Mapped streams derived from it.
+			 * Cache its pointer, to be used when constructing the
+			 * subsequent mapped streams.
 			 */
-			if (stream.type == CameraStream::Type::Direct)
+			if (stream.type != CameraStream::Type::Mapped)
 				sourceStream = &streams_.back();
 		}
 	}

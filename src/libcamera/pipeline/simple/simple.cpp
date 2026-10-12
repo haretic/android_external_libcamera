@@ -248,7 +248,8 @@ struct SimplePipelineInfo {
 	/*
 	 * Using Software ISP is to be enabled per driver.
 	 *
-	 * The Software ISP can't be used together with the converters.
+	 * The Software ISP can't be used together with the converters, it is
+	 * only used when none of the converters is found.
 	 */
 	bool swIspEnabled;
 };
@@ -261,7 +262,7 @@ static const SimplePipelineInfo supportedDevices[] = {
 	{ "intel-ipu6", {}, true },
 	{ "intel-ipu7", {}, true },
 	{ "j721e-csi2rx", {}, true },
-	{ "mtk-seninf", { { "mtk-mdp", 3 } }, false },
+	{ "mtk-seninf", { { "mtk-mdp", 3 } }, true },
 	{ "mxc-isi", {}, false },
 	{ "qcom-camss", {}, true },
 	{ "sun6i-csi", {}, false },
@@ -1880,17 +1881,16 @@ bool SimplePipelineHandler::matchDevice(std::shared_ptr<MediaDevice> media,
 		}
 	}
 
-	if (info.swIspEnabled) {
+	if (info.swIspEnabled && !converter_) {
 		/*
 		 * When the software ISP is enabled, the simple pipeline handler
 		 * exposes the raw stream, giving a total of two streams. This
 		 * is mutually exclusive with the presence of a converter.
 		 */
-		ASSERT(!converter_);
 		numStreams = 2;
 	}
 
-	swIspEnabled_ = info.swIspEnabled;
+	swIspEnabled_ = info.swIspEnabled && !converter_;
 	const GlobalConfiguration &configuration = cameraManager()->_d()->configuration();
 	for (const ValueNode &entry :
 	     configuration.configuration()["pipelines"]["simple"]["supported_devices"]

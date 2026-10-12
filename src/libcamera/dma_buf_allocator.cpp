@@ -100,7 +100,11 @@ DmaBufAllocator::DmaBufAllocator(DmaBufAllocatorFlags type)
 		if (!(type & info.type))
 			continue;
 
-		int ret = ::open(info.deviceNodeName, O_RDWR | O_CLOEXEC, 0);
+		/*
+		 * Allocation ioctls don't require write access, and Android only
+		 * grants read access to the DMA heaps.
+		 */
+		int ret = ::open(info.deviceNodeName, O_RDONLY | O_CLOEXEC, 0);
 		if (ret < 0) {
 			ret = errno;
 			LOG(DmaBufAllocator, Debug)

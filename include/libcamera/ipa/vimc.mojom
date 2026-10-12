@@ -8,8 +8,6 @@ module ipa.vimc;
 
 import "include/libcamera/ipa/core.mojom";
 
-const string VimcIPAFIFOPath = "/tmp/libcamera_ipa_vimc_fifo";
-
 enum IPAOperationCode {
 	IPAOperationNone,
 	IPAOperationInit,
@@ -26,6 +24,7 @@ enum IPAOperationCode {
 
 interface IPAVimcInterface {
 	init(libcamera.IPASettings settings,
+	     libcamera.SharedFD traceFd,
 	     IPAOperationCode code,
 	     [flags] TestFlag inFlags)
 	=> (int32 ret, [flags] TestFlag outFlags);
@@ -47,9 +46,9 @@ interface IPAVimcInterface {
 	 * interface functions that mimick how other pipeline handlers typically
 	 * handle parameters at runtime.
 	 */
-	[async] fillParamsBuffer(uint32 frame, uint32 bufferId);
+	[async] computeParams(uint32 frame, uint32 bufferId);
 };
 
 interface IPAVimcEventInterface {
-	paramsBufferReady(uint32 bufferId, [flags] TestFlag flags);
+	paramsComputed(uint32 bufferId, [flags] TestFlag flags);
 };

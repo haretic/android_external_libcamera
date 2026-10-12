@@ -39,7 +39,7 @@ ImageFrameGenerator::create(ImageFrames &imageFrames)
 	 * For each file in the directory, load the image,
 	 * convert it to NV12, and store the pointer.
 	 */
-	for (std::filesystem::path path : imageFrames.files) {
+	for (const auto &path : imageFrames.files) {
 		File file(path);
 		if (!file.open(File::OpenModeFlag::ReadOnly)) {
 			LOG(Virtual, Error) << "Failed to open image file " << file.fileName()
@@ -129,15 +129,16 @@ int ImageFrameGenerator::generateFrame(const Size &size, const FrameBuffer *buff
 
 	MappedFrameBuffer mappedFrameBuffer(buffer, MappedFrameBuffer::MapFlag::Write);
 
-	auto planes = mappedFrameBuffer.planes();
+	const auto &planes = mappedFrameBuffer.planes();
 
 	/* Loop only around the number of images available */
 	frameIndex_ %= imageFrameDatas_.size();
 
 	/* Write the scaledY and scaledUV to the mapped frame buffer */
 	libyuv::NV12Copy(scaledFrameDatas_[frameIndex_].Y.get(), size.width,
-			 scaledFrameDatas_[frameIndex_].UV.get(), size.width, planes[0].begin(),
-			 size.width, planes[1].begin(), size.width,
+			 scaledFrameDatas_[frameIndex_].UV.get(), size.width,
+			 planes[0].data(), size.width,
+			 planes[1].data(), size.width,
 			 size.width, size.height);
 
 	/* Proceed to the next image every 4 frames */

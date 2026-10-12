@@ -2,13 +2,15 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * test.h - libcamera test base class
+ * libcamera test base class
  */
 
 #pragma once
 
 #include <sstream>
 #include <string>
+
+#include <libcamera/base/unique_fd.h>
 
 enum TestStatus {
 	TestPass = 0,
@@ -42,4 +44,10 @@ int main(int argc, char *argv[])					\
 	Klass klass;							\
 	klass.setArgs(argc, argv);					\
 	return klass.execute();						\
+}
+
+namespace test {
+
+[[nodiscard]] libcamera::UniqueFD createTemporaryFile();
+
 }

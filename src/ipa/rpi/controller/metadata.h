@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019-2021, Raspberry Pi Ltd
  *
- * metadata.h - general metadata class
+ * general metadata class
  */
 #pragma once
 
@@ -12,6 +12,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include <libcamera/base/thread_annotations.h>
 
@@ -36,10 +37,10 @@ public:
 	}
 
 	template<typename T>
-	void set(std::string const &tag, T const &value)
+	void set(std::string const &tag, T &&value)
 	{
 		std::scoped_lock lock(mutex_);
-		data_[tag] = value;
+		data_[tag] = std::forward<T>(value);
 	}
 
 	template<typename T>
@@ -90,6 +91,12 @@ public:
 		data_.insert(other.data_.begin(), other.data_.end());
 	}
 
+	void erase(std::string const &tag)
+	{
+		std::scoped_lock lock(mutex_);
+		eraseLocked(tag);
+	}
+
 	template<typename T>
 	T *getLocked(std::string const &tag)
 	{
@@ -104,10 +111,18 @@ public:
 	}
 
 	template<typename T>
-	void setLocked(std::string const &tag, T const &value)
+	void setLocked(std::string const &tag, T &&value)
 	{
 		/* Use this only if you're holding the lock yourself. */
-		data_[tag] = value;
+		data_[tag] = std::forward<T>(value);
+	}
+
+	void eraseLocked(std::string const &tag)
+	{
+		auto it = data_.find(tag);
+		if (it == data_.end())
+			return;
+		data_.erase(it);
 	}
 
 	/*
@@ -116,6 +131,7 @@ public:
 	 * e.g. std::lock_guard<RPiController::Metadata> lock(metadata)
 	 */
 	void lock() LIBCAMERA_TSA_ACQUIRE() { mutex_.lock(); }
+	auto try_lock() LIBCAMERA_TSA_ACQUIRE() { return mutex_.try_lock(); }
 	void unlock() LIBCAMERA_TSA_RELEASE() { mutex_.unlock(); }
 
 private:

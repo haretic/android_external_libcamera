@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Red Hat
  *
- * af.cpp - IPU3 auto focus algorithm
+ * IPU3 auto focus algorithm
  */
 
 #include "af.h"
@@ -11,7 +11,6 @@
 #include <chrono>
 #include <cmath>
 #include <fcntl.h>
-#include <numeric>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -22,8 +21,6 @@
 #include <libcamera/base/log.h>
 
 #include <libcamera/ipa/core_ipa_interface.h>
-
-#include "libipa/histogram.h"
 
 /**
  * \file af.h

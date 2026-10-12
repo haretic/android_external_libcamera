@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * controller.h - ISP controller interface
+ * ISP controller interface
  */
 #pragma once
 
@@ -15,7 +15,8 @@
 #include <vector>
 #include <string>
 
-#include "libcamera/internal/yaml_parser.h"
+#include <libcamera/base/utils.h>
+#include "libcamera/internal/value_node.h"
 
 #include "camera_mode.h"
 #include "device_status.h"
@@ -41,10 +42,14 @@ public:
 		libcamera::Size agcRegions;
 		libcamera::Size agcZoneWeights;
 		libcamera::Size awbRegions;
+		libcamera::Size cacRegions;
 		libcamera::Size focusRegions;
 		unsigned int numHistogramBins;
 		unsigned int numGammaPoints;
 		unsigned int pipelineWidth;
+		bool statsInline;
+		libcamera::utils::Duration minPixelProcessingTime;
+		bool dataBufferStrided;
 	};
 
 	Controller();
@@ -60,7 +65,7 @@ public:
 	const HardwareConfig &getHardwareConfig() const;
 
 protected:
-	int createAlgorithm(const std::string &name, const libcamera::YamlObject &params);
+	int createAlgorithm(const std::string &name, const libcamera::ValueNode &params);
 
 	Metadata globalMetadata_;
 	std::vector<AlgorithmPtr> algorithms_;

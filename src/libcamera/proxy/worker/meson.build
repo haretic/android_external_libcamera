@@ -18,20 +18,10 @@ foreach mojom : ipa_mojoms
                            ],
                            env : py_build_env)
 
-    #proxy = executable(mojom['name'] + '_ipa_proxy',
-                       #[worker, libcamera_generated_ipa_headers],
-                       #install : true,
-                       #install_dir : proxy_install_dir,
-                       #dependencies : libcamera_private)
-
-
-    libcamera = shared_library(mojom['name'] + '_ipa_proxy',
-                       [worker, libcamera_generated_ipa_headers],
+    proxy = executable(mojom['name'] + '_ipa_proxy', worker,
                        install : true,
-                       name_prefix : '',
-                       build_rpath : '/',
+                       install_dir : proxy_install_dir,
                        dependencies : libcamera_private)
-
 endforeach
 
 config_h.set('IPA_PROXY_DIR',

@@ -2,11 +2,12 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * camera_lens.h - A camera lens controller
+ * A camera lens controller
  */
 #pragma once
 
 #include <memory>
+#include <stdint.h>
 #include <string>
 
 #include <libcamera/base/class.h>
@@ -26,10 +27,6 @@ public:
 	~CameraLens();
 
 	int init();
-
-	int open();
-	int close();
-
 	int setFocusPosition(int32_t position);
 
 	const std::string &model() const { return model_; }

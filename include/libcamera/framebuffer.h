@@ -2,12 +2,11 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * framebuffer.h - Frame buffer handling
+ * Frame buffer handling
  */
 
 #pragma once
 
-#include <assert.h>
 #include <limits>
 #include <memory>
 #include <stdint.h>
@@ -27,15 +26,15 @@ struct FrameMetadata {
 		FrameSuccess,
 		FrameError,
 		FrameCancelled,
+		FrameStartup,
 	};
 
 	struct Plane {
 		unsigned int bytesused;
 	};
 
-	Status status = FrameSuccess;
+	Status status;
 	unsigned int sequence;
-	unsigned int hwSequence;
 	uint64_t timestamp;
 
 	Span<Plane> planes() { return planes_; }
@@ -57,14 +56,13 @@ public:
 		SharedFD fd;
 		unsigned int offset = kInvalidOffset;
 		unsigned int length;
-		unsigned int stride;
 	};
 
-	FrameBuffer(const std::vector<Plane> &planes, unsigned int cookie = 0);
+	FrameBuffer(Span<const Plane> planes, unsigned int cookie = 0);
 	FrameBuffer(std::unique_ptr<Private> d);
 	virtual ~FrameBuffer() {}
 
-	const std::vector<Plane> &planes() const;
+	Span<const Plane> planes() const;
 	Request *request() const;
 	const FrameMetadata &metadata() const;
 

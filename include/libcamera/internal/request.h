@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * request.h - Request class private data
+ * Request class private data
  */
 
 #pragma once
@@ -10,6 +10,8 @@
 #include <chrono>
 #include <map>
 #include <memory>
+#include <stdint.h>
+#include <unordered_set>
 
 #include <libcamera/base/event_notifier.h>
 #include <libcamera/base/timer.h>
@@ -32,7 +34,9 @@ public:
 	~Private();
 
 	Camera *camera() const { return camera_; }
-	bool hasPendingBuffers() const;
+	bool hasPendingBuffers() const { return !pending_.empty(); }
+
+	ControlList &metadata() { return metadata_; }
 
 	bool completeBuffer(FrameBuffer *buffer);
 	void complete();
@@ -41,8 +45,6 @@ public:
 
 	void prepare(std::chrono::milliseconds timeout = 0ms);
 	Signal<> prepared;
-
-	ControlList recordAndGetUnnotifiedMetadata(const ControlList &metadata);
 
 private:
 	friend class PipelineHandler;
@@ -59,10 +61,9 @@ private:
 	bool prepared_ = false;
 
 	std::unordered_set<FrameBuffer *> pending_;
-	std::map<FrameBuffer *, std::unique_ptr<EventNotifier>> notifiers_;
+	std::map<FrameBuffer *, EventNotifier> notifiers_;
 	std::unique_ptr<Timer> timer_;
-
-	std::unordered_set<unsigned int> notifiedMetadata_;
+	ControlList metadata_;
 };
 
 } /* namespace libcamera */

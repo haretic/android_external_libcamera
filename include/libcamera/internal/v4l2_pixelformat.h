@@ -3,7 +3,7 @@
  * Copyright (C) 2019, Google Inc.
  * Copyright (C) 2020, Raspberry Pi Ltd
  *
- * v4l2_pixelformat.h - V4L2 Pixel Format
+ * V4L2 Pixel Format
  */
 
 #pragma once
@@ -48,6 +48,8 @@ public:
 	PixelFormat toPixelFormat(bool warn = true) const;
 	static const std::vector<V4L2PixelFormat> &
 	fromPixelFormat(const PixelFormat &pixelFormat);
+
+	bool isGenericLineBasedMetadata() const;
 
 private:
 	uint32_t fourcc_;

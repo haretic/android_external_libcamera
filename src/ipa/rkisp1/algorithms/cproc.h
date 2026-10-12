@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * cproc.h - RkISP1 Color Processing control
+ * RkISP1 Color Processing control
  */
 
 #pragma once
@@ -21,12 +21,19 @@ public:
 	ColorProcessing() = default;
 	~ColorProcessing() = default;
 
+	int init(IPAContext &context, const ValueNode &tuningData) override;
+	int configure(IPAContext &context,
+		      const IPACameraSensorInfo &configInfo) override;
 	void queueRequest(IPAContext &context, const uint32_t frame,
 			  IPAFrameContext &frameContext,
 			  const ControlList &controls) override;
 	void prepare(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
-		     rkisp1_params_cfg *params) override;
+		     RkISP1Params *params) override;
+	void process(IPAContext &context, const uint32_t frame,
+		     IPAFrameContext &frameContext,
+		     const rkisp1_stat_buffer *stats,
+		     ControlList &metadata) override;
 };
 
 } /* namespace ipa::rkisp1::algorithms */

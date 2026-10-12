@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * post_processor_yuv.cpp - Post Processor using libyuv
+ * Post Processor using libyuv
  */
 
 #include "post_processor_yuv.h"
@@ -49,7 +49,7 @@ int PostProcessorYuv::configure(const StreamConfiguration &inCfg,
 	return 0;
 }
 
-void PostProcessorYuv::process(StreamBuffer *streamBuffer)
+void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuffer)
 {
 	const FrameBuffer &source = *streamBuffer->srcBuffer;
 	CameraBuffer *destination = streamBuffer->dstBuffer.get();
@@ -72,9 +72,9 @@ void PostProcessorYuv::process(StreamBuffer *streamBuffer)
 				    sourceStride_[1],
 				    sourceSize_.width, sourceSize_.height,
 				    destination->plane(0).data(),
-				    destination->stride(0),
+				    destinationStride_[0],
 				    destination->plane(1).data(),
-				    destination->stride(1),
+				    destinationStride_[1],
 				    destinationSize_.width,
 				    destinationSize_.height,
 				    libyuv::FilterMode::kFilterBilinear);
@@ -112,6 +112,17 @@ bool PostProcessorYuv::isValidBuffers(const FrameBuffer &source,
 			<< sourceLength_[1] << "}";
 		return false;
 	}
+	if (destination.plane(0).size() < destinationLength_[0] ||
+	    destination.plane(1).size() < destinationLength_[1]) {
+		LOG(YUV, Error)
+			<< "The destination planes lengths are too small, actual size: {"
+			<< destination.plane(0).size() << ", "
+			<< destination.plane(1).size()
+			<< "}, expected size: {"
+			<< sourceLength_[0] << ", "
+			<< sourceLength_[1] << "}";
+		return false;
+	}
 
 	return true;
 }
@@ -125,7 +136,11 @@ void PostProcessorYuv::calculateLengths(const StreamConfiguration &inCfg,
 	const PixelFormatInfo &nv12Info = PixelFormatInfo::info(formats::NV12);
 	for (unsigned int i = 0; i < 2; i++) {
 		sourceStride_[i] = inCfg.stride;
+		destinationStride_[i] = nv12Info.stride(destinationSize_.width, i, 1);
+
 		sourceLength_[i] = nv12Info.planeSize(sourceSize_.height, i,
 						      sourceStride_[i]);
+		destinationLength_[i] = nv12Info.planeSize(destinationSize_.height, i,
+							   destinationStride_[i]);
 	}
 }

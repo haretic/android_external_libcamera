@@ -3,7 +3,7 @@
  * Copyright (C) 2020, Laurent Pinchart
  * Copyright 2022 NXP
  *
- * converter.h - Generic format converter interface
+ * Generic format converter interface
  */
 
 #pragma once
@@ -14,24 +14,40 @@
 #include <memory>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <libcamera/base/class.h>
+#include <libcamera/base/flags.h>
 #include <libcamera/base/signal.h>
 
 #include <libcamera/geometry.h>
+#include "libcamera/internal/v4l2_request.h"
 
 namespace libcamera {
 
 class FrameBuffer;
 class MediaDevice;
 class PixelFormat;
+class Stream;
 struct StreamConfiguration;
 
 class Converter
 {
 public:
-	Converter(MediaDevice *media);
+	enum class Feature {
+		None = 0,
+		InputCrop = (1 << 0),
+	};
+
+	using Features = Flags<Feature>;
+
+	enum class Alignment {
+		Down = 0,
+		Up,
+	};
+
+	Converter(std::shared_ptr<MediaDevice> media, Features features = Feature::None);
 	virtual ~Converter();
 
 	virtual int loadConfiguration(const std::string &filename) = 0;
@@ -41,24 +57,45 @@ public:
 	virtual std::vector<PixelFormat> formats(PixelFormat input) = 0;
 	virtual SizeRange sizes(const Size &input) = 0;
 
+	virtual Size adjustInputSize(const PixelFormat &pixFmt,
+				     const Size &size,
+				     Alignment align = Alignment::Down) = 0;
+	virtual Size adjustOutputSize(const PixelFormat &pixFmt,
+				      const Size &size,
+				      Alignment align = Alignment::Down) = 0;
+
 	virtual std::tuple<unsigned int, unsigned int>
 	strideAndFrameSize(const PixelFormat &pixelFormat, const Size &size) = 0;
 
+	virtual int validateOutput(StreamConfiguration *cfg, bool *adjusted,
+				   Alignment align = Alignment::Down) = 0;
+
 	virtual int configure(const StreamConfiguration &inputCfg,
-			      const std::vector<std::reference_wrapper<StreamConfiguration>> &outputCfgs) = 0;
-	virtual int exportBuffers(unsigned int output, unsigned int count,
+			      const std::vector<std::reference_wrapper<const StreamConfiguration>> &outputCfgs) = 0;
+	virtual bool isConfigured(const Stream *stream) const = 0;
+	virtual int exportBuffers(const Stream *stream, unsigned int count,
 				  std::vector<std::unique_ptr<FrameBuffer>> *buffers) = 0;
 
 	virtual int start() = 0;
 	virtual void stop() = 0;
 
 	virtual int queueBuffers(FrameBuffer *input,
-				 const std::map<unsigned int, FrameBuffer *> &outputs) = 0;
+				 const std::map<const Stream *, FrameBuffer *> &outputs,
+				 const V4L2Request *request = nullptr) = 0;
+
+	virtual int setInputCrop(const Stream *stream, Rectangle *rect) = 0;
+	virtual std::pair<Rectangle, Rectangle> inputCropBounds() = 0;
+	virtual std::pair<Rectangle, Rectangle> inputCropBounds(const Stream *stream) = 0;
 
 	Signal<FrameBuffer *> inputBufferReady;
 	Signal<FrameBuffer *> outputBufferReady;
 
 	const std::string &deviceNode() const { return deviceNode_; }
+
+	Features features() const { return features_; }
+
+protected:
+	Features features_;
 
 private:
 	std::string deviceNode_;
@@ -72,7 +109,7 @@ public:
 
 	const std::vector<std::string> &compatibles() const { return compatibles_; }
 
-	static std::unique_ptr<Converter> create(MediaDevice *media);
+	static std::unique_ptr<Converter> create(std::shared_ptr<MediaDevice> media);
 	static std::vector<ConverterFactoryBase *> &factories();
 	static std::vector<std::string> names();
 
@@ -81,7 +118,8 @@ private:
 
 	static void registerType(ConverterFactoryBase *factory);
 
-	virtual std::unique_ptr<Converter> createInstance(MediaDevice *media) const = 0;
+	virtual std::unique_ptr<Converter>
+	createInstance(std::shared_ptr<MediaDevice> media) const = 0;
 
 	std::string name_;
 	std::vector<std::string> compatibles_;
@@ -96,7 +134,7 @@ public:
 	{
 	}
 
-	std::unique_ptr<Converter> createInstance(MediaDevice *media) const override
+	std::unique_ptr<Converter> createInstance(std::shared_ptr<MediaDevice> media) const override
 	{
 		return std::make_unique<_Converter>(media);
 	}

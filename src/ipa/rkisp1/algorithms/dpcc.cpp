@@ -2,14 +2,14 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * dpcc.cpp - RkISP1 Defect Pixel Cluster Correction control
+ * RkISP1 Defect Pixel Cluster Correction control
  */
 
 #include "dpcc.h"
 
 #include <libcamera/base/log.h>
 
-#include "libcamera/internal/yaml_parser.h"
+#include "libcamera/internal/value_node.h"
 
 #include "linux/rkisp1-config.h"
 
@@ -45,7 +45,7 @@ DefectPixelClusterCorrection::DefectPixelClusterCorrection()
  * \copydoc libcamera::ipa::Algorithm::init
  */
 int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
-				       const YamlObject &tuningData)
+				       const ValueNode &tuningData)
 {
 	config_.mode = RKISP1_CIF_ISP_DPCC_MODE_STAGE1_ENABLE;
 	config_.output_mode = RKISP1_CIF_ISP_DPCC_OUTPUT_MODE_STAGE1_INCL_G_CENTER
@@ -55,7 +55,7 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 			? RKISP1_CIF_ISP_DPCC_SET_USE_STAGE1_USE_FIX_SET : 0;
 
 	/* Get all defined sets to apply (up to 3). */
-	const YamlObject &setsObject = tuningData["sets"];
+	const ValueNode &setsObject = tuningData["sets"];
 	if (!setsObject.isList()) {
 		LOG(RkISP1Dpcc, Error)
 			<< "'sets' parameter not found in tuning file";
@@ -71,14 +71,14 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 
 	for (std::size_t i = 0; i < setsObject.size(); ++i) {
 		struct rkisp1_cif_isp_dpcc_methods_config &method = config_.methods[i];
-		const YamlObject &set = setsObject[i];
+		const ValueNode &set = setsObject[i];
 		uint16_t value;
 
-		/* Enable set if described in YAML tuning file. */
+		/* Enable set if described in tuning data. */
 		config_.set_use |= 1 << i;
 
 		/* PG Method */
-		const YamlObject &pgObject = set["pg-factor"];
+		const ValueNode &pgObject = set["pg-factor"];
 
 		if (pgObject.contains("green")) {
 			method.method |=
@@ -97,7 +97,7 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 		}
 
 		/* RO Method */
-		const YamlObject &roObject = set["ro-limits"];
+		const ValueNode &roObject = set["ro-limits"];
 
 		if (roObject.contains("green")) {
 			method.method |=
@@ -118,7 +118,7 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 		}
 
 		/* RG Method */
-		const YamlObject &rgObject = set["rg-factor"];
+		const ValueNode &rgObject = set["rg-factor"];
 		method.rg_fac = 0;
 
 		if (rgObject.contains("green")) {
@@ -138,7 +138,7 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 		}
 
 		/* RND Method */
-		const YamlObject &rndOffsetsObject = set["rnd-offsets"];
+		const ValueNode &rndOffsetsObject = set["rnd-offsets"];
 
 		if (rndOffsetsObject.contains("green")) {
 			method.method |=
@@ -158,7 +158,7 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 				RKISP1_CIF_ISP_DPCC_RND_OFFS_n_RB(i, value);
 		}
 
-		const YamlObject &rndThresholdObject = set["rnd-threshold"];
+		const ValueNode &rndThresholdObject = set["rnd-threshold"];
 		method.rnd_thresh = 0;
 
 		if (rndThresholdObject.contains("green")) {
@@ -180,7 +180,7 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 		}
 
 		/* LC Method */
-		const YamlObject &lcThresholdObject = set["line-threshold"];
+		const ValueNode &lcThresholdObject = set["line-threshold"];
 		method.line_thresh = 0;
 
 		if (lcThresholdObject.contains("green")) {
@@ -201,7 +201,7 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 				RKISP1_CIF_ISP_DPCC_LINE_THRESH_RB(value);
 		}
 
-		const YamlObject &lcTMadFactorObject = set["line-mad-factor"];
+		const ValueNode &lcTMadFactorObject = set["line-mad-factor"];
 		method.line_mad_fac = 0;
 
 		if (lcTMadFactorObject.contains("green")) {
@@ -232,16 +232,14 @@ int DefectPixelClusterCorrection::init([[maybe_unused]] IPAContext &context,
 void DefectPixelClusterCorrection::prepare([[maybe_unused]] IPAContext &context,
 					   const uint32_t frame,
 					   [[maybe_unused]] IPAFrameContext &frameContext,
-					   rkisp1_params_cfg *params)
+					   RkISP1Params *params)
 {
 	if (frame > 0)
 		return;
 
-	params->others.dpcc_config = config_;
-
-	params->module_en_update |= RKISP1_CIF_ISP_MODULE_DPCC;
-	params->module_ens |= RKISP1_CIF_ISP_MODULE_DPCC;
-	params->module_cfg_update |= RKISP1_CIF_ISP_MODULE_DPCC;
+	auto config = params->block<BlockType::Dpcc>();
+	config.setEnabled(true);
+	*config = config_;
 }
 
 REGISTER_IPA_ALGORITHM(DefectPixelClusterCorrection, "DefectPixelClusterCorrection")

@@ -52,17 +52,12 @@ protected:
 		if (request->status() != Request::RequestComplete)
 			return;
 
-		const Request::BufferMap &buffers = request->buffers();
-
 		completeRequestsCount_++;
 
-		/* Create a new request. */
-		const Stream *stream = buffers.begin()->first;
-		FrameBuffer *buffer = buffers.begin()->second;
-
-		request->reuse();
-		request->addBuffer(stream, buffer);
+		request->reuse(Request::ReuseBuffers);
 		camera_->queueRequest(request);
+
+		dispatcher_->interrupt();
 	}
 
 	int init() override
@@ -75,6 +70,8 @@ protected:
 			std::cout << "Failed to generate default configuration" << std::endl;
 			return TestFail;
 		}
+
+		dispatcher_ = Thread::current()->eventDispatcher();
 
 		return TestPass;
 	}
@@ -133,17 +130,20 @@ protected:
 			}
 		}
 
-		EventDispatcher *dispatcher = Thread::current()->eventDispatcher();
+		const unsigned int nFrames = cfg.bufferCount * 2;
 
 		Timer timer;
-		timer.start(1000ms);
-		while (timer.isRunning())
-			dispatcher->processEvents();
+		timer.start(500ms * nFrames);
+		while (timer.isRunning()) {
+			dispatcher_->processEvents();
+			if (completeRequestsCount_ > nFrames)
+				break;
+		}
 
-		if (completeRequestsCount_ < cfg.bufferCount * 2) {
+		if (completeRequestsCount_ < nFrames) {
 			std::cout << "Failed to capture enough frames (got "
 				  << completeRequestsCount_ << " expected at least "
-				  << cfg.bufferCount * 2 << ")" << std::endl;
+				  << nFrames << ")" << std::endl;
 			return TestFail;
 		}
 
@@ -161,6 +161,8 @@ protected:
 	}
 
 private:
+	EventDispatcher *dispatcher_;
+
 	std::vector<std::unique_ptr<Request>> requests_;
 
 	unsigned int completeBuffersCount_;

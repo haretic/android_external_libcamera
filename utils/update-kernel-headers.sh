@@ -9,7 +9,7 @@ if [ $# != 1 ] ; then
 fi
 
 header_dir="$(dirname "$(realpath "$0")")/../include/linux"
-kernel_dir="$1"
+kernel_dir="$(realpath "$1")"
 
 # Bail out if the directory doesn't contain kernel sources
 line=$(head -3 "${kernel_dir}/Kbuild" 2>/dev/null | tail -1)
@@ -18,7 +18,7 @@ if [ "$line" != "# Kbuild for top-level directory of the kernel" ] ; then
 	exit 1
 fi
 
-if [ ! -d "${kernel_dir}/.git" ] ; then
+if [ ! -e "${kernel_dir}/.git" ] ; then
 	echo "Directory ${kernel_dir} doesn't contain a git tree"
 	exit 1
 fi
@@ -46,12 +46,20 @@ set +e
 
 # Copy the headers
 headers="
+	drm/drm.h
 	drm/drm_fourcc.h
+	drm/drm_mode.h
+	linux/bits.h
 	linux/dma-buf.h
 	linux/dma-heap.h
+	linux/dw100.h
 	linux/media-bus-format.h
 	linux/media.h
+	linux/media/arm/mali-c55-config.h
+	linux/media/v4l2-isp.h
 	linux/rkisp1-config.h
+	linux/stddef.h
+	linux/udmabuf.h
 	linux/v4l2-common.h
 	linux/v4l2-controls.h
 	linux/v4l2-mediabus.h
@@ -60,8 +68,10 @@ headers="
 "
 
 for header in $headers ; do
-	name=$(basename "${header}")
-	cp "${install_dir}/usr/include/${header}" "${header_dir}/${name}"
+	name="${header#*/}"
+	dest="${header_dir}/${name}"
+	mkdir -p "$(dirname "$dest")"
+	cp "${install_dir}/usr/include/${header}" "${dest}"
 done
 
 # The IPU3 header is a special case, as it's stored in staging. Handle it

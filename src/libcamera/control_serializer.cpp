@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * control_serializer.cpp - Control (de)serializer
+ * Control (de)serializer
  */
 
 #include "libcamera/internal/control_serializer.h"
@@ -144,7 +144,7 @@ void ControlSerializer::reset()
 
 size_t ControlSerializer::binarySize(const ControlValue &value)
 {
-	return sizeof(ControlType) + value.data().size_bytes();
+	return value.data().size_bytes();
 }
 
 size_t ControlSerializer::binarySize(const ControlInfo &info)
@@ -184,7 +184,7 @@ size_t ControlSerializer::binarySize(const ControlInfoMap &infoMap)
 size_t ControlSerializer::binarySize(const ControlList &list)
 {
 	size_t size = sizeof(struct ipa_controls_header)
-		    + list.size() * sizeof(struct ipa_control_value_entry);
+		    + list.size() * sizeof(struct ipa_control_list_entry);
 
 	for (const auto &ctrl : list)
 		size += binarySize(ctrl.second);
@@ -195,16 +195,17 @@ size_t ControlSerializer::binarySize(const ControlList &list)
 void ControlSerializer::store(const ControlValue &value,
 			      ByteStreamBuffer &buffer)
 {
-	const ControlType type = value.type();
-	buffer.write(&type);
 	buffer.write(value.data());
 }
 
-void ControlSerializer::store(const ControlInfo &info, ByteStreamBuffer &buffer)
+void ControlSerializer::populateControlValueEntry(struct ipa_control_value_entry &entry,
+						  const ControlValue &value,
+						  uint32_t offset)
 {
-	store(info.min(), buffer);
-	store(info.max(), buffer);
-	store(info.def(), buffer);
+	entry.type = value.type();
+	entry.is_array = value.isArray();
+	entry.count = value.numElements();
+	entry.offset = offset;
 }
 
 /**
@@ -280,10 +281,18 @@ int ControlSerializer::serialize(const ControlInfoMap &infoMap,
 		struct ipa_control_info_entry entry;
 		entry.id = id->id();
 		entry.type = id->type();
-		entry.offset = values.offset();
-		entries.write(&entry);
+		entry.direction = static_cast<ControlId::DirectionFlags::Type>(id->direction());
 
-		store(info, values);
+		populateControlValueEntry(entry.min, info.min(), values.offset());
+		store(info.min(), values);
+
+		populateControlValueEntry(entry.max, info.max(), values.offset());
+		store(info.max(), values);
+
+		populateControlValueEntry(entry.def, info.def(), values.offset());
+		store(info.def(), values);
+
+		entries.write(&entry);
 	}
 
 	if (buffer.overflow())
@@ -340,7 +349,7 @@ int ControlSerializer::serialize(const ControlList &list,
 	else
 		idMapType = IPA_CONTROL_ID_MAP_V4L2;
 
-	size_t entriesSize = list.size() * sizeof(struct ipa_control_value_entry);
+	size_t entriesSize = list.size() * sizeof(struct ipa_control_list_entry);
 	size_t valuesSize = 0;
 	for (const auto &ctrl : list)
 		valuesSize += binarySize(ctrl.second);
@@ -364,12 +373,9 @@ int ControlSerializer::serialize(const ControlList &list,
 		unsigned int id = ctrl.first;
 		const ControlValue &value = ctrl.second;
 
-		struct ipa_control_value_entry entry;
+		struct ipa_control_list_entry entry;
 		entry.id = id;
-		entry.type = value.type();
-		entry.is_array = value.isArray();
-		entry.count = value.numElements();
-		entry.offset = values.offset();
+		populateControlValueEntry(entry.value, value, values.offset());
 		entries.write(&entry);
 
 		store(value, values);
@@ -382,27 +388,16 @@ int ControlSerializer::serialize(const ControlList &list,
 }
 
 ControlValue ControlSerializer::loadControlValue(ByteStreamBuffer &buffer,
+						 ControlType type,
 						 bool isArray,
 						 unsigned int count)
 {
-	ControlType type;
-	buffer.read(&type);
-
 	ControlValue value;
 
 	value.reserve(type, isArray, count);
 	buffer.read(value.data());
 
 	return value;
-}
-
-ControlInfo ControlSerializer::loadControlInfo(ByteStreamBuffer &b)
-{
-	ControlValue min = loadControlValue(b);
-	ControlValue max = loadControlValue(b);
-	ControlValue def = loadControlValue(b);
-
-	return ControlInfo(min, max, def);
 }
 
 /**
@@ -482,8 +477,7 @@ ControlInfoMap ControlSerializer::deserialize<ControlInfoMap>(ByteStreamBuffer &
 
 	ControlInfoMap::Map ctrls;
 	for (unsigned int i = 0; i < hdr->entries; ++i) {
-		const struct ipa_control_info_entry *entry =
-			entries.read<decltype(*entry)>();
+		const auto *entry = entries.read<const ipa_control_info_entry>();
 		if (!entry) {
 			LOG(Serializer, Error) << "Out of data";
 			return {};
@@ -493,27 +487,60 @@ ControlInfoMap ControlSerializer::deserialize<ControlInfoMap>(ByteStreamBuffer &
 
 		/* If we're using a local id map, populate it. */
 		if (localIdMap) {
+			ControlId::DirectionFlags flags{
+				static_cast<ControlId::Direction>(entry->direction)
+			};
+
 			/**
 			 * \todo Find a way to preserve the control name for
 			 * debugging purpose.
 			 */
 			controlIds_.emplace_back(std::make_unique<ControlId>(entry->id,
-									     "", type));
+									     "", "local", type,
+									     flags));
 			(*localIdMap)[entry->id] = controlIds_.back().get();
 		}
 
 		const ControlId *controlId = idMap->at(entry->id);
 		ASSERT(controlId);
 
-		if (entry->offset != values.offset()) {
+		const ipa_control_value_entry &min_entry = entry->min;
+		const ipa_control_value_entry &max_entry = entry->max;
+		const ipa_control_value_entry &def_entry = entry->def;
+
+		if (min_entry.offset != values.offset()) {
 			LOG(Serializer, Error)
-				<< "Bad data, entry offset mismatch (entry "
+				<< "Bad data, entry offset mismatch (min entry "
 				<< i << ")";
 			return {};
 		}
+		ControlValue min =
+			loadControlValue(values, static_cast<ControlType>(min_entry.type),
+					 min_entry.is_array, min_entry.count);
+
+		if (max_entry.offset != values.offset()) {
+			LOG(Serializer, Error)
+				<< "Bad data, entry offset mismatch (max entry "
+				<< i << ")";
+			return {};
+		}
+		ControlValue max =
+			loadControlValue(values, static_cast<ControlType>(max_entry.type),
+					 max_entry.is_array, max_entry.count);
+
+		if (def_entry.offset != values.offset()) {
+			LOG(Serializer, Error)
+				<< "Bad data, entry offset mismatch (def entry "
+				<< i << ")";
+			return {};
+		}
+		ControlValue def =
+			loadControlValue(values, static_cast<ControlType>(def_entry.type),
+					 def_entry.is_array, def_entry.count);
+
 
 		/* Create and store the ControlInfo. */
-		ctrls.emplace(controlId, loadControlInfo(values));
+		ctrls.emplace(controlId, ControlInfo(min, max, def));
 	}
 
 	/*
@@ -595,8 +622,10 @@ ControlList ControlSerializer::deserialize<ControlList>(ByteStreamBuffer &buffer
 
 		case IPA_CONTROL_ID_MAP_V4L2:
 		default:
-			LOG(Serializer, Fatal)
-				<< "A list of V4L2 controls requires an ControlInfoMap";
+			if (hdr->entries > 0)
+				LOG(Serializer, Fatal)
+					<< "A list of V4L2 controls requires a ControlInfoMap";
+
 			return {};
 		}
 	}
@@ -610,12 +639,12 @@ ControlList ControlSerializer::deserialize<ControlList>(ByteStreamBuffer &buffer
 	ControlList ctrls(*idMap);
 
 	for (unsigned int i = 0; i < hdr->entries; ++i) {
-		const struct ipa_control_value_entry *entry =
-			entries.read<decltype(*entry)>();
-		if (!entry) {
+		auto *list_entry = entries.read<const ipa_control_list_entry>();
+		if (!list_entry) {
 			LOG(Serializer, Error) << "Out of data";
 			return {};
 		}
+		const ipa_control_value_entry *entry = &list_entry->value;
 
 		if (entry->offset != values.offset()) {
 			LOG(Serializer, Error)
@@ -624,8 +653,9 @@ ControlList ControlSerializer::deserialize<ControlList>(ByteStreamBuffer &buffer
 			return {};
 		}
 
-		ctrls.set(entry->id,
-			  loadControlValue(values, entry->is_array, entry->count));
+		ctrls.set(list_entry->id,
+			  loadControlValue(values, static_cast<ControlType>(entry->type),
+					   entry->is_array, entry->count));
 	}
 
 	return ctrls;

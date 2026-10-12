@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * v4l2_videodevice.cpp - V4L2 Video Device
+ * V4L2 Video Device
  */
 
 #include "libcamera/internal/v4l2_videodevice.h"
@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <array>
 #include <fcntl.h>
-#include <iomanip>
 #include <sstream>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -31,6 +30,7 @@
 #include "libcamera/internal/framebuffer.h"
 #include "libcamera/internal/media_device.h"
 #include "libcamera/internal/media_object.h"
+#include "libcamera/internal/v4l2_request.h"
 
 /**
  * \file v4l2_videodevice.h
@@ -172,8 +172,8 @@ LOG_DECLARE_CATEGORY(V4L2)
  * will be populated as the cache is used. This is typically used to implement
  * buffer import, with buffers added to the cache as they are queued.
  */
-SimpleV4L2BufferCache::SimpleV4L2BufferCache(unsigned int numEntries, unsigned int offset)
-	: lastUsedCounter_(1), missCounter_(0), offset_(offset)
+V4L2BufferCache::V4L2BufferCache(unsigned int numEntries)
+	: lastUsedCounter_(1), missCounter_(0)
 {
 	cache_.resize(numEntries);
 }
@@ -186,18 +186,16 @@ SimpleV4L2BufferCache::SimpleV4L2BufferCache(unsigned int numEntries, unsigned i
  * implement buffer export, with all buffers added to the cache when they are
  * allocated.
  */
-SimpleV4L2BufferCache::SimpleV4L2BufferCache(
-	const std::vector<std::unique_ptr<FrameBuffer>> &buffers,
-	unsigned int offset)
-	: lastUsedCounter_(1), missCounter_(0), offset_(offset)
+V4L2BufferCache::V4L2BufferCache(const std::vector<std::unique_ptr<FrameBuffer>> &buffers)
+	: lastUsedCounter_(1), missCounter_(0)
 {
 	for (const std::unique_ptr<FrameBuffer> &buffer : buffers)
 		cache_.emplace_back(true,
-				    lastUsedCounter_.fetch_add(1, std::memory_order_acq_rel),
+				    lastUsedCounter_++,
 				    *buffer.get());
 }
 
-SimpleV4L2BufferCache::~SimpleV4L2BufferCache()
+V4L2BufferCache::~V4L2BufferCache()
 {
 	if (missCounter_ > cache_.size())
 		LOG(V4L2, Debug) << "Cache misses: " << missCounter_;
@@ -206,9 +204,9 @@ SimpleV4L2BufferCache::~SimpleV4L2BufferCache()
 /**
  * \brief Check if all the entries in the cache are unused
  */
-bool SimpleV4L2BufferCache::isEmpty() const
+bool V4L2BufferCache::isEmpty() const
 {
-	for (auto const &entry : cache_) {
+	for (const auto &entry : cache_) {
 		if (!entry.free_)
 			return false;
 	}
@@ -229,7 +227,7 @@ bool SimpleV4L2BufferCache::isEmpty() const
  * \return The index of the best V4L2 buffer, or -ENOENT if no free V4L2 buffer
  * is available
  */
-int SimpleV4L2BufferCache::get(const FrameBuffer &buffer, [[maybe_unused]] uint32_t userId)
+int V4L2BufferCache::get(const FrameBuffer &buffer)
 {
 	bool hit = false;
 	int use = -1;
@@ -254,47 +252,44 @@ int SimpleV4L2BufferCache::get(const FrameBuffer &buffer, [[maybe_unused]] uint3
 		}
 	}
 
-	if (!hit) {
-		//LOG(V4L2, Error) << "Miss " << format_;
+	if (!hit)
 		missCounter_++;
-	}
 
 	if (use < 0)
 		return -ENOENT;
 
 	cache_[use] = Entry(false,
-			    lastUsedCounter_.fetch_add(1, std::memory_order_acq_rel),
+			    lastUsedCounter_++,
 			    buffer);
 
-	return use + offset_;
+	return use;
 }
 
 /**
  * \brief Mark buffer \a index as free in the cache
  * \param[in] index The V4L2 buffer index
  */
-void SimpleV4L2BufferCache::put(unsigned int offsetedIdx)
+void V4L2BufferCache::put(unsigned int index)
 {
-	unsigned int index = offsetedIdx - offset_;
 	ASSERT(index < cache_.size());
 	cache_[index].free_ = true;
 }
 
-SimpleV4L2BufferCache::Entry::Entry()
+V4L2BufferCache::Entry::Entry()
 	: free_(true), lastUsed_(0)
 {
 }
 
-SimpleV4L2BufferCache::Entry::Entry(bool free, uint64_t lastUsed, const FrameBuffer &buffer)
+V4L2BufferCache::Entry::Entry(bool free, uint64_t lastUsed, const FrameBuffer &buffer)
 	: free_(free), lastUsed_(lastUsed)
 {
 	for (const FrameBuffer::Plane &plane : buffer.planes())
 		planes_.emplace_back(plane);
 }
 
-bool SimpleV4L2BufferCache::Entry::operator==(const FrameBuffer &buffer) const
+bool V4L2BufferCache::Entry::operator==(const FrameBuffer &buffer) const
 {
-	const std::vector<FrameBuffer::Plane> &planes = buffer.planes();
+	Span<const FrameBuffer::Plane> planes = buffer.planes();
 
 	if (planes_.size() != planes.size())
 		return false;
@@ -435,40 +430,13 @@ bool SimpleV4L2BufferCache::Entry::operator==(const FrameBuffer &buffer) const
  * \brief Assemble and return a string describing the format
  * \return A string describing the V4L2DeviceFormat
  */
-const std::string V4L2DeviceFormat::toString() const
+std::string V4L2DeviceFormat::toString() const
 {
 	std::stringstream ss;
 	ss << *this;
 
 	return ss.str();
 }
-
-/**
- * \brief Compare V4L2DeviceFormat for equality
- * \return True if the two formats are identical, false otherwise
- */
-bool operator==(const V4L2DeviceFormat &lhs, const V4L2DeviceFormat &rhs)
-{
-	if (!(lhs.fourcc == rhs.fourcc &&
-	      lhs.size == rhs.size &&
-	      lhs.colorSpace == rhs.colorSpace &&
-	      lhs.planesCount == rhs.planesCount))
-		return false;
-
-	for (unsigned int i = 0; i < lhs.planesCount; ++i) {
-		if (lhs.planes[i].size != rhs.planes[i].size ||
-		    lhs.planes[i].bpl != rhs.planes[i].bpl)
-			return false;
-	}
-
-	return true;
-}
-
-/**
- * \fn bool operator!=(const V4L2DeviceFormat &lhs, const V4L2DeviceFormat &rhs)
- * \brief Comparetwo formats for inequality
- * \return True if the two formats are not identical, false otherwise
- */
 
 /**
  * \brief Insert a text representation of a V4L2DeviceFormat into an output
@@ -479,7 +447,8 @@ bool operator==(const V4L2DeviceFormat &lhs, const V4L2DeviceFormat &rhs)
  */
 std::ostream &operator<<(std::ostream &out, const V4L2DeviceFormat &f)
 {
-	out << f.size << "-" << f.fourcc;
+	out << f.size << "-" << f.fourcc << "/"
+	    << ColorSpace::toString(f.colorSpace);
 	return out;
 }
 
@@ -565,9 +534,8 @@ std::ostream &operator<<(std::ostream &out, const V4L2DeviceFormat &f)
  * \param[in] deviceNode The file-system path to the video device node
  */
 V4L2VideoDevice::V4L2VideoDevice(const std::string &deviceNode)
-	: V4L2Device(deviceNode), cache_(nullptr), formatInfo_(nullptr),
-	  fdBufferNotifier_(nullptr), state_(State::Stopped),
-	  watchdogDuration_(0.0)
+	: V4L2Device(deviceNode), formatInfo_(nullptr), cache_(nullptr),
+	  state_(State::Stopped), watchdogDuration_(0.0)
 {
 	/*
 	 * We default to an MMAP based CAPTURE video device, however this will
@@ -657,7 +625,7 @@ int V4L2VideoDevice::open()
 		return -EINVAL;
 	}
 
-	fdBufferNotifier_ = new EventNotifier(fd(), notifierType);
+	fdBufferNotifier_ = std::make_unique<EventNotifier>(fd(), notifierType);
 	fdBufferNotifier_->activated.connect(this, &V4L2VideoDevice::bufferAvailable);
 	fdBufferNotifier_->setEnabled(false);
 
@@ -741,20 +709,12 @@ int V4L2VideoDevice::open(SharedFD handle, enum v4l2_buf_type type)
 			    ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
 			    : V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		break;
-	case V4L2_BUF_TYPE_META_OUTPUT:
-		notifierType = EventNotifier::Write;
-		bufferType_ = V4L2_BUF_TYPE_META_OUTPUT;
-		break;
-	case V4L2_BUF_TYPE_META_CAPTURE:
-		notifierType = EventNotifier::Read;
-		bufferType_ = V4L2_BUF_TYPE_META_CAPTURE;
-		break;
 	default:
 		LOG(V4L2, Error) << "Unsupported buffer type";
 		return -EINVAL;
 	}
 
-	fdBufferNotifier_ = new EventNotifier(fd(), notifierType);
+	fdBufferNotifier_ = std::make_unique<EventNotifier>(fd(), notifierType);
 	fdBufferNotifier_->activated.connect(this, &V4L2VideoDevice::bufferAvailable);
 	fdBufferNotifier_->setEnabled(false);
 
@@ -799,7 +759,7 @@ void V4L2VideoDevice::close()
 		return;
 
 	releaseBuffers();
-	delete fdBufferNotifier_;
+	fdBufferNotifier_.reset();
 
 	formatInfo_ = nullptr;
 
@@ -843,12 +803,19 @@ std::string V4L2VideoDevice::logPrefix() const
  */
 int V4L2VideoDevice::getFormat(V4L2DeviceFormat *format)
 {
-	if (caps_.isMeta())
-		return getFormatMeta(format);
-	else if (caps_.isMultiplanar())
-		return getFormatMultiplane(format);
-	else
+	switch (bufferType_) {
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
 		return getFormatSingleplane(format);
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
+		return getFormatMultiplane(format);
+	case V4L2_BUF_TYPE_META_CAPTURE:
+	case V4L2_BUF_TYPE_META_OUTPUT:
+		return getFormatMeta(format);
+	default:
+		return -EINVAL;
+	}
 }
 
 /**
@@ -863,16 +830,19 @@ int V4L2VideoDevice::getFormat(V4L2DeviceFormat *format)
  */
 int V4L2VideoDevice::tryFormat(V4L2DeviceFormat *format)
 {
-	if (caps_.isMeta())
+	switch (bufferType_) {
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
+		return trySetFormatSingleplane(format, false);
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
+		return trySetFormatMultiplane(format, false);
+	case V4L2_BUF_TYPE_META_CAPTURE:
+	case V4L2_BUF_TYPE_META_OUTPUT:
 		return trySetFormatMeta(format, false);
-	else
-		return trySetFormatVideo(format, false);
-}
-
-void V4L2VideoDevice::cacheFormat(V4L2DeviceFormat *format)
-{
-	format_ = *format;
-	formatInfo_ = &PixelFormatInfo::info(format_.fourcc);
+	default:
+		return -EINVAL;
+	}
 }
 
 /**
@@ -886,38 +856,32 @@ void V4L2VideoDevice::cacheFormat(V4L2DeviceFormat *format)
  */
 int V4L2VideoDevice::setFormat(V4L2DeviceFormat *format)
 {
-	int ret = 0;
-	if (caps_.isMeta())
+	int ret;
+
+	switch (bufferType_) {
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE:
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT:
+		ret = trySetFormatSingleplane(format, true);
+		break;
+	case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
+	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
+		ret = trySetFormatMultiplane(format, true);
+		break;
+	case V4L2_BUF_TYPE_META_CAPTURE:
+	case V4L2_BUF_TYPE_META_OUTPUT:
 		ret = trySetFormatMeta(format, true);
-	else
-		ret = trySetFormatVideo(format, true);
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
 
 	/* Cache the set format on success. */
 	if (ret)
 		return ret;
 
-	cacheFormat(format);
-
-	return 0;
-}
-
-/**
- * \brief Configure an image format on the V4L2 video device
- * \param[inout] format The image format to apply to the video device
- *
- * Same like \ref V4L2VideoDevice::setFormat, but only for video capture /
- * output device. Useful for M2M device with both meta and video capabilities.
- *
- * \return 0 on success or a negative error code otherwise
- */
-int V4L2VideoDevice::setFormatVideo(V4L2DeviceFormat *format)
-{
-	int ret = trySetFormatVideo(format, true);
-	/* Cache the set format on success. */
-	if (ret)
-		return ret;
-
-	cacheFormat(format);
+	format_ = *format;
+	formatInfo_ = &PixelFormatInfo::info(format_.fourcc);
 
 	return 0;
 }
@@ -925,7 +889,7 @@ int V4L2VideoDevice::setFormatVideo(V4L2DeviceFormat *format)
 int V4L2VideoDevice::getFormatMeta(V4L2DeviceFormat *format)
 {
 	struct v4l2_format v4l2Format = {};
-	struct v4l2_meta_format *pix = &v4l2Format.fmt.meta;
+	struct v4l2_meta_format *meta = &v4l2Format.fmt.meta;
 	int ret;
 
 	v4l2Format.type = bufferType_;
@@ -935,25 +899,42 @@ int V4L2VideoDevice::getFormatMeta(V4L2DeviceFormat *format)
 		return ret;
 	}
 
-	format->size.width = 0;
-	format->size.height = 0;
-	format->fourcc = V4L2PixelFormat(pix->dataformat);
+	format->fourcc = V4L2PixelFormat(meta->dataformat);
+	format->planes[0].size = meta->buffersize;
 	format->planesCount = 1;
-	format->planes[0].bpl = pix->buffersize;
-	format->planes[0].size = pix->buffersize;
+
+	bool genericLineBased = caps_.isMetaCapture() &&
+				format->fourcc.isGenericLineBasedMetadata();
+
+	if (genericLineBased) {
+		format->size.width = meta->width;
+		format->size.height = meta->height;
+		format->planes[0].bpl = meta->bytesperline;
+	} else {
+		format->size.width = 0;
+		format->size.height = 0;
+		format->planes[0].bpl = meta->buffersize;
+	}
 
 	return 0;
 }
 
 int V4L2VideoDevice::trySetFormatMeta(V4L2DeviceFormat *format, bool set)
 {
+	bool genericLineBased = caps_.isMetaCapture() &&
+				format->fourcc.isGenericLineBasedMetadata();
 	struct v4l2_format v4l2Format = {};
-	struct v4l2_meta_format *pix = &v4l2Format.fmt.meta;
+	struct v4l2_meta_format *meta = &v4l2Format.fmt.meta;
 	int ret;
 
 	v4l2Format.type = bufferType_;
-	pix->dataformat = format->fourcc;
-	pix->buffersize = format->planes[0].size;
+	meta->dataformat = format->fourcc;
+	meta->buffersize = format->planes[0].size;
+	if (genericLineBased) {
+		meta->width = format->size.width;
+		meta->height = format->size.height;
+		meta->bytesperline = format->planes[0].bpl;
+	}
 	ret = ioctl(set ? VIDIOC_S_FMT : VIDIOC_TRY_FMT, &v4l2Format);
 	if (ret) {
 		LOG(V4L2, Error)
@@ -966,21 +947,20 @@ int V4L2VideoDevice::trySetFormatMeta(V4L2DeviceFormat *format, bool set)
 	 * Return to caller the format actually applied on the video device,
 	 * which might differ from the requested one.
 	 */
-	format->size.width = 0;
-	format->size.height = 0;
-	format->fourcc = V4L2PixelFormat(pix->dataformat);
+	format->fourcc = V4L2PixelFormat(meta->dataformat);
 	format->planesCount = 1;
-	format->planes[0].bpl = pix->buffersize;
-	format->planes[0].size = pix->buffersize;
+	format->planes[0].size = meta->buffersize;
+	if (genericLineBased) {
+		format->size.width = meta->width;
+		format->size.height = meta->height;
+		format->planes[0].bpl = meta->bytesperline;
+	} else {
+		format->size.width = 0;
+		format->size.height = 0;
+		format->planes[0].bpl = meta->buffersize;
+	}
 
 	return 0;
-}
-
-int V4L2VideoDevice::trySetFormatVideo(V4L2DeviceFormat *format, bool set)
-{
-	if (caps_.isMultiplanar())
-		return trySetFormatMultiplane(format, set);
-	return trySetFormatSingleplane(format, set);
 }
 
 template<typename T>
@@ -1259,6 +1239,38 @@ std::vector<SizeRange> V4L2VideoDevice::enumSizes(V4L2PixelFormat pixelFormat)
 }
 
 /**
+ * \brief Get the selection rectangle for \a target
+ * \param[in] target The selection target defined by the V4L2_SEL_TGT_* flags
+ * \param[out] rect The selection rectangle to retrieve
+ *
+ * \todo Define a V4L2SelectionTarget enum for the selection target
+ *
+ * \return 0 on success or a negative error code otherwise
+ */
+int V4L2VideoDevice::getSelection(unsigned int target, Rectangle *rect)
+{
+	struct v4l2_selection sel = {};
+
+	sel.type = bufferType_;
+	sel.target = target;
+	sel.flags = 0;
+
+	int ret = ioctl(VIDIOC_G_SELECTION, &sel);
+	if (ret < 0) {
+		LOG(V4L2, Error) << "Unable to get rectangle " << target
+				 << ": " << strerror(-ret);
+		return ret;
+	}
+
+	rect->x = sel.r.left;
+	rect->y = sel.r.top;
+	rect->width = sel.r.width;
+	rect->height = sel.r.height;
+
+	return 0;
+}
+
+/**
  * \brief Set a selection rectangle \a rect for \a target
  * \param[in] target The selection target defined by the V4L2_SEL_TGT_* flags
  * \param[inout] rect The selection rectangle to be applied
@@ -1315,7 +1327,8 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
 
 	if (rb.count < count) {
 		LOG(V4L2, Error)
-			<< "Not enough buffers provided by V4L2VideoDevice";
+			<< "Not enough buffers provided by V4L2VideoDevice. Wanted "
+			<< count << ", got " << rb.count;
 		requestBuffers(0, memoryType);
 		return -ENOMEM;
 	}
@@ -1360,7 +1373,7 @@ int V4L2VideoDevice::allocateBuffers(unsigned int count,
 	if (ret < 0)
 		return ret;
 
-	cache_ = new SimpleV4L2BufferCache(*buffers);
+	cache_ = std::make_unique<V4L2BufferCache>(*buffers);
 	memoryType_ = V4L2_MEMORY_MMAP;
 
 	return ret;
@@ -1585,7 +1598,7 @@ int V4L2VideoDevice::importBuffers(unsigned int count)
 	if (ret)
 		return ret;
 
-	cache_ = new SimpleV4L2BufferCache(count);
+	cache_ = std::make_unique<V4L2BufferCache>(count);
 
 	LOG(V4L2, Debug) << "Prepared to import " << count << " buffers";
 
@@ -1607,8 +1620,7 @@ int V4L2VideoDevice::releaseBuffers()
 
 	LOG(V4L2, Debug) << "Releasing buffers";
 
-	delete cache_;
-	cache_ = nullptr;
+	cache_.reset();
 
 	return requestBuffers(0, memoryType_);
 }
@@ -1616,8 +1628,7 @@ int V4L2VideoDevice::releaseBuffers()
 /**
  * \brief Queue a buffer to the video device
  * \param[in] buffer The buffer to be queued
- * \param[in] requestFd FD of the request, if using Request API
- * \param[in] userId of the request, if using mult-cache
+ * \param[in] request An optional request
  *
  * For capture video devices the \a buffer will be filled with data by the
  * device. For output video devices the \a buffer shall contain valid data and
@@ -1630,9 +1641,11 @@ int V4L2VideoDevice::releaseBuffers()
  * Note that queueBuffer() will fail if the device is in the process of being
  * stopped from a streaming state through streamOff().
  *
+ * If \a request is specified, the buffer will be tied to that request.
+ *
  * \return 0 on success or a negative error code otherwise
  */
-int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t userId)
+int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, const V4L2Request *request)
 {
 	struct v4l2_plane v4l2Planes[VIDEO_MAX_PLANES] = {};
 	struct v4l2_buffer buf = {};
@@ -1653,23 +1666,23 @@ int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t us
 		return -ENOENT;
 	}
 
-	ret = cache_->get(*buffer, userId);
-	if (ret < 0) {
-		LOG(V4L2, Error) << "Fail to get buffer from cache. ret = " << ret;
+	ret = cache_->get(*buffer);
+	if (ret < 0)
 		return ret;
-	}
+
+	auto guard = utils::scope_exit{ [&]() { cache_->put(buf.index); } };
 
 	buf.index = ret;
 	buf.type = bufferType_;
 	buf.memory = memoryType_;
 	buf.field = V4L2_FIELD_NONE;
-	if (requestFd >= 0) {
-		buf.flags |= V4L2_BUF_FLAG_REQUEST_FD;
-		buf.request_fd = requestFd;
+	if (request) {
+		buf.flags = V4L2_BUF_FLAG_REQUEST_FD;
+		buf.request_fd = request->fd();
 	}
 
 	bool multiPlanar = V4L2_TYPE_IS_MULTIPLANAR(buf.type);
-	const std::vector<FrameBuffer::Plane> &planes = buffer->planes();
+	Span<const FrameBuffer::Plane> planes = buffer->planes();
 	const unsigned int numV4l2Planes = format_.planesCount;
 
 	/*
@@ -1688,11 +1701,8 @@ int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t us
 
 	if (buf.memory == V4L2_MEMORY_DMABUF) {
 		if (multiPlanar) {
-			for (unsigned int p = 0; p < numV4l2Planes; ++p) {
-				/* Hack for "flat" buffers in MTKISP7 */
-				v4l2Planes[p].data_offset = planes[p].offset;
+			for (unsigned int p = 0; p < numV4l2Planes; ++p)
 				v4l2Planes[p].m.fd = planes[p].fd.get();
-			}
 		} else {
 			buf.m.fd = planes[0].fd.get();
 		}
@@ -1708,7 +1718,7 @@ int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t us
 
 		for (const auto &plane : metadata.planes()) {
 			if (!plane.bytesused)
-				LOG(V4L2, Debug) << "byteused == 0 is deprecated";
+				LOG(V4L2, Warning) << "byteused == 0 is deprecated";
 		}
 
 		if (numV4l2Planes != planes.size()) {
@@ -1746,8 +1756,8 @@ int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t us
 			 * V4L2 buffer is guaranteed to be equal at this point.
 			 */
 			for (auto [i, plane] : utils::enumerate(planes)) {
-				v4l2Planes[i].bytesused = metadata.planes()[i].bytesused + v4l2Planes[i].data_offset;
-				v4l2Planes[i].length = plane.length + v4l2Planes[i].data_offset;
+				v4l2Planes[i].bytesused = metadata.planes()[i].bytesused;
+				v4l2Planes[i].length = plane.length;
 			}
 		} else {
 			/*
@@ -1777,8 +1787,6 @@ int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t us
 		LOG(V4L2, Error)
 			<< "Failed to queue buffer " << buf.index << ": "
 			<< strerror(-ret);
-
-		cache_->put(buf.index);
 		return ret;
 	}
 
@@ -1790,6 +1798,7 @@ int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t us
 
 	queuedBuffers_[buf.index] = buffer;
 
+	guard.release();
 	return 0;
 }
 
@@ -1798,23 +1807,18 @@ int V4L2VideoDevice::queueBuffer(FrameBuffer *buffer, int requestFd, uint32_t us
  *
  * When this slot is called, a Buffer has become available from the device, and
  * will be emitted through the bufferReady Signal.
- * If the buffer is queued with a media Request, emit a requestBufferReady
- * signal.
  *
  * For Capture video devices the FrameBuffer will contain valid data.
  * For Output video devices the FrameBuffer can be considered empty.
  */
 void V4L2VideoDevice::bufferAvailable()
 {
-	auto [buffer, mediaRequest] = dequeueBuffer();
+	FrameBuffer *buffer = dequeueBuffer();
 	if (!buffer)
 		return;
 
 	/* Notify anyone listening to the device. */
 	bufferReady.emit(buffer);
-
-	if (mediaRequest > 0)
-		requestBufferReady.emit({buffer, mediaRequest});
 }
 
 /**
@@ -1823,12 +1827,9 @@ void V4L2VideoDevice::bufferAvailable()
  * This function dequeues the next available buffer from the device. If no
  * buffer is available to be dequeued it will return nullptr immediately.
  *
- * \return A pair where the first element is a pointer to the dequeued buffer
- * on success, or nullptr otherwise. The second is the media request fd if
- * applicable
- *
+ * \return A pointer to the dequeued buffer on success, or nullptr otherwise
  */
-std::pair<FrameBuffer *, int> V4L2VideoDevice::dequeueBuffer()
+FrameBuffer *V4L2VideoDevice::dequeueBuffer()
 {
 	struct v4l2_buffer buf = {};
 	struct v4l2_plane planes[VIDEO_MAX_PLANES] = {};
@@ -1848,7 +1849,7 @@ std::pair<FrameBuffer *, int> V4L2VideoDevice::dequeueBuffer()
 	if (ret < 0) {
 		LOG(V4L2, Error)
 			<< "Failed to dequeue buffer: " << strerror(-ret);
-		return {nullptr, -1};
+		return nullptr;
 	}
 
 	LOG(V4L2, Debug) << "Dequeuing buffer " << buf.index;
@@ -1870,7 +1871,7 @@ std::pair<FrameBuffer *, int> V4L2VideoDevice::dequeueBuffer()
 		LOG(V4L2, Error)
 			<< "Dequeued unexpected buffer index " << buf.index;
 
-		return {nullptr, -1};
+		return nullptr;
 	}
 
 	cache_->put(buf.index);
@@ -1895,29 +1896,29 @@ std::pair<FrameBuffer *, int> V4L2VideoDevice::dequeueBuffer()
 			? FrameMetadata::FrameError
 			: FrameMetadata::FrameSuccess;
 	metadata.sequence = buf.sequence;
-	metadata.hwSequence = buf.sequence;
 	metadata.timestamp = buf.timestamp.tv_sec * 1000000000ULL
 			   + buf.timestamp.tv_usec * 1000ULL;
 
 	if (V4L2_TYPE_IS_OUTPUT(buf.type))
-		return {buffer, buf.request_fd};
+		return buffer;
 
 	/*
 	 * Detect kernel drivers which do not reset the sequence number to zero
 	 * on stream start.
 	 */
-	 if (!firstFrame_) {
-		 if (buf.sequence)
-			 LOG(V4L2, Info)
-				 << "Zero sequence expected for first frame (got "
-				 << buf.sequence << ")";
-		 firstFrame_ = buf.sequence;
-	 }
-	 metadata.sequence -= firstFrame_.value();
+	if (!firstFrame_.has_value()) {
+		if (buf.sequence)
+			LOG(V4L2, Info)
+				<< "Zero sequence expected for first frame (got "
+				<< buf.sequence << ")";
+		firstFrame_ = buf.sequence;
+	}
+	metadata.sequence -= firstFrame_.value();
 
+	Span<const FrameBuffer::Plane> framebufferPlanes = buffer->planes();
 	unsigned int numV4l2Planes = multiPlanar ? buf.length : 1;
 
-	if (numV4l2Planes != buffer->planes().size()) {
+	if (numV4l2Planes != framebufferPlanes.size()) {
 		/*
 		 * If we have a multi-planar buffer with a V4L2
 		 * single-planar format, split the V4L2 buffer across
@@ -1927,10 +1928,10 @@ std::pair<FrameBuffer *, int> V4L2VideoDevice::dequeueBuffer()
 		if (numV4l2Planes != 1) {
 			LOG(V4L2, Error)
 				<< "Invalid number of planes (" << numV4l2Planes
-				<< " != " << buffer->planes().size() << ")";
+				<< " != " << framebufferPlanes.size() << ")";
 
 			metadata.status = FrameMetadata::FrameError;
-			return {buffer, buf.request_fd};
+			return buffer;
 		}
 
 		/*
@@ -1944,18 +1945,18 @@ std::pair<FrameBuffer *, int> V4L2VideoDevice::dequeueBuffer()
 				       : buf.bytesused;
 		unsigned int remaining = bytesused;
 
-		for (auto [i, plane] : utils::enumerate(buffer->planes())) {
+		for (auto [i, plane] : utils::enumerate(framebufferPlanes)) {
 			if (!remaining) {
 				LOG(V4L2, Error)
 					<< "Dequeued buffer (" << bytesused
 					<< " bytes) too small for plane lengths "
-					<< utils::join(buffer->planes(), "/",
+					<< utils::join(framebufferPlanes, "/",
 						       [](const FrameBuffer::Plane &p) {
 							       return p.length;
 						       });
 
 				metadata.status = FrameMetadata::FrameError;
-				return {buffer, buf.request_fd};
+				return buffer;
 			}
 
 			metadata.planes()[i].bytesused =
@@ -1974,18 +1975,12 @@ std::pair<FrameBuffer *, int> V4L2VideoDevice::dequeueBuffer()
 		metadata.planes()[0].bytesused = buf.bytesused;
 	}
 
-	return {buffer, buf.request_fd};
+	return buffer;
 }
 
 /**
  * \var V4L2VideoDevice::bufferReady
  * \brief A Signal emitted when a framebuffer completes
- */
-
-/**
- * \var V4L2VideoDevice::requestBufferReady
- * \brief A Signal emitted when a framebuffer completes, includes both the
- * frameBuffer and the media request fd.
  */
 
 /**
@@ -2045,14 +2040,10 @@ int V4L2VideoDevice::streamOff()
 	state_ = State::Stopping;
 
 	/* Send back all queued buffers. */
-	for (auto it : queuedBuffers_) {
-		FrameBuffer *buffer = it.second;
-		FrameMetadata &metadata = buffer->_d()->metadata();
-
-		cache_->put(it.first);
-		metadata.status = FrameMetadata::FrameCancelled;
+	for (const auto &[id, buffer] : queuedBuffers_) {
+		cache_->put(id);
+		buffer->_d()->cancel();
 		bufferReady.emit(buffer);
-		requestBufferReady.emit({buffer, -1});
 	}
 
 	ASSERT(cache_->isEmpty());
@@ -2161,28 +2152,28 @@ V4L2PixelFormat V4L2VideoDevice::toV4L2PixelFormat(const PixelFormat &pixelForma
 	return {};
 }
 
-void V4L2VideoDevice::changePollerThread(Thread *thread)
-{
-	if (!isOpen())
-		return;
-
-	fdBufferNotifier_->moveToThread(thread);
-	watchdog_.moveToThread(thread);
-}
-
 /**
  * \class V4L2M2MDevice
  * \brief Memory-to-Memory video device
+ *
+ * Memory to Memory devices in the kernel using the V4L2 M2M API can
+ * operate with multiple contexts for parallel operations on a single
+ * device. Each instance of a V4L2M2MDevice represents a single context.
  *
  * The V4L2M2MDevice manages two V4L2VideoDevice instances on the same
  * deviceNode which operate together using two queues to implement the V4L2
  * Memory to Memory API.
  *
- * The two devices should be opened by calling open() on the V4L2M2MDevice, and
- * can be closed by calling close on the V4L2M2MDevice.
+ * Users of this class should create a new instance of the V4L2M2MDevice for
+ * each desired execution context and then open it by calling open() on the
+ * V4L2M2MDevice and close it by calling close() on the V4L2M2MDevice.
  *
  * Calling V4L2VideoDevice::open() and V4L2VideoDevice::close() on the capture
  * or output V4L2VideoDevice is not permitted.
+ *
+ * Once the M2M device is open, users can operate on the output and capture
+ * queues represented by the V4L2VideoDevice returned by the output() and
+ * capture() functions.
  */
 
 /**
@@ -2204,14 +2195,12 @@ void V4L2VideoDevice::changePollerThread(Thread *thread)
 V4L2M2MDevice::V4L2M2MDevice(const std::string &deviceNode)
 	: deviceNode_(deviceNode)
 {
-	output_ = new V4L2VideoDevice(deviceNode);
-	capture_ = new V4L2VideoDevice(deviceNode);
+	output_ = std::make_unique<V4L2VideoDevice>(deviceNode);
+	capture_ = std::make_unique<V4L2VideoDevice>(deviceNode);
 }
 
 V4L2M2MDevice::~V4L2M2MDevice()
 {
-	delete capture_;
-	delete output_;
 }
 
 /**
@@ -2222,7 +2211,7 @@ V4L2M2MDevice::~V4L2M2MDevice()
  *
  * \return 0 on success or a negative error code otherwise
  */
-int V4L2M2MDevice::open(enum v4l2_buf_type outputType, enum v4l2_buf_type captureType)
+int V4L2M2MDevice::open()
 {
 	int ret;
 
@@ -2239,11 +2228,11 @@ int V4L2M2MDevice::open(enum v4l2_buf_type outputType, enum v4l2_buf_type captur
 		return ret;
 	}
 
-	ret = output_->open(fd, outputType);
+	ret = output_->open(fd, V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	if (ret)
 		goto err;
 
-	ret = capture_->open(fd, captureType);
+	ret = capture_->open(fd, V4L2_BUF_TYPE_VIDEO_CAPTURE);
 	if (ret)
 		goto err;
 

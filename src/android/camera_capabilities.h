@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * camera_capabilities.h - Camera static properties manager
+ * Camera static properties manager
  */
 
 #pragma once
@@ -23,8 +23,6 @@
 class CameraCapabilities
 {
 public:
-	static constexpr int32_t MaxMetadataPackIndex = 64;
-
 	CameraCapabilities() = default;
 
 	int initialize(std::shared_ptr<libcamera::Camera> camera,
@@ -37,7 +35,6 @@ public:
 	std::unique_ptr<CameraMetadata> requestTemplateManual() const;
 	std::unique_ptr<CameraMetadata> requestTemplatePreview() const;
 	std::unique_ptr<CameraMetadata> requestTemplateStill() const;
-	std::unique_ptr<CameraMetadata> requestTemplateZsl() const;
 	std::unique_ptr<CameraMetadata> requestTemplateVideo() const;
 
 private:
@@ -55,7 +52,7 @@ private:
 	bool validateBurstCaptureCapability();
 
 	std::set<camera_metadata_enum_android_request_available_capabilities>
-	computeCapabilities();
+		computeCapabilities();
 
 	void computeHwLevel(
 		const std::set<camera_metadata_enum_android_request_available_capabilities> &caps);
@@ -84,9 +81,6 @@ private:
 	unsigned int maxJpegBufferSize_;
 
 	std::set<int32_t> availableCharacteristicsKeys_;
-	std::set<int32_t> availableSessionKeys_;
 	std::set<int32_t> availableRequestKeys_;
 	std::set<int32_t> availableResultKeys_;
-
-	bool isAfSupported_ = false;
 };

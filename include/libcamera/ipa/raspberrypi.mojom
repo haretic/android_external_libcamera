@@ -12,16 +12,16 @@ import "include/libcamera/ipa/core.mojom";
 const uint32 MaxLsGridSize = 0x8000;
 
 struct SensorConfig {
-	uint32 gainDelay;
-	uint32 exposureDelay;
-	uint32 vblankDelay;
-	uint32 hblankDelay;
 	uint32 sensorMetadata;
 };
 
 struct InitParams {
 	bool lensPresent;
 	libcamera.IPACameraSensorInfo sensorInfo;
+	float controllerMinFrameDurationUs;
+	/* PISP specific */
+	libcamera.SharedFD fe;
+	libcamera.SharedFD be;
 };
 
 struct InitResult {
@@ -53,7 +53,8 @@ struct ConfigResult {
 
 struct StartResult {
 	libcamera.ControlList controls;
-	int32 dropFrameCount;
+	int32 startupFrameCount;
+	int32 invalidFrameCount;
 };
 
 struct PrepareParams {
@@ -219,13 +220,14 @@ interface IPARPiEventInterface {
 	 * \fn prepareIspComplete()
 	 * \brief Signal completion of \a prepareIsp
 	 * \param[in] buffers Bayer and embedded buffers actioned.
+	 * \param[in] stitchSwapBuffers Whether the stitch block buffers need to be swapped.
 	 *
 	 * This asynchronous event is signalled to the pipeline handler once
 	 * the \a prepareIsp signal has completed, and the ISP is ready to start
 	 * processing the frame. The embedded data buffer may be recycled after
 	 * this event.
 	 */
-	prepareIspComplete(BufferIds buffers);
+	prepareIspComplete(BufferIds buffers, bool stitchSwapBuffers);
 
 	/**
 	 * \fn processStatsComplete()
@@ -268,7 +270,7 @@ interface IPARPiEventInterface {
 	 * \param[in] delayContext IPA context index used for this request
 	 *
 	 * This asynchronous event is signalled to the pipeline handler when
-	 * the IPA requires sensor specific controls (e.g. shutter speed, gain,
+	 * the IPA requires sensor specific controls (e.g. exposure time, gain,
 	 * blanking) to be applied.
 	 */
 	setDelayedControls(libcamera.ControlList controls, uint32 delayContext);

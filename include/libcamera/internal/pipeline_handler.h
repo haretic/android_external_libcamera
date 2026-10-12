@@ -2,49 +2,46 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * pipeline_handler.h - Pipeline handler infrastructure
+ * Pipeline handler infrastructure
  */
 
 #pragma once
 
 #include <memory>
-#include <queue>
-#include <set>
 #include <string>
 #include <sys/types.h>
 #include <vector>
 
-#include <libcamera/base/mutex.h>
 #include <libcamera/base/object.h>
 
 #include <libcamera/controls.h>
 #include <libcamera/stream.h>
 
-#include "libcamera/internal/ipa_proxy.h"
+#include "libcamera/internal/camera_manager.h"
+#include "libcamera/internal/ipa_manager.h"
 
 namespace libcamera {
 
 class Camera;
 class CameraConfiguration;
-class CameraManager;
 class DeviceEnumerator;
 class DeviceMatch;
 class FrameBuffer;
 class MediaDevice;
 class PipelineHandler;
 class Request;
-class Result;
 
 class PipelineHandler : public std::enable_shared_from_this<PipelineHandler>,
 			public Object
 {
 public:
-	PipelineHandler(CameraManager *manager);
+	PipelineHandler(CameraManager *manager,
+			unsigned int maxQueuedRequestsDevice = 32);
 	virtual ~PipelineHandler();
 
 	virtual bool match(DeviceEnumerator *enumerator) = 0;
-	MediaDevice *acquireMediaDevice(DeviceEnumerator *enumerator,
-					const DeviceMatch &dm);
+	std::shared_ptr<MediaDevice> acquireMediaDevice(DeviceEnumerator *enumerator,
+							const DeviceMatch &dm);
 
 	bool acquire(Camera *camera);
 	void release(Camera *camera);
@@ -63,18 +60,29 @@ public:
 	void registerRequest(Request *request);
 	void queueRequest(Request *request);
 
-	void metadataAvailable(Request *request, const ControlList &metadata);
 	bool completeBuffer(Request *request, FrameBuffer *buffer);
 	void completeRequest(Request *request);
+	void cancelRequest(Request *request);
 
 	std::string configurationFile(const std::string &subdir,
-				      const std::string &name) const;
+				      const std::string &name,
+				      bool silent = false) const;
 
 	const char *name() const { return name_; }
 
+	CameraManager *cameraManager() const { return manager_; }
+
+	template<typename T>
+	std::unique_ptr<T> createIPA(uint32_t minVersion, uint32_t maxVersion)
+	{
+		IPAManager *ipaManager = manager_->_d()->ipaManager();
+		return ipaManager->createIPA<T>(this, minVersion, maxVersion);
+	}
+
 protected:
 	void registerCamera(std::shared_ptr<Camera> camera);
-	void hotplugMediaDevice(MediaDevice *media);
+	void hotplugMediaDevice(std::shared_ptr<MediaDevice> media);
+	unsigned int useCount() const { return useCount_; }
 
 	virtual int queueRequestDevice(Camera *camera, Request *request) = 0;
 	virtual void stopDevice(Camera *camera) = 0;
@@ -83,26 +91,22 @@ protected:
 	virtual void releaseDevice(Camera *camera);
 
 	CameraManager *manager_;
+	const unsigned int maxQueuedRequestsDevice_;
 
 private:
 	void unlockMediaDevices();
 
-	void mediaDeviceDisconnected(MediaDevice *media);
+	void mediaDeviceDisconnected(std::shared_ptr<MediaDevice> media);
 	virtual void disconnect();
 
-	void cancelRequest(Request *request);
 	void doQueueRequest(Request *request);
-	void doQueueRequests();
+	void doQueueRequests(Camera *camera);
 
 	std::vector<std::shared_ptr<MediaDevice>> mediaDevices_;
 	std::vector<std::weak_ptr<Camera>> cameras_;
 
-	std::queue<Request *> waitingRequests_;
-
 	const char *name_;
-
-	Mutex lock_;
-	unsigned int useCount_ LIBCAMERA_TSA_GUARDED_BY(lock_);
+	unsigned int useCount_;
 
 	friend class PipelineHandlerFactoryBase;
 };
@@ -118,6 +122,7 @@ public:
 	const std::string &name() const { return name_; }
 
 	static std::vector<PipelineHandlerFactoryBase *> &factories();
+	static const PipelineHandlerFactoryBase *getFactoryByName(const std::string &name);
 
 private:
 	static void registerType(PipelineHandlerFactoryBase *factory);
@@ -144,7 +149,7 @@ public:
 	}
 };
 
-#define REGISTER_PIPELINE_HANDLER(handler) \
-static PipelineHandlerFactory<handler> global_##handler##Factory(#handler);
+#define REGISTER_PIPELINE_HANDLER(handler, name) \
+	static PipelineHandlerFactory<handler> global_##handler##Factory(name);
 
 } /* namespace libcamera */

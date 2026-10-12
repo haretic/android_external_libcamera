@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * device_enumerator_sysfs.cpp - sysfs-based device enumerator
+ * sysfs-based device enumerator
  */
 
 #include "libcamera/internal/device_enumerator_sysfs.h"
@@ -33,7 +33,7 @@ int DeviceEnumeratorSysfs::init()
 int DeviceEnumeratorSysfs::enumerate()
 {
 	struct dirent *ent;
-	DIR *dir;
+	DIR *dir = nullptr;
 
 	static const char * const sysfs_dirs[] = {
 		"/sys/subsystem/media/devices",

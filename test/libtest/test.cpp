@@ -2,12 +2,14 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * test.cpp - libcamera test base class
+ * libcamera test base class
  */
 
 #include <stdlib.h>
 
 #include "test.h"
+
+#include <libcamera/base/memfd.h>
 
 Test::Test()
 {
@@ -36,3 +38,12 @@ int Test::execute()
 
 	return ret;
 }
+
+namespace test {
+
+libcamera::UniqueFD createTemporaryFile()
+{
+	return libcamera::MemFd::create("libcamera-test-temporary-file", 0);
+}
+
+} /* namespace test */

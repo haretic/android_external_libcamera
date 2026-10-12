@@ -2,25 +2,19 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * camera_device.cpp - libcamera Android Camera Device
+ * libcamera Android Camera Device
  */
 
 #include "camera_device.h"
 
 #include <algorithm>
-#include <cstdint>
 #include <fstream>
+#include <set>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <unordered_set>
 #include <vector>
 
-#ifdef HAVE_ANDROID_OS
-#include <cutils/properties.h>
-#endif
-
 #include <libcamera/base/log.h>
-#include <libcamera/base/span.h>
 #include <libcamera/base/unique_fd.h>
 #include <libcamera/base/utils.h>
 
@@ -31,23 +25,19 @@
 #include <libcamera/geometry.h>
 #include <libcamera/property_ids.h>
 
-#include <system/camera_metadata.h>
+#include "system/graphics.h"
 
 #include "camera_buffer.h"
-#include "camera_capabilities.h"
 #include "camera_hal_config.h"
 #include "camera_ops.h"
 #include "camera_request.h"
 #include "hal_framebuffer.h"
-#include "vendor_tag.h"
 
 using namespace libcamera;
 
 LOG_DECLARE_CATEGORY(HAL)
 
 namespace {
-
-const std::vector<uint32_t> kDuplicatedMetadata = { ANDROID_LENS_FOCUS_RANGE };
 
 /*
  * \struct Camera3StreamConfig
@@ -204,258 +194,6 @@ const char *directionToString(int stream_type)
 	}
 }
 
-bool isPreviewStream(camera3_stream_t *stream)
-{
-	return (GRALLOC_USAGE_HW_COMPOSER & stream->usage);
-}
-
-bool isVideoStream(camera3_stream_t *stream)
-{
-	return (GRALLOC_USAGE_HW_VIDEO_ENCODER & stream->usage);
-}
-
-// Vendor extended buffer usage bit for the HAL to identify the still capture YUV stream
-#define IS_STILL_USAGE(usage) (((usage)&GRALLOC_USAGE_PRIVATE_1) == GRALLOC_USAGE_PRIVATE_1)
-bool hasStillCaptureFlag(camera3_stream_t *stream)
-{
-	return (IS_STILL_USAGE(stream->usage));
-}
-
-bool isYuvSnapshotStream(camera3_stream_t *stream)
-{
-	return (!isVideoStream(stream) && !isPreviewStream(stream) &&
-		(HAL_PIXEL_FORMAT_YCbCr_420_888 == stream->format));
-}
-
-bool isJpegStream(camera3_stream_t *stream)
-{
-	return (HAL_PIXEL_FORMAT_BLOB == stream->format);
-}
-
-[[maybe_unused]] int buildStreamConfigsDefault(const CameraCapabilities &capabilities,
-					       camera3_stream_configuration_t *stream_list,
-					       std::vector<Camera3StreamConfig> &streamConfigs)
-{
-	/* First handle all non-MJPEG streams. */
-	camera3_stream_t *jpegStream = nullptr;
-	for (unsigned int i = 0; i < stream_list->num_streams; ++i) {
-		camera3_stream_t *stream = stream_list->streams[i];
-		Size size(stream->width, stream->height);
-
-		PixelFormat format = capabilities.toPixelFormat(stream->format);
-
-		/* Defer handling of MJPEG streams until all others are known. */
-		if (stream->format == HAL_PIXEL_FORMAT_BLOB) {
-			if (jpegStream) {
-				LOG(HAL, Error)
-					<< "Multiple JPEG streams are not supported";
-				return -EINVAL;
-			}
-
-			stream->usage |= (GRALLOC_USAGE_HW_CAMERA_WRITE |
-					  GRALLOC_USAGE_SW_READ_OFTEN |
-					  GRALLOC_USAGE_SW_WRITE_NEVER);
-
-			jpegStream = stream;
-			continue;
-		}
-
-		/*
-		 * If a CameraStream with the same size and format as the
-		 * current stream has already been requested, associate the two.
-		 */
-		auto iter = std::find_if(
-			streamConfigs.begin(), streamConfigs.end(),
-			[&size, &format](const Camera3StreamConfig &streamConfig) {
-				return streamConfig.config.size == size &&
-				       streamConfig.config.pixelFormat == format;
-			});
-		if (iter != streamConfigs.end()) {
-			/* Add usage to copy the buffer in streams[0] to stream. */
-			iter->streams[0].stream->usage |= (GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN);
-			stream->usage |= (GRALLOC_USAGE_SW_READ_OFTEN | GRALLOC_USAGE_SW_WRITE_OFTEN);
-			iter->streams.push_back({ stream, CameraStream::Type::Mapped });
-			continue;
-		}
-
-		Camera3StreamConfig streamConfig;
-		streamConfig.streams = { { stream, CameraStream::Type::Direct } };
-		streamConfig.config.size = size;
-		streamConfig.config.pixelFormat = format;
-		streamConfigs.push_back(std::move(streamConfig));
-	}
-
-	/* Now handle the MJPEG streams, adding a new stream if required. */
-	if (jpegStream) {
-		CameraStream::Type type;
-		int index = -1;
-
-		/* Search for a compatible stream in the non-JPEG ones. */
-		for (size_t i = 0; i < streamConfigs.size(); ++i) {
-			Camera3StreamConfig &streamConfig = streamConfigs[i];
-			const auto &cfg = streamConfig.config;
-
-			/*
-			 * \todo The PixelFormat must also be compatible with
-			 * the encoder.
-			 */
-			if (cfg.size.width != jpegStream->width ||
-			    cfg.size.height != jpegStream->height)
-				continue;
-
-			LOG(HAL, Info)
-				<< "Android JPEG stream mapped to libcamera stream " << i;
-
-			type = CameraStream::Type::Mapped;
-			index = i;
-
-			/*
-			 * The source stream will be read by software to
-			 * produce the JPEG stream.
-			 */
-			camera3_stream_t *stream = streamConfig.streams[0].stream;
-			stream->usage |= GRALLOC_USAGE_SW_READ_OFTEN;
-			break;
-		}
-
-		/*
-		 * Without a compatible match for JPEG encoding we must
-		 * introduce a new stream to satisfy the request requirements.
-		 */
-		if (index < 0) {
-			/*
-			 * \todo The pixelFormat should be a 'best-fit' choice
-			 * and may require a validation cycle. This is not yet
-			 * handled, and should be considered as part of any
-			 * stream configuration reworks.
-			 */
-			Camera3StreamConfig streamConfig;
-			streamConfig.config.size.width = jpegStream->width;
-			streamConfig.config.size.height = jpegStream->height;
-			streamConfig.config.pixelFormat = formats::NV12;
-			streamConfigs.push_back(std::move(streamConfig));
-
-			LOG(HAL, Info) << "Adding " << streamConfig.config.toString()
-				       << " for MJPEG support";
-
-			type = CameraStream::Type::Internal;
-			index = streamConfigs.size() - 1;
-		}
-
-		/* The JPEG stream will be produced by software. */
-		jpegStream->usage |= GRALLOC_USAGE_SW_WRITE_OFTEN;
-
-		streamConfigs[index].streams.push_back({ jpegStream, type });
-	}
-
-	sortCamera3StreamConfigs(streamConfigs, jpegStream);
-	return 0;
-}
-
-int buildStreamConfigsNoMap(const CameraCapabilities &capabilities,
-			    camera3_stream_configuration_t *stream_list,
-			    std::vector<Camera3StreamConfig> &streamConfigs)
-{
-	for (unsigned int i = 0; i < stream_list->num_streams; ++i) {
-		camera3_stream_t *stream = stream_list->streams[i];
-		Size size(stream->width, stream->height);
-
-		PixelFormat format = capabilities.toPixelFormat(stream->format);
-
-		/*
-		 * While gralloc usage flags are supposed to report usage
-		 * patterns to select a suitable buffer allocation strategy, in
-		 * practice they're also used to make other decisions, such as
-		 * selecting the actual format for the IMPLEMENTATION_DEFINED
-		 * HAL pixel format. To avoid issues, we thus have to set the
-		 * GRALLOC_USAGE_HW_CAMERA_WRITE flag unconditionally, even for
-		 * streams that will be produced in software.
-		 */
-		stream->usage |= (GRALLOC_USAGE_HW_CAMERA_WRITE |
-				  GRALLOC_USAGE_SW_READ_OFTEN |
-				  GRALLOC_USAGE_SW_WRITE_OFTEN);
-
-		Camera3StreamConfig streamConfig;
-		streamConfig.config.size = size;
-		streamConfig.config.pixelFormat = format;
-
-		if (isJpegStream(stream)) {
-			continue;
-		} else if (hasStillCaptureFlag(stream)) {
-			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
-			streamConfig.config.role = StreamRole::StillCapture;
-		} else if (isYuvSnapshotStream(stream)) {
-			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
-			streamConfig.config.role = StreamRole::YuvSnapshot;
-		} else if (isPreviewStream(stream)) {
-			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
-			streamConfig.config.role = StreamRole::Viewfinder;
-		} else if (isVideoStream(stream)) {
-			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
-			streamConfig.config.role = StreamRole::VideoRecording;
-		} else {
-			streamConfig.streams = { { stream, CameraStream::Type::Direct } };
-			streamConfig.config.role = StreamRole::Viewfinder;
-		}
-		streamConfigs.push_back(std::move(streamConfig));
-	}
-
-	for (unsigned int i = 0; i < stream_list->num_streams; ++i) {
-		camera3_stream_t *stream = stream_list->streams[i];
-		Size size(stream->width, stream->height);
-
-		PixelFormat format = capabilities.toPixelFormat(stream->format);
-
-		if (!isJpegStream(stream))
-			continue;
-
-		bool found = false;
-		for (auto &cfg : streamConfigs) {
-			if (cfg.config.role == StreamRole::StillCapture &&
-			    cfg.streams[0].stream->width == size.width &&
-			    cfg.streams[0].stream->height == size.height) {
-				cfg.streams.push_back({ stream, CameraStream::Type::Mapped });
-				found = true;
-				break;
-			}
-		}
-
-		if (!found) {
-			Camera3StreamConfig streamConfig;
-			streamConfig.config.size = size;
-			streamConfig.config.pixelFormat = format;
-			streamConfig.streams = { { stream, CameraStream::Type::Internal } };
-			streamConfig.config.role = StreamRole::StillCapture;
-			streamConfigs.push_back(std::move(streamConfig));
-		}
-	}
-
-	/*
-	Hardware support maxium 2 video + 2 still capture strem, when still capture
-	stream is higher than 2, move the rest to video stream.
-	(cts: android.hardware.camera2.cts.RobustnessTest#testMandatoryOutputCombinations)
-	*/
-	int stillCnt = 0;
-	for (auto &streamCfg : streamConfigs) {
-		if (streamCfg.config.role == StreamRole::StillCapture)
-			stillCnt += 1;
-	}
-	if (stillCnt > 2) {
-		for (auto &streamCfg : streamConfigs) {
-			if (streamCfg.config.role == StreamRole::StillCapture &&
-			    streamCfg.streams[0].stream->format != HAL_PIXEL_FORMAT_BLOB) {
-				streamCfg.config.role = StreamRole::Viewfinder;
-				stillCnt -= 1;
-				if (stillCnt == 2) {
-					break;
-				}
-			}
-		}
-	}
-
-	return 0;
-}
-
 #if defined(OS_CHROMEOS)
 /*
  * Check whether the crop_rotate_scale_degrees values for all streams in
@@ -511,19 +249,31 @@ bool validateCropRotate(const camera3_stream_configuration_t &streamList)
 
 CameraDevice::CameraDevice(unsigned int id, std::shared_ptr<Camera> camera)
 	: id_(id), state_(State::Stopped), camera_(std::move(camera)),
-	  facing_(CAMERA_FACING_FRONT), orientation_(0), resourceCost_(100),
-	  opened_(false)
+	  facing_(CAMERA_FACING_FRONT), orientation_(0)
 {
-	/* Set RequestCompletionMode to Immediately to send results early */
-	camera_->setRequestCompletionMode(Camera::Immediately);
-
 	camera_->requestCompleted.connect(this, &CameraDevice::requestComplete);
-	camera_->bufferCompleted.connect(this, &CameraDevice::bufferComplete);
-	camera_->metadataAvailable.connect(this, &CameraDevice::metadataAvailable);
-	camera_->disconnected.connect(this, &CameraDevice::cameraDisconnected);
-#ifdef HAVE_ANDROID_OS
-	mBufferAdapter = std::make_shared<android::BufferAdapter>();
-#endif
+
+	maker_ = "libcamera";
+	model_ = "cameraModel";
+
+	/* \todo Support getting properties on Android */
+	std::ifstream fstream("/var/cache/camera/camera.prop");
+	if (!fstream.is_open())
+		return;
+
+	std::string line;
+	while (std::getline(fstream, line)) {
+		std::string::size_type delimPos = line.find("=");
+		if (delimPos == std::string::npos)
+			continue;
+		std::string key = line.substr(0, delimPos);
+		std::string val = line.substr(delimPos + 1);
+
+		if (!key.compare("ro.product.model"))
+			model_ = val;
+		else if (!key.compare("ro.product.manufacturer"))
+			maker_ = val;
+	}
 }
 
 CameraDevice::~CameraDevice() = default;
@@ -546,12 +296,6 @@ std::unique_ptr<CameraDevice> CameraDevice::create(unsigned int id,
  */
 int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
 {
-#ifdef HAVE_ANDROID_OS
-	if (!mBufferAdapter->init()) {
-		LOG(HAL, Error) << "Failed to initialize mBufferAdapter";
-		return -EINVAL;
-	}
-#endif
 	/*
 	 * Initialize orientation and facing side of the camera.
 	 *
@@ -633,13 +377,6 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
 		orientation_ = 0;
 	}
 
-	const auto &resourceCost = properties.get(properties::ResourceCost);
-	if (resourceCost) {
-		resourceCost_ = *resourceCost;
-	} else {
-		resourceCost_ = 100;  // Allowing only one camera
-	}
-
 	return capabilities_.initialize(camera_, orientation_, facing_);
 }
 
@@ -649,21 +386,15 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
  */
 int CameraDevice::open(const hw_module_t *hardwareModule)
 {
-	if (opened_)
-		return -EUSERS;
-
-	opened_ = true;
-
 	int ret = camera_->acquire();
 	if (ret) {
 		LOG(HAL, Error) << "Failed to acquire the camera";
-		opened_ = false;
 		return ret;
 	}
 
 	/* Initialize the hw_device_t in the instance camera3_module_t. */
 	camera3Device_.common.tag = HARDWARE_DEVICE_TAG;
-	camera3Device_.common.version = CAMERA_DEVICE_API_VERSION_3_5;
+	camera3Device_.common.version = CAMERA_DEVICE_API_VERSION_3_3;
 	camera3Device_.common.module = (hw_module_t *)hardwareModule;
 	camera3Device_.common.close = hal_dev_close;
 
@@ -674,27 +405,17 @@ int CameraDevice::open(const hw_module_t *hardwareModule)
 	camera3Device_.ops = &hal_dev_ops;
 	camera3Device_.priv = this;
 
-	/*
-	 * The manufacturer info is only available after the Android VM booted.
-	 * The camera service may load and initialize libcamera before the VM
-	 * boot, but when opening the camera we are sure the VM already booted.
-	 */
-	if (!maker_.has_value() || !model_.has_value()) {
-		queryManufacturerInfo();
-	}
-
 	return 0;
 }
 
 void CameraDevice::close()
 {
-	flushAndStop();
+	stop();
 
 	camera_->release();
-	opened_ = false;
 }
 
-void CameraDevice::flushAndStop()
+void CameraDevice::flush()
 {
 	{
 		MutexLocker stateLock(stateMutex_);
@@ -704,20 +425,25 @@ void CameraDevice::flushAndStop()
 		state_ = State::Flushing;
 	}
 
-	/* TODO: Add a flush() method in pipeline handler to do the flushing */
-	{
-		MutexLocker locker(pendingRequestMutex_);
-		pendingRequestsCv_.wait(
-			locker,
-			[&]() LIBCAMERA_TSA_REQUIRES(pendingRequestMutex_) {
-				return pendingRequests_.empty();
-			});
-		ASSERT(pendingRequests_.empty());
-	}
-
 	camera_->stop();
 
 	MutexLocker stateLock(stateMutex_);
+	state_ = State::Stopped;
+}
+
+void CameraDevice::stop()
+{
+	MutexLocker stateLock(stateMutex_);
+
+	camera_->stop();
+
+	{
+		MutexLocker descriptorsLock(descriptorsMutex_);
+		descriptors_ = {};
+	}
+
+	streams_.clear();
+
 	state_ = State::Stopped;
 }
 
@@ -773,12 +499,8 @@ const camera_metadata_t *CameraDevice::constructDefaultRequestSettings(int type)
 		captureIntent = ANDROID_CONTROL_CAPTURE_INTENT_MANUAL;
 		requestTemplate = capabilities_.requestTemplateManual();
 		break;
-	/* \todo Debug the exception of android.camera.cts.api25test.EnableZslTest. */
-	case CAMERA3_TEMPLATE_ZERO_SHUTTER_LAG:
-		captureIntent = ANDROID_CONTROL_CAPTURE_INTENT_ZERO_SHUTTER_LAG;
-		requestTemplate = capabilities_.requestTemplateZsl();
-		break;
 	/* \todo Implement templates generation for the remaining use cases. */
+	case CAMERA3_TEMPLATE_ZERO_SHUTTER_LAG:
 	default:
 		LOG(HAL, Error) << "Unsupported template request type: " << type;
 		return nullptr;
@@ -803,20 +525,7 @@ const camera_metadata_t *CameraDevice::constructDefaultRequestSettings(int type)
 int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 {
 	/* Before any configuration attempt, stop the camera. */
-	flushAndStop();
-
-	/* Configure streams can only be called after all pending requests
-	 * from the previous session finish. */
-	{
-		MutexLocker descriptorsLock(pendingRequestMutex_);
-
-		ASSERT(pendingRequests_.empty());
-		ASSERT(pendingPartialResults_.empty());
-		for (auto &[_, streamBuffers] : pendingStreamBuffers_)
-			ASSERT(streamBuffers.empty());
-
-		pendingStreamBuffers_.clear();
-	}
+	stop();
 
 	if (stream_list->num_streams == 0) {
 		LOG(HAL, Error) << "No streams in configuration";
@@ -828,6 +537,29 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 		return -EINVAL;
 #endif
 
+	/*
+	 * Generate an empty configuration, and construct a StreamConfiguration
+	 * for each camera3_stream to add to it.
+	 */
+	std::unique_ptr<CameraConfiguration> config = camera_->generateConfiguration();
+	if (!config) {
+		LOG(HAL, Error) << "Failed to generate camera configuration";
+		return -EINVAL;
+	}
+
+	/*
+	 * Clear and remove any existing configuration from previous calls, and
+	 * ensure the required entries are available without further
+	 * reallocation.
+	 */
+	streams_.clear();
+	streams_.reserve(stream_list->num_streams);
+
+	std::vector<Camera3StreamConfig> streamConfigs;
+	streamConfigs.reserve(stream_list->num_streams);
+
+	/* First handle all non-MJPEG streams. */
+	camera3_stream_t *jpegStream = nullptr;
 	for (unsigned int i = 0; i < stream_list->num_streams; ++i) {
 		camera3_stream_t *stream = stream_list->streams[i];
 		Size size(stream->width, stream->height);
@@ -860,32 +592,119 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 			return -EINVAL;
 		}
 #endif
+
+		/* Defer handling of MJPEG streams until all others are known. */
+		if (stream->format == HAL_PIXEL_FORMAT_BLOB) {
+			if (jpegStream) {
+				LOG(HAL, Error)
+					<< "Multiple JPEG streams are not supported";
+				return -EINVAL;
+			}
+
+			jpegStream = stream;
+			continue;
+		}
+
+		/*
+		 * While gralloc usage flags are supposed to report usage
+		 * patterns to select a suitable buffer allocation strategy, in
+		 * practice they're also used to make other decisions, such as
+		 * selecting the actual format for the IMPLEMENTATION_DEFINED
+		 * HAL pixel format. To avoid issues, we thus have to set the
+		 * GRALLOC_USAGE_HW_CAMERA_WRITE flag unconditionally, even for
+		 * streams that will be produced in software.
+		 */
+		stream->usage |= GRALLOC_USAGE_HW_CAMERA_WRITE;
+
+		/*
+		 * If a CameraStream with the same size and format as the
+		 * current stream has already been requested, associate the two.
+		 */
+		auto iter = std::find_if(
+			streamConfigs.begin(), streamConfigs.end(),
+			[&size, &format](const Camera3StreamConfig &streamConfig) {
+				return streamConfig.config.size == size &&
+				       streamConfig.config.pixelFormat == format;
+			});
+		if (iter != streamConfigs.end()) {
+			/* Add usage to copy the buffer in streams[0] to stream. */
+			iter->streams[0].stream->usage |= GRALLOC_USAGE_SW_READ_OFTEN;
+			stream->usage |= GRALLOC_USAGE_SW_WRITE_OFTEN;
+			iter->streams.push_back({ stream, CameraStream::Type::Mapped });
+			continue;
+		}
+
+		Camera3StreamConfig streamConfig;
+		streamConfig.streams = { { stream, CameraStream::Type::Direct } };
+		streamConfig.config.size = size;
+		streamConfig.config.pixelFormat = format;
+		streamConfigs.push_back(std::move(streamConfig));
 	}
 
-	/*
-	 * Clear and remove any existing configuration from previous calls, and
-	 * ensure the required entries are available without further
-	 * reallocation.
-	 */
-	streams_.clear();
-	streams_.reserve(stream_list->num_streams);
+	/* Now handle the MJPEG streams, adding a new stream if required. */
+	if (jpegStream) {
+		CameraStream::Type type;
+		int index = -1;
 
-	std::vector<Camera3StreamConfig> streamConfigs;
-	streamConfigs.reserve(stream_list->num_streams);
+		/* Search for a compatible stream in the non-JPEG ones. */
+		for (size_t i = 0; i < streamConfigs.size(); ++i) {
+			Camera3StreamConfig &streamConfig = streamConfigs[i];
+			const auto &cfg = streamConfig.config;
 
-	if (buildStreamConfigsNoMap(capabilities_, stream_list, streamConfigs))
-		return -EINVAL;
+			/*
+			 * \todo The PixelFormat must also be compatible with
+			 * the encoder.
+			 */
+			if (cfg.size.width != jpegStream->width ||
+			    cfg.size.height != jpegStream->height)
+				continue;
 
-	/*
-	 * Generate an empty configuration, and construct a StreamConfiguration
-	 * for each camera3_stream to add to it.
-	 */
-	std::unique_ptr<CameraConfiguration> config = camera_->generateConfiguration();
-	if (!config) {
-		LOG(HAL, Error) << "Failed to generate camera configuration";
-		return -EINVAL;
+			LOG(HAL, Info)
+				<< "Android JPEG stream mapped to libcamera stream " << i;
+
+			type = CameraStream::Type::Mapped;
+			index = i;
+
+			/*
+			 * The source stream will be read by software to
+			 * produce the JPEG stream.
+			 */
+			camera3_stream_t *stream = streamConfig.streams[0].stream;
+			stream->usage |= GRALLOC_USAGE_SW_READ_OFTEN;
+			break;
+		}
+
+		/*
+		 * Without a compatible match for JPEG encoding we must
+		 * introduce a new stream to satisfy the request requirements.
+		 */
+		if (index < 0) {
+			/*
+			 * \todo The pixelFormat should be a 'best-fit' choice
+			 * and may require a validation cycle. This is not yet
+			 * handled, and should be considered as part of any
+			 * stream configuration reworks.
+			 */
+			Camera3StreamConfig streamConfig;
+			streamConfig.config.size.width = jpegStream->width;
+			streamConfig.config.size.height = jpegStream->height;
+			streamConfig.config.pixelFormat = formats::NV12;
+			streamConfigs.push_back(std::move(streamConfig));
+
+			LOG(HAL, Info) << "Adding " << streamConfig.config.toString()
+				       << " for MJPEG support";
+
+			type = CameraStream::Type::Internal;
+			index = streamConfigs.size() - 1;
+		}
+
+		/* The JPEG stream will be produced by software. */
+		jpegStream->usage |= GRALLOC_USAGE_SW_WRITE_OFTEN;
+
+		streamConfigs[index].streams.push_back({ jpegStream, type });
 	}
 
+	sortCamera3StreamConfigs(streamConfigs, jpegStream);
 	for (const auto &streamConfig : streamConfigs) {
 		config->addConfiguration(streamConfig.config);
 
@@ -924,25 +743,6 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 		return -EINVAL;
 	}
 
-	sessionSettings_ = CameraMetadata();
-	if (stream_list->session_parameters)
-		sessionSettings_ = stream_list->session_parameters;
-
-	/* CCA uses the Target AE FPS to differentiate Video or Still usecase */
-	camera_metadata_ro_entry_t entry;
-	if (sessionSettings_.getEntry(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, &entry)) {
-		const int32_t *data = entry.data.i32;
-		int32_t minFps = data[0];
-		int32_t maxFps = data[1];
-
-		if (minFps == 15 && maxFps == 30)
-			config->captureIntent = libcamera::CameraConfiguration::StillCapture;
-		else if (minFps == 30 && maxFps == 30)
-			config->captureIntent = libcamera::CameraConfiguration::Video;
-		else
-			config->captureIntent = libcamera::CameraConfiguration::Unknown;
-	}
-
 	/*
 	 * Once the CameraConfiguration has been adjusted/validated
 	 * it can be applied to the camera.
@@ -968,26 +768,6 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 	}
 
 	config_ = std::move(config);
-
-	/*
-	 * camera_->start() includes several I/O operations and take some
-	 * time to process. The old process only triggered camera_->start()
-	 * at process_capture_request and cause frame delay at the first
-	 * request, the frame delay makes the cts test
-	 * "android.hardware.camera2.cts.RecordingTest#testVideoSnapshot"
-	 * easy to fail. Therefore, trigger camera_->start() earlier at
-	 * configure_streams stage to avoid such situation.
-	 */
-	MutexLocker stateLock(stateMutex_);
-	if (state_ == State::Stopped) {
-		ret = camera_->start();
-		if (ret) {
-			LOG(HAL, Error) << "Failed to start camera";
-			return ret;
-		}
-
-		state_ = State::Running;
-	}
 	return 0;
 }
 
@@ -1035,40 +815,8 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
 	}
 
 	if (settings.getEntry(ANDROID_STATISTICS_FACE_DETECT_MODE, &entry)) {
-		const int32_t *data = entry.data.i32;
+		const uint8_t *data = entry.data.u8;
 		controls.set(controls::draft::FaceDetectMode, data[0]);
-		if (!controls.get(controls::draft::FaceDetectMode)) {
-			LOG(HAL, Warning) << "Pipeline doesn't support controls::draft::FaceDetectMode";
-		}
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AF_REGIONS, &entry)) {
-		const int32_t *data = entry.data.i32;
-		std::vector<Rectangle> afWindows;
-		for (size_t i = 0; i + 4 < entry.count; i += 5) {
-			size_t j = i * 5;
-			afWindows.push_back(Rectangle{
-				data[j], data[j + 1],
-				static_cast<unsigned int>(data[j + 2] - data[j]),
-				static_cast<unsigned int>(data[j + 3] - data[j + 1]) });
-		}
-		controls.set(controls::AfWindows, afWindows);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::Mode3A, data[0]);
-		if (!controls.get(controls::Mode3A)) {
-			LOG(HAL, Warning) << "Pipeline doesn't support controls::Mode3A";
-		}
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_SCENE_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::SceneMode, data[0]);
-		if (!controls.get(controls::SceneMode)) {
-			LOG(HAL, Warning) << "Pipeline doesn't support controls::SceneMode";
-		}
 	}
 
 	if (settings.getEntry(ANDROID_SENSOR_TEST_PATTERN_MODE, &entry)) {
@@ -1109,188 +857,17 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
 		controls.set(controls::draft::TestPatternMode, testPatternMode);
 	}
 
-	if (settings.getEntry(ANDROID_CONTROL_AE_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::draft::AeMode, static_cast<int>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_SENSOR_EXPOSURE_TIME, &entry)) {
-		const int64_t *data = entry.data.i64;
-		controls.set(controls::ExposureTime, static_cast<int32_t>(data[0] / 1000));
-	}
-
-	if (settings.getEntry(ANDROID_SENSOR_SENSITIVITY, &entry)) {
-		const int32_t *data = entry.data.i32;
-		controls.set(controls::AnalogueGain, static_cast<float>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_SENSOR_FRAME_DURATION, &entry)) {
-		const int64_t *data = entry.data.i64;
-		controls.set(controls::FrameDuration, data[0]);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_LOCK, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::AeLocked, static_cast<bool>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER, &entry)) {
-		const int32_t *data = entry.data.i32;
-		controls.set(controls::draft::AePrecaptureTrigger, static_cast<int32_t>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AWB_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::AwbMode, data[0]);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AWB_LOCK, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::AwbLocked, static_cast<bool>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_ANTIBANDING_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::draft::AeAntiBandingMode, static_cast<int32_t>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, &entry)) {
-		const int32_t *data = entry.data.i32;
-		int64_t maxFrameDuration = 1'000'000 / static_cast<int64_t>(data[0]);
-		int64_t minFrameDuration = 1'000'000 / static_cast<int64_t>(data[1]);
-		controls.set(controls::FrameDurationLimits, { minFrameDuration, maxFrameDuration });
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AF_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::AfMode, static_cast<int>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AF_TRIGGER, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::AfTrigger, static_cast<uint8_t>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_LENS_FOCUS_DISTANCE, &entry)) {
-		const float *data = entry.data.f;
-		controls.set(controls::draft::LensFocusDistance, static_cast<float>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_COLOR_CORRECTION_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::draft::ColorCorrectionMode, static_cast<int>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_COLOR_CORRECTION_TRANSFORM, &entry)) {
-		std::array<float, 9> correctionMatrix;
-		for (int i = 0; i < 9; i++) {
-			const camera_metadata_rational_t *data_r = entry.data.r + i;
-			int32_t numerator = data_r->numerator;
-			int32_t denominator = data_r->denominator;
-			if (denominator)
-				correctionMatrix[i] = static_cast<float>(numerator) / static_cast<float>(denominator);
-			else
-				correctionMatrix[i] = 0.0f;
-		}
-		controls.set(controls::ColourCorrectionMatrix, correctionMatrix);
-	}
-
-	if (settings.getEntry(ANDROID_COLOR_CORRECTION_GAINS, &entry)) {
-		std::array<float, 4> correctionGains;
-		for (int i = 0; i < 4; i++) {
-			const float *data_f = entry.data.f + i;
-			correctionGains[i] = *data_f;
-		}
-		controls.set(controls::draft::ColorCorrectionGains, correctionGains);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::draft::TonemapMode, static_cast<int>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_CURVE_RED, &entry)) {
-		std::vector<float> tonemapCurveRed;
-		for (int i = 0; i < (int)entry.count; i++) {
-			tonemapCurveRed.push_back(*(entry.data.f + i));
-		}
-		controls.set(controls::draft::TonemapCurveRed, tonemapCurveRed);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_CURVE_GREEN, &entry)) {
-		std::vector<float> tonemapCurveGreen;
-		for (int i = 0; i < (int)entry.count; i++) {
-			tonemapCurveGreen.push_back(*(entry.data.f + i));
-		}
-		controls.set(controls::draft::TonemapCurveGreen, tonemapCurveGreen);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_CURVE_BLUE, &entry)) {
-		std::vector<float> tonemapCurveBlue;
-		for (int i = 0; i < (int)entry.count; i++) {
-			tonemapCurveBlue.push_back(*(entry.data.f + i));
-		}
-		controls.set(controls::draft::TonemapCurveBlue, tonemapCurveBlue);
-	}
-
-	if (settings.getEntry(ANDROID_NOISE_REDUCTION_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::draft::NoiseReductionMode, static_cast<int>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_EDGE_MODE, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::draft::EdgeMode, static_cast<int>(data[0]));
-	}
-
-	if (settings.getEntry(VENDOR_TAG_STILL_CAPTURE_MULTI_FRAME_NOISE_REDUCTION, &entry)) {
-		const uint8_t *data = entry.data.u8;
-		controls.set(controls::draft::StillCaptureMultiFrameNoiseReduction, static_cast<bool>(data[0]));
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_CAPTURE_INTENT, &entry) &&
-	    entry.data.u8[0] == ANDROID_CONTROL_CAPTURE_INTENT_STILL_CAPTURE) {
-		if (settings.getEntry(ANDROID_CONTROL_ENABLE_ZSL, &entry)) {
-			const uint8_t *data = entry.data.u8;
-			controls.set(controls::draft::EnableZsl, static_cast<bool>(data[0]));
-		}
-	}
-
 	return 0;
 }
 
-/* abortRequest() is only called before the request is queued into the device,
- * i.e., there is no need to remove it from pendingRequests_ and
- * pendingStreamBuffers_.
- */
-void CameraDevice::abortRequest(Camera3RequestDescriptor *descriptor)
+void CameraDevice::abortRequest(Camera3RequestDescriptor *descriptor) const
 {
-	/*
-	 * Since the failed buffers do not have to follow the strict ordering
-	 * valid buffers do, and could be out-of-order with respect to valid
-	 * buffers, it's safe to send the aborted result back to the framework
-	 * immediately.
-	 */
-	descriptor->status_ = Camera3RequestDescriptor::Status::Cancelled;
-	descriptor->finalResult_ = std::make_unique<Camera3ResultDescriptor>(descriptor);
-
-	Camera3ResultDescriptor *result = descriptor->finalResult_.get();
-
-	result->metadataPackIndex_ = 0;
-	for (auto &buffer : descriptor->buffers_) {
-		buffer.status = StreamBuffer::Status::Error;
-		result->buffers_.emplace_back(&buffer);
-	}
-
-	/*
-	 * After CAMERA3_MSG_ERROR_REQUEST is notified, for a given frame,
-	 * only process_capture_results with buffers of the status
-	 * CAMERA3_BUFFER_STATUS_ERROR are allowed. No further notifies or
-	 * process_capture_result with non-null metadata is allowed.
-	 */
 	notifyError(descriptor->frameNumber_, nullptr, CAMERA3_MSG_ERROR_REQUEST);
 
-	sendCaptureResult(result);
+	for (auto &buffer : descriptor->buffers_)
+		buffer.status = Camera3RequestDescriptor::Status::Error;
+
+	descriptor->status_ = Camera3RequestDescriptor::Status::Error;
 }
 
 bool CameraDevice::isValidRequest(camera3_capture_request_t *camera3Request) const
@@ -1368,13 +945,8 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	 * The descriptor and the associated memory reserved here are freed
 	 * at request complete time.
 	 */
-#ifdef HAVE_ANDROID_OS
-	auto descriptor = std::make_unique<Camera3RequestDescriptor>(camera_.get(),
-								     mBufferAdapter, camera3Request);
-#else
 	auto descriptor = std::make_unique<Camera3RequestDescriptor>(camera_.get(),
 								     camera3Request);
-#endif
 
 	/*
 	 * \todo The Android request model is incremental, settings passed in
@@ -1384,8 +956,8 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	 */
 	if (camera3Request->settings)
 		lastSettings_ = camera3Request->settings;
-	else
-		descriptor->settings_ = lastSettings_;
+
+	descriptor->settings_ = lastSettings_;
 
 	LOG(HAL, Debug) << "Queueing request " << descriptor->request_->cookie()
 			<< " with " << descriptor->buffers_.size() << " streams";
@@ -1395,10 +967,9 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	 * to a libcamera stream. Streams of type Mapped will be handled later.
 	 *
 	 * Collect the CameraStream associated to each requested capture stream.
-	 * Since requestedDirectBuffers is an std:map<>, no duplications can
-	 * happen.
+	 * Since requestedStreams is an std:set<>, no duplications can happen.
 	 */
-	std::map<CameraStream *, libcamera::FrameBuffer *> requestedDirectBuffers;
+	std::set<CameraStream *> requestedStreams;
 	for (const auto &[i, buffer] : utils::enumerate(descriptor->buffers_)) {
 		CameraStream *cameraStream = buffer.stream;
 		camera3_stream_t *camera3Stream = cameraStream->camera3Stream();
@@ -1416,6 +987,8 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 		 */
 		FrameBuffer *frameBuffer = nullptr;
 		UniqueFD acquireFence;
+
+		MutexLocker lock(descriptor->streamsProcessMutex_);
 
 		switch (cameraStream->type()) {
 		case CameraStream::Type::Mapped:
@@ -1435,25 +1008,23 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 						  cameraStream->configuration().size);
 			frameBuffer = buffer.frameBuffer.get();
 			acquireFence = std::move(buffer.fence);
-
-			requestedDirectBuffers[cameraStream] = frameBuffer;
 			LOG(HAL, Debug) << ss.str() << " (direct)";
 			break;
 
 		case CameraStream::Type::Internal:
 			/*
-			 * Get the frame buffer from the source stream's
-			 * internal buffer pool. The buffer has to be returned
-			 * to the source stream once it has been processed.
+			 * Get the frame buffer from the CameraStream internal
+			 * buffer pool.
+			 *
+			 * The buffer has to be returned to the CameraStream
+			 * once it has been processed.
 			 */
 			frameBuffer = cameraStream->getBuffer();
-			buffer.srcBuffer = frameBuffer;
-
-			/* Track the allocated internal buffers, which will be
-			 * recycled when the descriptor destroyed.
-			 * */
-			descriptor->internalBuffers_[cameraStream] = frameBuffer;
+			buffer.internalBuffer = frameBuffer;
 			LOG(HAL, Debug) << ss.str() << " (internal)";
+
+			descriptor->pendingStreamsToProcess_.insert(
+				{ cameraStream, &buffer });
 			break;
 		}
 
@@ -1465,6 +1036,8 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 		auto fence = std::make_unique<Fence>(std::move(acquireFence));
 		descriptor->request_->addBuffer(cameraStream->stream(),
 						frameBuffer, std::move(fence));
+
+		requestedStreams.insert(cameraStream);
 	}
 
 	/*
@@ -1486,53 +1059,29 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 				<< cameraStream->configuration().pixelFormat << "]"
 				<< " (mapped)";
 
+		MutexLocker lock(descriptor->streamsProcessMutex_);
+		descriptor->pendingStreamsToProcess_.insert({ cameraStream, &buffer });
+
 		/*
 		 * Make sure the CameraStream this stream is mapped on has been
 		 * added to the request.
 		 */
 		CameraStream *sourceStream = cameraStream->sourceStream();
 		ASSERT(sourceStream);
-		ASSERT(sourceStream->type() == CameraStream::Type::Direct);
-
-		/*
-		 * If the buffer for the source stream has been requested as
-		 * Direct, use its framebuffer as the source buffer for
-		 * post-processing. No need to recycle the buffer since it's
-		 * owned by Android.
-		 */
-		auto iterDirectBuffer = requestedDirectBuffers.find(sourceStream);
-		if (iterDirectBuffer != requestedDirectBuffers.end()) {
-			buffer.srcBuffer = iterDirectBuffer->second;
+		if (requestedStreams.find(sourceStream) != requestedStreams.end())
 			continue;
-		}
 
 		/*
-		 * If that's not the case, we use an internal buffer allocated
-		 * from the source stream.
-		 *
-		 * If an internal buffer has been requested for the source
-		 * stream before, we should reuse it.
+		 * If that's not the case, we need to add a buffer to the request
+		 * for this stream.
 		 */
-		auto iterInternalBuffer = descriptor->internalBuffers_.find(sourceStream);
-		if (iterInternalBuffer != descriptor->internalBuffers_.end()) {
-			buffer.srcBuffer = iterInternalBuffer->second;
-			continue;
-		}
-
-		/*
-		 * Otherwise, we need to create an internal buffer to the
-		 * request for the source stream. Get the frame buffer from the
-		 * source stream's internal buffer pool. The buffer has to be
-		 * returned to the source stream once it has been processed.
-		 */
-		FrameBuffer *frameBuffer = sourceStream->getBuffer();
-		buffer.srcBuffer = frameBuffer;
+		FrameBuffer *frameBuffer = cameraStream->getBuffer();
+		buffer.internalBuffer = frameBuffer;
 
 		descriptor->request_->addBuffer(sourceStream->stream(),
-						frameBuffer, nullptr);
+						frameBuffer);
 
-		/* Track the allocated internal buffer. */
-		descriptor->internalBuffers_[sourceStream] = frameBuffer;
+		requestedStreams.insert(sourceStream);
 	}
 
 	/*
@@ -1551,11 +1100,20 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	MutexLocker stateLock(stateMutex_);
 
 	if (state_ == State::Flushing) {
-		abortRequest(descriptor.get());
+		Camera3RequestDescriptor *rawDescriptor = descriptor.get();
+		{
+			MutexLocker descriptorsLock(descriptorsMutex_);
+			descriptors_.push(std::move(descriptor));
+		}
+		abortRequest(rawDescriptor);
+		completeDescriptor(rawDescriptor);
+
 		return 0;
 	}
 
 	if (state_ == State::Stopped) {
+		lastSettings_ = {};
+
 		ret = camera_->start();
 		if (ret) {
 			LOG(HAL, Error) << "Failed to start camera";
@@ -1568,10 +1126,8 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	Request *request = descriptor->request_.get();
 
 	{
-		MutexLocker descriptorsLock(pendingRequestMutex_);
-		for (auto &buffer : descriptor->buffers_)
-			pendingStreamBuffers_[buffer.stream].push_back(&buffer);
-		pendingRequests_.emplace_back(std::move(descriptor));
+		MutexLocker descriptorsLock(descriptorsMutex_);
+		descriptors_.push(std::move(descriptor));
 	}
 
 	camera_->queueRequest(request);
@@ -1579,386 +1135,219 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
 	return 0;
 }
 
-void CameraDevice::bufferComplete(libcamera::Request *request, libcamera::FrameBuffer *frameBuffer)
+void CameraDevice::requestComplete(Request *request)
 {
 	Camera3RequestDescriptor *descriptor =
 		reinterpret_cast<Camera3RequestDescriptor *>(request->cookie());
 
-	descriptor->partialResults_.emplace_back(new Camera3ResultDescriptor(descriptor));
-	Camera3ResultDescriptor *camera3Result = descriptor->partialResults_.back().get();
-
+	/*
+	 * Prepare the capture result for the Android camera stack.
+	 *
+	 * The buffer status is set to Success and later changed to Error if
+	 * post-processing/compression fails.
+	 */
 	for (auto &buffer : descriptor->buffers_) {
-		CameraStream *cameraStream = buffer.stream;
-		if (buffer.srcBuffer != frameBuffer &&
-		    buffer.frameBuffer.get() != frameBuffer)
-			continue;
+		CameraStream *stream = buffer.stream;
 
-		buffer.result = camera3Result;
-		camera3Result->buffers_.emplace_back(&buffer);
-
-		StreamBuffer::Status status = StreamBuffer::Status::Success;
-		if (frameBuffer->metadata().status != FrameMetadata::FrameSuccess) {
-			status = StreamBuffer::Status::Error;
-		}
-		setBufferStatus(buffer, status);
-
-		switch (cameraStream->type()) {
-		case CameraStream::Type::Direct: {
-			ASSERT(buffer.frameBuffer.get() == frameBuffer);
-			/*
-			 * Streams of type Direct have been queued to the
-			 * libcamera::Camera and their acquire fences have
-			 * already been waited on by the library.
-			 */
+		/*
+		 * Streams of type Direct have been queued to the
+		 * libcamera::Camera and their acquire fences have
+		 * already been waited on by the library.
+		 *
+		 * Acquire fences of streams of type Internal and Mapped
+		 * will be handled during post-processing.
+		 */
+		if (stream->type() == CameraStream::Type::Direct) {
+			/* If handling of the fence has failed restore buffer.fence. */
 			std::unique_ptr<Fence> fence = buffer.frameBuffer->releaseFence();
 			if (fence)
 				buffer.fence = fence->release();
-			break;
 		}
-		case CameraStream::Type::Mapped:
-		case CameraStream::Type::Internal:
-			ASSERT(buffer.srcBuffer == frameBuffer);
-			if (status == StreamBuffer::Status::Error)
-				break;
-
-			/*
-			 * Acquire fences of streams of type Internal and Mapped
-			 * will be handled during post-processing.
-			 */
-			camera3Result->pendingBuffersToProcess_.emplace_back(&buffer);
-
-			if (cameraStream->isJpegStream()) {
-				generateJpegExifMetadata(descriptor, &buffer);
-
-				/*
-				 * Allocate for post-processor to fill
-				 * in JPEG related metadata.
-				 */
-				camera3Result->resultMetadata_ = getJpegPartialResultMetadata();
-			}
-
-			break;
-		}
+		buffer.status = Camera3RequestDescriptor::Status::Success;
 	}
 
-	for (auto iter = camera3Result->pendingBuffersToProcess_.begin();
-	     iter != camera3Result->pendingBuffersToProcess_.end();) {
-		StreamBuffer *buffer = *iter;
-		int ret = buffer->stream->process(buffer);
-		if (ret) {
-			iter = camera3Result->pendingBuffersToProcess_.erase(iter);
-			setBufferStatus(*buffer, StreamBuffer::Status::Error);
-			LOG(HAL, Error) << "Failed to run post process of request "
-					<< descriptor->frameNumber_;
-		} else {
-			iter++;
-		}
-	}
-
-	if (camera3Result->pendingBuffersToProcess_.empty())
-		checkAndCompleteReadyPartialResults(camera3Result);
-}
-
-void CameraDevice::metadataAvailable(libcamera::Request *request,
-				     const libcamera::ControlList &metadata)
-{
-	ASSERT(!metadata.empty());
-
-	Camera3RequestDescriptor *descriptor =
-		reinterpret_cast<Camera3RequestDescriptor *>(request->cookie());
-
-	descriptor->partialResults_.emplace_back(new Camera3ResultDescriptor(descriptor));
-	Camera3ResultDescriptor *camera3Result = descriptor->partialResults_.back().get();
-
 	/*
-	 * Notify shutter as soon as we have received SensorTimestamp.
+	 * If the Request has failed, abort the request by notifying the error
+	 * and complete the request with all buffers in error state.
 	 */
-	const auto &timestamp = metadata.get(controls::SensorTimestamp);
-	if (timestamp) {
-		notifyShutter(descriptor->frameNumber_, *timestamp);
-		LOG(HAL, Debug) << "Request " << request->cookie() << " notifies shutter";
-	}
+	if (request->status() != Request::RequestComplete) {
+		LOG(HAL, Error) << "Request " << request->cookie()
+				<< " not successfully completed: "
+				<< request->status();
 
-	camera3Result->resultMetadata_ = getPartialResultMetadata(metadata);
+		abortRequest(descriptor);
+		completeDescriptor(descriptor);
 
-	completePartialResultDescriptor(camera3Result);
-}
-
-void CameraDevice::requestComplete(Request *request)
-{
-	Camera3RequestDescriptor *camera3Request =
-		reinterpret_cast<Camera3RequestDescriptor *>(request->cookie());
-
-	switch (request->status()) {
-	case Request::RequestComplete:
-		camera3Request->status_ = Camera3RequestDescriptor::Status::Success;
-		break;
-	case Request::RequestCancelled:
-		camera3Request->status_ = Camera3RequestDescriptor::Status::Cancelled;
-		break;
-	case Request::RequestPending:
-		LOG(HAL, Fatal) << "Try to complete an unfinished request";
-		break;
-	}
-
-	camera3Request->finalResult_ = std::make_unique<Camera3ResultDescriptor>(camera3Request);
-	Camera3ResultDescriptor *result = camera3Request->finalResult_.get();
-
-	/*
-	 * On Android, The final result with metadata has to set the field as
-	 * CameraCapabilities::MaxMetadataPackIndex, and should be returned by
-	 * the submission order of the requests. Create a result as the final
-	 * result which is guranteed be sent in order by CompleteRequestDescriptor().
-	 */
-	result->resultMetadata_ = getFinalResultMetadata(camera3Request,
-							 request->metadata());
-	result->metadataPackIndex_ = CameraCapabilities::MaxMetadataPackIndex;
-
-	/*
-	 * We need to check whether there are partial results pending for
-	 * post-processing, before we complete the request descriptor. Otherwise,
-	 * the callback of post-processing will complete the request instead.
-	 */
-	for (auto &r : camera3Request->partialResults_)
-		if (!r->completed_)
-			return;
-
-	completeRequestDescriptor(camera3Request);
-}
-
-void CameraDevice::checkAndCompleteReadyPartialResults(Camera3ResultDescriptor *result)
-{
-	/*
-	 * Android requires buffers for a given stream must be returned in FIFO
-	 * order. However, different streams are independent of each other, so
-	 * it is acceptable and expected that the buffer for request 5 for
-	 * stream A may be returned after the buffer for request 6 for stream
-	 * B is. And it is acceptable that the result metadata for request 6
-	 * for stream B is returned before the buffer for request 5 for stream
-	 * A is. As a result, if all buffers of a result are the most front
-	 * buffers of each stream, or the result contains no buffers, the result
-	 * is allowed to send. Collect ready results to send in the order which
-	 * follows the above rule.
-	 *
-	 * \todo The reprocessing result can be returned ahead of the pending
-	 * normal output results. But the FIFO ordering must be maintained for
-	 * all reprocessing results. Track the reprocessing buffer's order
-	 * independently when we have reprocessing API.
-	 */
-	MutexLocker lock(pendingRequestMutex_);
-
-	pendingPartialResults_.emplace_front(result);
-	std::list<Camera3ResultDescriptor *> readyResults;
-
-	/*
-	 * Error buffers do not have to follow the strict ordering as valid
-	 * buffers do. They're ready to be sent directly. Therefore, remove them
-	 * from the pendingBuffers so it won't block following valid buffers.
-	 */
-	for (auto &buffer : result->buffers_)
-		if (buffer->status == StreamBuffer::Status::Error)
-			pendingStreamBuffers_[buffer->stream].remove(buffer);
-
-	/*
-	 * Exhaustly collect results which is ready to sent.
-	 */
-	bool keepChecking;
-	do {
-		keepChecking = false;
-		auto iter = pendingPartialResults_.begin();
-		while (iter != pendingPartialResults_.end()) {
-			/*
-			 * A result is considered as ready when all of the valid
-			 * buffers of the result are at the front of the pending
-			 * buffers associated with its stream.
-			 */
-			bool ready = true;
-			for (auto &buffer : (*iter)->buffers_) {
-				if (buffer->status == StreamBuffer::Status::Error)
-					continue;
-
-				auto &pendingBuffers = pendingStreamBuffers_[buffer->stream];
-
-				ASSERT(!pendingBuffers.empty());
-
-				if (pendingBuffers.front() != buffer) {
-					ready = false;
-					break;
-				}
-			}
-
-			if (!ready) {
-				iter++;
-				continue;
-			}
-
-			for (auto &buffer : (*iter)->buffers_)
-				if (buffer->status != StreamBuffer::Status::Error)
-					pendingStreamBuffers_[buffer->stream].pop_front();
-
-			/* Keep checking since pendingStreamBuffers has updated */
-			keepChecking = true;
-
-			readyResults.emplace_back(*iter);
-			iter = pendingPartialResults_.erase(iter);
-		}
-	} while (keepChecking);
-
-	lock.unlock();
-
-	for (auto &res : readyResults) {
-		completePartialResultDescriptor(res);
-	}
-}
-
-void CameraDevice::completePartialResultDescriptor(Camera3ResultDescriptor *result)
-{
-	Camera3RequestDescriptor *request = result->request_;
-	result->completed_ = true;
-
-	/*
-	 * Android requires value of metadataPackIndex of partial results
-	 * set it to 0 if the result contains only buffers, Otherwise set it
-	 * Incrementally from 1 to MaxMetadataPackIndex - 1.
-	 */
-	if (result->resultMetadata_)
-		result->metadataPackIndex_ = request->nextPartialResultIndex_++;
-	else
-		result->metadataPackIndex_ = 0;
-
-	sendCaptureResult(result);
-
-	/*
-	 * The Status would be changed from Pending to Success or Cancelled only
-	 * when the requestComplete() has been called. It's garanteed that no
-	 * more partial results will be added to the request and the final result
-	 * is ready. In the case, if all partial results are completed, we can
-	 * complete the request.
-	 */
-	if (request->status_ == Camera3RequestDescriptor::Status::Pending)
 		return;
+	}
 
-	for (auto &r : request->partialResults_)
-		if (!r->completed_)
-			return;
+	/*
+	 * Notify shutter as soon as we have verified we have a valid request.
+	 *
+	 * \todo The shutter event notification should be sent to the framework
+	 * as soon as possible, earlier than request completion time.
+	 */
+	uint64_t sensorTimestamp = static_cast<uint64_t>(request->metadata()
+								 .get(controls::SensorTimestamp)
+								 .value_or(0));
+	notifyShutter(descriptor->frameNumber_, sensorTimestamp);
 
-	completeRequestDescriptor(request);
+	LOG(HAL, Debug) << "Request " << request->cookie() << " completed with "
+			<< descriptor->request_->buffers().size() << " streams";
+
+	/*
+	 * Generate the metadata associated with the captured buffers.
+	 *
+	 * Notify if the metadata generation has failed, but continue processing
+	 * buffers and return an empty metadata pack.
+	 */
+	descriptor->resultMetadata_ = getResultMetadata(*descriptor);
+	if (!descriptor->resultMetadata_) {
+		notifyError(descriptor->frameNumber_, nullptr, CAMERA3_MSG_ERROR_RESULT);
+
+		/*
+		 * The camera framework expects an empty metadata pack on error.
+		 *
+		 * \todo Check that the post-processor code handles this situation
+		 * correctly.
+		 */
+		descriptor->resultMetadata_ = std::make_unique<CameraMetadata>(0, 0);
+	}
+
+	/* Handle post-processing. */
+	MutexLocker locker(descriptor->streamsProcessMutex_);
+
+	/*
+	 * Queue all the post-processing streams request at once. The completion
+	 * slot streamProcessingComplete() can only execute when we are out
+	 * this critical section. This helps to handle synchronous errors here
+	 * itself.
+	 */
+	auto iter = descriptor->pendingStreamsToProcess_.begin();
+	while (iter != descriptor->pendingStreamsToProcess_.end()) {
+		CameraStream *stream = iter->first;
+		Camera3RequestDescriptor::StreamBuffer *buffer = iter->second;
+
+		FrameBuffer *src = request->findBuffer(stream->stream());
+		if (!src) {
+			LOG(HAL, Error) << "Failed to find a source stream buffer";
+			setBufferStatus(*buffer, Camera3RequestDescriptor::Status::Error);
+			iter = descriptor->pendingStreamsToProcess_.erase(iter);
+			continue;
+		}
+
+		buffer->srcBuffer = src;
+
+		++iter;
+		int ret = stream->process(buffer);
+		if (ret) {
+			setBufferStatus(*buffer, Camera3RequestDescriptor::Status::Error);
+			descriptor->pendingStreamsToProcess_.erase(stream);
+
+			/*
+			 * If the framebuffer is internal to CameraStream return
+			 * it back now that we're done processing it.
+			 */
+			if (buffer->internalBuffer)
+				stream->putBuffer(buffer->internalBuffer);
+		}
+	}
+
+	if (descriptor->pendingStreamsToProcess_.empty()) {
+		locker.unlock();
+		completeDescriptor(descriptor);
+	}
 }
 
 /**
  * \brief Complete the Camera3RequestDescriptor
- * \param[in] descriptor The Camera3RequestDescriptor
+ * \param[in] descriptor The Camera3RequestDescriptor that has completed
  *
- * The function shall complete the descriptor only when all of the partial
- * result has sent back to the framework, and send the final result according
- * to the submission order of the requests.
+ * The function marks the Camera3RequestDescriptor as 'complete'. It shall be
+ * called when all the streams in the Camera3RequestDescriptor have completed
+ * capture (or have been generated via post-processing) and the request is ready
+ * to be sent back to the framework.
+ *
+ * \context This function is \threadsafe.
  */
-void CameraDevice::completeRequestDescriptor(Camera3RequestDescriptor *request)
+void CameraDevice::completeDescriptor(Camera3RequestDescriptor *descriptor)
 {
-	MutexLocker locker(pendingRequestMutex_);
-	request->completed_ = true;
+	MutexLocker lock(descriptorsMutex_);
+	descriptor->complete_ = true;
 
-	while (!pendingRequests_.empty()) {
-		auto &descriptor = pendingRequests_.front();
-		if (!descriptor->completed_)
-			break;
+	sendCaptureResults();
+}
 
-		/*
-		 * Android requires the final result of each request returns in
-		 * their submission order.
-		 */
-		ASSERT(descriptor->finalResult_);
-		sendCaptureResult(descriptor->finalResult_.get());
+/**
+ * \brief Sequentially send capture results to the framework
+ *
+ * Iterate over the descriptors queue to send completed descriptors back to the
+ * framework, in the same order as they have been queued. For each complete
+ * descriptor, populate a locally-scoped camera3_capture_result_t from the
+ * descriptor, send the capture result back by calling the
+ * process_capture_result() callback, and remove the descriptor from the queue.
+ * Stop iterating if the descriptor at the front of the queue is not complete.
+ *
+ * This function should never be called directly in the codebase. Use
+ * completeDescriptor() instead.
+ */
+void CameraDevice::sendCaptureResults()
+{
+	while (!descriptors_.empty() && !descriptors_.front()->isPending()) {
+		auto descriptor = std::move(descriptors_.front());
+		descriptors_.pop();
 
-		/*
-		 * Call notify with CAMERA3_MSG_ERROR_RESULT to indicate some
-		 * of the expected result metadata might not be available
-		 * because the capture is cancelled by the camera. Only notify
-		 * it when the final result is sent, since Android will ignore
-		 * the following metadata.
-		 */
-		if (descriptor->status_ == Camera3RequestDescriptor::Status::Cancelled)
-			notifyError(descriptor->frameNumber_, nullptr, CAMERA3_MSG_ERROR_RESULT);
+		camera3_capture_result_t captureResult = {};
 
-		pendingRequests_.pop_front();
-	}
+		captureResult.frame_number = descriptor->frameNumber_;
 
-	if (pendingRequests_.empty()) {
-		locker.unlock();
-		pendingRequestsCv_.notify_one();
-		return;
+		if (descriptor->resultMetadata_)
+			captureResult.result =
+				descriptor->resultMetadata_->getMetadata();
+
+		std::vector<camera3_stream_buffer_t> resultBuffers;
+		resultBuffers.reserve(descriptor->buffers_.size());
+
+		for (auto &buffer : descriptor->buffers_) {
+			camera3_buffer_status status = CAMERA3_BUFFER_STATUS_ERROR;
+
+			if (buffer.status == Camera3RequestDescriptor::Status::Success)
+				status = CAMERA3_BUFFER_STATUS_OK;
+
+			/*
+			 * Pass the buffer fence back to the camera framework as
+			 * a release fence. This instructs the framework to wait
+			 * on the acquire fence in case we haven't done so
+			 * ourselves for any reason.
+			 */
+			resultBuffers.push_back({ buffer.stream->camera3Stream(),
+						  buffer.camera3Buffer, status,
+						  -1, buffer.fence.release() });
+		}
+
+		captureResult.num_output_buffers = resultBuffers.size();
+		captureResult.output_buffers = resultBuffers.data();
+
+		if (descriptor->status_ == Camera3RequestDescriptor::Status::Success)
+			captureResult.partial_result = 1;
+
+		callbacks_->process_capture_result(callbacks_, &captureResult);
 	}
 }
 
-void CameraDevice::setBufferStatus(StreamBuffer &streamBuffer,
-				   StreamBuffer::Status status) const
+void CameraDevice::setBufferStatus(Camera3RequestDescriptor::StreamBuffer &streamBuffer,
+				   Camera3RequestDescriptor::Status status)
 {
 	streamBuffer.status = status;
-	if (status != StreamBuffer::Status::Success) {
+	if (status != Camera3RequestDescriptor::Status::Success) {
 		notifyError(streamBuffer.request->frameNumber_,
 			    streamBuffer.stream->camera3Stream(),
 			    CAMERA3_MSG_ERROR_BUFFER);
+
+		/* Also set error status on entire request descriptor. */
+		streamBuffer.request->status_ =
+			Camera3RequestDescriptor::Status::Error;
 	}
-}
-
-void CameraDevice::sendCaptureResult(Camera3ResultDescriptor *result) const
-{
-	std::vector<camera3_stream_buffer_t> resultBuffers;
-	resultBuffers.reserve(result->buffers_.size());
-
-	for (auto &buffer : result->buffers_) {
-		camera3_buffer_status status = CAMERA3_BUFFER_STATUS_ERROR;
-
-		if (buffer->status == StreamBuffer::Status::Success)
-			status = CAMERA3_BUFFER_STATUS_OK;
-
-		camera3_stream_buffer_t outputBuffer = { buffer->stream->camera3Stream(),
-							 buffer->camera3Buffer, status,
-							 -1, buffer->fence.release() };
-
-#ifdef HAVE_ANDROID_OS
-		camera3_stream_buffer_t outputBufferInternal = outputBuffer;
-		mBufferAdapter->decodeStreamBufferPtr(&outputBufferInternal, &outputBuffer);
-#endif
-		/*
-		 * Pass the buffer fence back to the camera framework as
-		 * a release fence. This instructs the framework to wait
-		 * on the acquire fence in case we haven't done so
-		 * ourselves for any reason.
-		 */
-		resultBuffers.push_back(outputBuffer);
-	}
-
-	camera3_capture_result_t captureResult = {};
-
-	captureResult.frame_number = result->request_->frameNumber_;
-	captureResult.num_output_buffers = resultBuffers.size();
-	captureResult.output_buffers = resultBuffers.data();
-	captureResult.partial_result = result->metadataPackIndex_;
-
-	if (result->resultMetadata_)
-		captureResult.result = result->resultMetadata_->getMetadata();
-
-	callbacks_->process_capture_result(callbacks_, &captureResult);
-
-	LOG(HAL, Debug) << "Send result of frameNumber: "
-			<< captureResult.frame_number
-			<< " index: " << captureResult.partial_result
-			<< " has metadata: " << (!!captureResult.result)
-			<< " has buffers " << captureResult.num_output_buffers;
-}
-
-void CameraDevice::streamProcessingCompleteDelegate(StreamBuffer *streamBuffer,
-						    StreamBuffer::Status status)
-{
-	/*
-	 * Delegate the callback to the camera manager thread to simplify race condition.
-	 */
-	auto *method = new BoundMethodMember{
-		this, camera_.get(), &CameraDevice::streamProcessingComplete, ConnectionTypeQueued
-	};
-
-	method->activate(streamBuffer, status);
 }
 
 /**
@@ -1966,26 +1355,37 @@ void CameraDevice::streamProcessingCompleteDelegate(StreamBuffer *streamBuffer,
  * \param[in] streamBuffer The StreamBuffer for which processing is complete
  * \param[in] status Stream post-processing status
  *
- * This function is called from the camera's thread whenever a camera
+ * This function is called from the post-processor's thread whenever a camera
  * stream has finished post processing. The corresponding entry is dropped from
- * the result's pendingBufferToProcess_ list.
+ * the descriptor's pendingStreamsToProcess_ map.
  *
- * If the pendingBufferToProcess_ list is then empty, all streams requiring to
- * be generated from post-processing have been completed.
+ * If the pendingStreamsToProcess_ map is then empty, all streams requiring to
+ * be generated from post-processing have been completed. Mark the descriptor as
+ * complete using completeDescriptor() in that case.
  */
-void CameraDevice::streamProcessingComplete(StreamBuffer *streamBuffer,
-					    StreamBuffer::Status status)
+void CameraDevice::streamProcessingComplete(Camera3RequestDescriptor::StreamBuffer *streamBuffer,
+					    Camera3RequestDescriptor::Status status)
 {
 	setBufferStatus(*streamBuffer, status);
-	streamBuffer->dstBuffer = nullptr;
 
-	Camera3ResultDescriptor *result = streamBuffer->result;
-	result->pendingBuffersToProcess_.remove(streamBuffer);
+	/*
+	 * If the framebuffer is internal to CameraStream return it back now
+	 * that we're done processing it.
+	 */
+	if (streamBuffer->internalBuffer)
+		streamBuffer->stream->putBuffer(streamBuffer->internalBuffer);
 
-	if (!result->pendingBuffersToProcess_.empty())
-		return;
+	Camera3RequestDescriptor *request = streamBuffer->request;
 
-	checkAndCompleteReadyPartialResults(result);
+	{
+		MutexLocker locker(request->streamsProcessMutex_);
+
+		request->pendingStreamsToProcess_.erase(streamBuffer->stream);
+		if (!request->pendingStreamsToProcess_.empty())
+			return;
+	}
+
+	completeDescriptor(streamBuffer->request);
 }
 
 std::string CameraDevice::logPrefix() const
@@ -2017,51 +1417,23 @@ void CameraDevice::notifyError(uint32_t frameNumber, camera3_stream_t *stream,
 	callbacks_->notify(callbacks_, &notify);
 }
 
-std::unique_ptr<CameraMetadata> CameraDevice::getJpegPartialResultMetadata() const
-{
-	/*
-         * Reserve more capacity for the JPEG metadata set by the post-processor.
-         * Currently: 8 entries, 82 bytes extra capaticy.
-         *
-         * ANDROID_JPEG_GPS_COORDINATES (double x 3) = 24 bytes
-         * ANDROID_JPEG_GPS_PROCESSING_METHOD (byte x 32) = 32 bytes
-         * ANDROID_JPEG_GPS_TIMESTAMP (int64) = 8 bytes
-         * ANDROID_JPEG_SIZE (int32_t) = 4 bytes
-         * ANDROID_JPEG_QUALITY (byte) = 1 byte
-         * ANDROID_JPEG_ORIENTATION (int32_t) = 4 bytes
-         * ANDROID_JPEG_THUMBNAIL_QUALITY (byte) = 1 byte
-         * ANDROID_JPEG_THUMBNAIL_SIZE (int32 x 2) = 8 bytes
-         * Total bytes for JPEG metadata: 82
-         */
-	std::unique_ptr<CameraMetadata> resultMetadata =
-		std::make_unique<CameraMetadata>(8, 82);
-	if (!resultMetadata->isValid()) {
-		LOG(HAL, Error) << "Failed to allocate result metadata";
-		return nullptr;
-	}
-
-	return resultMetadata;
-}
-
+/*
+ * Produce a set of fixed result metadata.
+ */
 std::unique_ptr<CameraMetadata>
-CameraDevice::getPartialResultMetadata(const ControlList &metadata) const
+CameraDevice::getResultMetadata(const Camera3RequestDescriptor &descriptor) const
 {
+	const ControlList &metadata = descriptor.request_->metadata();
+	const CameraMetadata &settings = descriptor.settings_;
+	camera_metadata_ro_entry_t entry;
+	bool found;
+
 	/*
 	 * \todo Keep this in sync with the actual number of entries.
+	 * Currently: 40 entries, 156 bytes
 	 *
-	 * Reserve capacity for the metadata larger than 4 bytes which cannot
-	 * store in entries.
-	 * Currently: 6 entries, 40 bytes extra capaticy.
-	 *
-	 * ANDROID_SENSOR_TIMESTAMP (int64) = 8 bytes
-	 * ANDROID_SENSOR_EXPOSURE_TIME (int64) = 8 bytes
-	 * ANDROID_SENSOR_FRAME_DURATION (int64) = 8 bytes
-	 * ANDROID_SCALER_CROP_REGION (int32 X 4) = 16 bytes
-	 * Total bytes for capacity: 40
-	 *
-	 * Reserve more capacity for the JPEG metadata set by the post-processor.
-	 * Currently: 8 entries, 72 bytes extra capaticy.
-	 *
+	 * Reserve more space for the JPEG metadata set by the post-processor.
+	 * Currently:
 	 * ANDROID_JPEG_GPS_COORDINATES (double x 3) = 24 bytes
 	 * ANDROID_JPEG_GPS_PROCESSING_METHOD (byte x 32) = 32 bytes
 	 * ANDROID_JPEG_GPS_TIMESTAMP (int64) = 8 bytes
@@ -2070,72 +1442,150 @@ CameraDevice::getPartialResultMetadata(const ControlList &metadata) const
 	 * ANDROID_JPEG_ORIENTATION (int32_t) = 4 bytes
 	 * ANDROID_JPEG_THUMBNAIL_QUALITY (byte) = 1 byte
 	 * ANDROID_JPEG_THUMBNAIL_SIZE (int32 x 2) = 8 bytes
-	 * Total bytes for JPEG metadata: 72
-	 *
-	 * \todo Calculate the entries and capacity by the input ControlList.
+	 * Total bytes for JPEG metadata: 82
 	 */
 	std::unique_ptr<CameraMetadata> resultMetadata =
-		std::make_unique<CameraMetadata>(14, 224);
+		std::make_unique<CameraMetadata>(88, 166);
 	if (!resultMetadata->isValid()) {
 		LOG(HAL, Error) << "Failed to allocate result metadata";
 		return nullptr;
 	}
 
+	/*
+	 * \todo The value of the results metadata copied from the settings
+	 * will have to be passed to the libcamera::Camera and extracted
+	 * from libcamera::Request::metadata.
+	 */
+
+	uint8_t value = ANDROID_COLOR_CORRECTION_ABERRATION_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_COLOR_CORRECTION_ABERRATION_MODE,
+				 value);
+
+	value = ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_CONTROL_AE_ANTIBANDING_MODE, value);
+
+	int32_t value32 = 0;
+	resultMetadata->addEntry(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION,
+				 value32);
+
+	value = ANDROID_CONTROL_AE_LOCK_OFF;
+	resultMetadata->addEntry(ANDROID_CONTROL_AE_LOCK, value);
+
+	value = ANDROID_CONTROL_AE_MODE_ON;
+	resultMetadata->addEntry(ANDROID_CONTROL_AE_MODE, value);
+
+	if (settings.getEntry(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, &entry))
+		/*
+		 * \todo Retrieve the AE FPS range from the libcamera metadata.
+		 * As libcamera does not support that control, as a temporary
+		 * workaround return what the framework asked.
+		 */
+		resultMetadata->addEntry(ANDROID_CONTROL_AE_TARGET_FPS_RANGE,
+					 entry.data.i32, 2);
+
+	found = settings.getEntry(ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER, &entry);
+	value = found ? *entry.data.u8 :
+			(uint8_t)ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER_IDLE;
+	resultMetadata->addEntry(ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER, value);
+
+	value = ANDROID_CONTROL_AE_STATE_CONVERGED;
+	resultMetadata->addEntry(ANDROID_CONTROL_AE_STATE, value);
+
+	value = ANDROID_CONTROL_AF_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_CONTROL_AF_MODE, value);
+
+	value = ANDROID_CONTROL_AF_STATE_INACTIVE;
+	resultMetadata->addEntry(ANDROID_CONTROL_AF_STATE, value);
+
+	value = ANDROID_CONTROL_AF_TRIGGER_IDLE;
+	resultMetadata->addEntry(ANDROID_CONTROL_AF_TRIGGER, value);
+
+	value = ANDROID_CONTROL_AWB_MODE_AUTO;
+	resultMetadata->addEntry(ANDROID_CONTROL_AWB_MODE, value);
+
+	value = ANDROID_CONTROL_AWB_LOCK_OFF;
+	resultMetadata->addEntry(ANDROID_CONTROL_AWB_LOCK, value);
+
+	value = ANDROID_CONTROL_AWB_STATE_CONVERGED;
+	resultMetadata->addEntry(ANDROID_CONTROL_AWB_STATE, value);
+
+	value = ANDROID_CONTROL_CAPTURE_INTENT_PREVIEW;
+	resultMetadata->addEntry(ANDROID_CONTROL_CAPTURE_INTENT, value);
+
+	value = ANDROID_CONTROL_EFFECT_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_CONTROL_EFFECT_MODE, value);
+
+	value = ANDROID_CONTROL_MODE_AUTO;
+	resultMetadata->addEntry(ANDROID_CONTROL_MODE, value);
+
+	value = ANDROID_CONTROL_SCENE_MODE_DISABLED;
+	resultMetadata->addEntry(ANDROID_CONTROL_SCENE_MODE, value);
+
+	value = ANDROID_CONTROL_VIDEO_STABILIZATION_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_CONTROL_VIDEO_STABILIZATION_MODE, value);
+
+	value = ANDROID_FLASH_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_FLASH_MODE, value);
+
+	value = ANDROID_FLASH_STATE_UNAVAILABLE;
+	resultMetadata->addEntry(ANDROID_FLASH_STATE, value);
+
+	if (settings.getEntry(ANDROID_LENS_APERTURE, &entry))
+		resultMetadata->addEntry(ANDROID_LENS_APERTURE, entry.data.f, 1);
+
+	float focal_length = 1.0;
+	resultMetadata->addEntry(ANDROID_LENS_FOCAL_LENGTH, focal_length);
+
+	value = ANDROID_LENS_STATE_STATIONARY;
+	resultMetadata->addEntry(ANDROID_LENS_STATE, value);
+
+	value = ANDROID_LENS_OPTICAL_STABILIZATION_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_LENS_OPTICAL_STABILIZATION_MODE,
+				 value);
+
+	value32 = ANDROID_SENSOR_TEST_PATTERN_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_SENSOR_TEST_PATTERN_MODE, value32);
+
+	if (settings.getEntry(ANDROID_STATISTICS_FACE_DETECT_MODE, &entry))
+		resultMetadata->addEntry(ANDROID_STATISTICS_FACE_DETECT_MODE,
+					 entry.data.u8, 1);
+
+	value = ANDROID_STATISTICS_LENS_SHADING_MAP_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_STATISTICS_LENS_SHADING_MAP_MODE,
+				 value);
+
+	value = ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE, value);
+
+	value = ANDROID_STATISTICS_SCENE_FLICKER_NONE;
+	resultMetadata->addEntry(ANDROID_STATISTICS_SCENE_FLICKER, value);
+
+	value = ANDROID_NOISE_REDUCTION_MODE_OFF;
+	resultMetadata->addEntry(ANDROID_NOISE_REDUCTION_MODE, value);
+
+	/* 33.3 msec */
+	const int64_t rolling_shutter_skew = 33300000;
+	resultMetadata->addEntry(ANDROID_SENSOR_ROLLING_SHUTTER_SKEW,
+				 rolling_shutter_skew);
+
 	/* Add metadata tags reported by libcamera. */
-	const auto &timestamp = metadata.get(controls::SensorTimestamp);
-	if (timestamp)
-		resultMetadata->addEntry(ANDROID_SENSOR_TIMESTAMP, *timestamp);
+	const int64_t timestamp = metadata.get(controls::SensorTimestamp).value_or(0);
+	resultMetadata->addEntry(ANDROID_SENSOR_TIMESTAMP, timestamp);
 
 	const auto &pipelineDepth = metadata.get(controls::draft::PipelineDepth);
 	if (pipelineDepth)
 		resultMetadata->addEntry(ANDROID_REQUEST_PIPELINE_DEPTH,
 					 *pipelineDepth);
 
-	if (metadata.contains(controls::EXPOSURE_TIME)) {
-		const auto &exposureTime = metadata.get(controls::ExposureTime);
-		int64_t exposure_time = static_cast<int64_t>(exposureTime.value_or(33'333));
-		resultMetadata->addEntry(ANDROID_SENSOR_EXPOSURE_TIME, exposure_time * 1000ULL);
-	}
-
-	if (metadata.contains(controls::draft::AE_STATE)) {
-		const auto &aeState = metadata.get(controls::draft::AeState);
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_STATE, aeState.value_or(0));
-	}
-
-	if (metadata.contains(controls::AF_STATE)) {
-		const auto &afState = metadata.get(controls::AfState);
-		resultMetadata->addEntry(ANDROID_CONTROL_AF_STATE, afState.value_or(0));
-	}
-
-	if (metadata.contains(controls::draft::LENS_FOCUS_DISTANCE)) {
-		const auto &lensFocusDistance = metadata.get(controls::draft::LensFocusDistance);
-		resultMetadata->addEntry(ANDROID_LENS_FOCUS_DISTANCE, lensFocusDistance.value_or(0));
-	}
-
-	if (metadata.contains(controls::draft::LENS_FOCUS_RANGE)) {
-		const auto &lensFocusRange = metadata.get(controls::draft::LensFocusRange);
-		resultMetadata->addEntry(ANDROID_LENS_FOCUS_RANGE, *lensFocusRange);
-	}
-
-	if (metadata.contains(controls::ANALOGUE_GAIN)) {
-		const auto &sensorSensitivity = metadata.get(controls::AnalogueGain).value_or(100);
-		resultMetadata->addEntry(ANDROID_SENSOR_SENSITIVITY, static_cast<int>(sensorSensitivity));
-	}
-
-	const auto &awbState = metadata.get(controls::draft::AwbState);
-	if (metadata.contains(controls::draft::AWB_STATE)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_AWB_STATE, awbState.value_or(0));
-	}
+	const auto &exposureTime = metadata.get(controls::ExposureTime);
+	if (exposureTime)
+		resultMetadata->addEntry(ANDROID_SENSOR_EXPOSURE_TIME,
+					 *exposureTime * 1000ULL);
 
 	const auto &frameDuration = metadata.get(controls::FrameDuration);
-	if (metadata.contains(controls::FRAME_DURATION)) {
-		resultMetadata->addEntry(ANDROID_SENSOR_FRAME_DURATION, frameDuration.value_or(33'333'333));
-	}
-
-	const auto &lensState = metadata.get(controls::draft::LensState);
-	if (metadata.contains(controls::draft::LENS_STATE)) {
-		resultMetadata->addEntry(ANDROID_LENS_STATE, lensState.value_or(0));
-	}
+	if (frameDuration)
+		resultMetadata->addEntry(ANDROID_SENSOR_FRAME_DURATION,
+					 *frameDuration * 1000);
 
 	const auto &faceDetectRectangles =
 		metadata.get(controls::draft::FaceDetectFaceRectangles);
@@ -2196,9 +1646,7 @@ CameraDevice::getPartialResultMetadata(const ControlList &metadata) const
 	if (scalerCrop) {
 		const Rectangle &crop = *scalerCrop;
 		int32_t cropRect[] = {
-			crop.x,
-			crop.y,
-			static_cast<int32_t>(crop.width),
+			crop.x, crop.y, static_cast<int32_t>(crop.width),
 			static_cast<int32_t>(crop.height),
 		};
 		resultMetadata->addEntry(ANDROID_SCALER_CROP_REGION, cropRect);
@@ -2225,366 +1673,4 @@ CameraDevice::getPartialResultMetadata(const ControlList &metadata) const
 	}
 
 	return resultMetadata;
-}
-
-/*
- * Set jpeg metadata used to generate EXIF in the JPEG post processing.
- */
-void CameraDevice::generateJpegExifMetadata(Camera3RequestDescriptor *request,
-					    StreamBuffer *buffer) const
-{
-	const ControlList &metadata = request->request_->metadata();
-	auto &jpegExifMetadata = buffer->jpegExifMetadata;
-	jpegExifMetadata.emplace(StreamBuffer::JpegExifMetadata());
-
-	const int64_t exposureTime = metadata.get(controls::ExposureTime).value_or(0);
-	jpegExifMetadata->sensorExposureTime = exposureTime;
-
-	/*
-	 * todo: Android Sensitivity should only include analog gain X digital
-	 * gain from sensor. Digital gain on ISP shouldn't be included.
-	 * Calculate sensitivity accordingly when we can differentiate
-	 * the source of digital gains.
-	 * For now assuming digital gain = 1, therefore
-	 * ISO sensitivity = analog gain.
-	 */
-	int32_t intIso = static_cast<int32_t>(
-		metadata.get(controls::AnalogueGain).value_or(100));
-	jpegExifMetadata->sensorSensitivityISO = intIso;
-
-	camera_metadata_ro_entry_t entry;
-	if (request->settings_.getEntry(ANDROID_LENS_FOCAL_LENGTH, &entry)) {
-		jpegExifMetadata->lensFocalLength = *entry.data.f;
-	} else {
-		jpegExifMetadata->lensFocalLength = 1.0f;
-	}
-}
-
-/*
- * Produce a result metadata for the final result.
- */
-std::unique_ptr<CameraMetadata>
-CameraDevice::getFinalResultMetadata(
-	Camera3RequestDescriptor *camera3Request,
-	const libcamera::ControlList &metadata) const
-{
-	camera_metadata_ro_entry_t entry;
-	bool found;
-
-	/*
-	 * \todo Retrieve metadata from corresponding libcamera controls.
-	 * \todo Keep this in sync with the actual number of entries.
-	 *
-	 * Reserve capacity for the metadata larger than 4 bytes which cannot
-	 * store in entries.
-	 * Currently: 31 entries, 16 bytes
-	 *
-	 * ANDROID_CONTROL_AE_TARGET_FPS_RANGE (int32 X 2) = 8 bytes
-	 * ANDROID_SENSOR_ROLLING_SHUTTER_SKEW (int64) = 8 bytes
-	 *
-	 * Total bytes: 16
-	 */
-	std::unique_ptr<CameraMetadata> resultMetadata =
-		std::make_unique<CameraMetadata>(69, 8212);
-	if (!resultMetadata->isValid()) {
-		LOG(HAL, Error) << "Failed to allocate result metadata";
-		return nullptr;
-	}
-
-	std::unordered_set<uint32_t> tagsToAvoid;
-	for (const auto &partialResult : camera3Request->partialResults_) {
-		if (!partialResult->resultMetadata_) continue;
-
-		for (auto tag : kDuplicatedMetadata) {
-			if (partialResult->resultMetadata_->hasEntry(tag))
-				tagsToAvoid.insert(tag);
-		}
-	}
-
-	resultMetadata->addTagsToAvoid(tagsToAvoid);
-
-	if (!metadata.contains(controls::draft::AE_STATE))
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_STATE,
-					 ANDROID_CONTROL_AE_STATE_CONVERGED);
-
-	if (!metadata.contains(controls::AF_STATE))
-		resultMetadata->addEntry(ANDROID_CONTROL_AF_STATE,
-					 ANDROID_CONTROL_AF_STATE_INACTIVE);
-
-	if (!metadata.contains(controls::draft::AWB_STATE))
-		resultMetadata->addEntry(ANDROID_CONTROL_AWB_STATE,
-					 ANDROID_CONTROL_AWB_STATE_CONVERGED);
-
-	if (!metadata.contains(controls::draft::LENS_STATE))
-		resultMetadata->addEntry(ANDROID_LENS_STATE,
-					 ANDROID_LENS_STATE_STATIONARY);
-
-	if (!metadata.get(controls::draft::TestPatternMode))
-		resultMetadata->addEntry(ANDROID_SENSOR_TEST_PATTERN_MODE,
-					 ANDROID_SENSOR_TEST_PATTERN_MODE_OFF);
-	/*
-	 * \todo The value of the results metadata copied from the settings
-	 * will have to be passed to the libcamera::Camera and extracted
-	 * from libcamera::Request::metadata.
-	 */
-
-	uint8_t value = ANDROID_COLOR_CORRECTION_ABERRATION_MODE_OFF;
-	resultMetadata->addEntry(ANDROID_COLOR_CORRECTION_ABERRATION_MODE,
-				 value);
-
-	int32_t value32 = 0;
-	resultMetadata->addEntry(ANDROID_CONTROL_AE_EXPOSURE_COMPENSATION,
-				 value32);
-
-	const CameraMetadata &settings = camera3Request->settings_;
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_LOCK, &entry)) {
-		value = *entry.data.u8;
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_LOCK, value);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_MODE, &entry)) {
-		value = *entry.data.u8;
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_MODE, value);
-	} else {
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_MODE, ANDROID_CONTROL_AE_MODE_ON);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_ANTIBANDING_MODE, &entry)) {
-		value = *entry.data.u8;
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_ANTIBANDING_MODE, value);
-	} else {
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_ANTIBANDING_MODE, ANDROID_CONTROL_AE_ANTIBANDING_MODE_OFF);
-	}
-
-	if (settings.getEntry(ANDROID_BLACK_LEVEL_LOCK, &entry)) {
-		value = *entry.data.u8;
-		resultMetadata->addEntry(ANDROID_BLACK_LEVEL_LOCK, value);
-	} else {
-		resultMetadata->addEntry(ANDROID_BLACK_LEVEL_LOCK, ANDROID_BLACK_LEVEL_LOCK_OFF);
-	}
-
-	found = settings.getEntry(ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER, &entry);
-	value = found ? *entry.data.u8 : (uint8_t)ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER_IDLE;
-	resultMetadata->addEntry(ANDROID_CONTROL_AE_PRECAPTURE_TRIGGER, value);
-
-	if (settings.getEntry(ANDROID_CONTROL_AF_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_AF_MODE, *entry.data.u8);
-	} else {
-		resultMetadata->addEntry(ANDROID_CONTROL_AF_MODE, ANDROID_CONTROL_AF_MODE_OFF);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AWB_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_AWB_MODE, *entry.data.u8);
-	} else {
-		value = ANDROID_CONTROL_AWB_MODE_AUTO;
-		resultMetadata->addEntry(ANDROID_CONTROL_AWB_MODE, value);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AWB_LOCK, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_AWB_LOCK, *entry.data.u8);
-	} else {
-		value = ANDROID_CONTROL_AWB_LOCK_OFF;
-		resultMetadata->addEntry(ANDROID_CONTROL_AWB_LOCK, value);
-	}
-
-	value = ANDROID_CONTROL_CAPTURE_INTENT_PREVIEW;
-	resultMetadata->addEntry(ANDROID_CONTROL_CAPTURE_INTENT, value);
-
-	value = ANDROID_CONTROL_EFFECT_MODE_OFF;
-	resultMetadata->addEntry(ANDROID_CONTROL_EFFECT_MODE, value);
-
-	if (settings.getEntry(ANDROID_CONTROL_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_MODE, *entry.data.u8);
-	} else {
-		value = ANDROID_CONTROL_MODE_AUTO;
-		resultMetadata->addEntry(ANDROID_CONTROL_MODE, value);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_SCENE_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_SCENE_MODE, *entry.data.u8);
-	} else {
-		value = ANDROID_CONTROL_SCENE_MODE_DISABLED;
-		resultMetadata->addEntry(ANDROID_CONTROL_SCENE_MODE, value);
-	}
-
-	value = ANDROID_CONTROL_VIDEO_STABILIZATION_MODE_OFF;
-	resultMetadata->addEntry(ANDROID_CONTROL_VIDEO_STABILIZATION_MODE, value);
-
-	value = ANDROID_FLASH_MODE_OFF;
-	resultMetadata->addEntry(ANDROID_FLASH_MODE, value);
-
-	value = ANDROID_FLASH_STATE_UNAVAILABLE;
-	resultMetadata->addEntry(ANDROID_FLASH_STATE, value);
-
-	if (settings.getEntry(ANDROID_LENS_APERTURE, &entry))
-		resultMetadata->addEntry(ANDROID_LENS_APERTURE, entry.data.f, 1);
-
-	value = ANDROID_LENS_OPTICAL_STABILIZATION_MODE_OFF;
-	resultMetadata->addEntry(ANDROID_LENS_OPTICAL_STABILIZATION_MODE,
-				 value);
-
-	settings.getEntry(ANDROID_STATISTICS_FACE_DETECT_MODE, &entry);
-	resultMetadata->addEntry(ANDROID_STATISTICS_FACE_DETECT_MODE,
-				 entry.data.u8, 1);
-
-	value = ANDROID_STATISTICS_LENS_SHADING_MAP_MODE_OFF;
-	resultMetadata->addEntry(ANDROID_STATISTICS_LENS_SHADING_MAP_MODE,
-				 value);
-
-	value = ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE_OFF;
-	resultMetadata->addEntry(ANDROID_STATISTICS_HOT_PIXEL_MAP_MODE, value);
-
-	value = ANDROID_STATISTICS_SCENE_FLICKER_NONE;
-	resultMetadata->addEntry(ANDROID_STATISTICS_SCENE_FLICKER, value);
-
-	if (settings.getEntry(ANDROID_NOISE_REDUCTION_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_NOISE_REDUCTION_MODE, *entry.data.u8);
-	} else {
-		value = ANDROID_NOISE_REDUCTION_MODE_OFF;
-		resultMetadata->addEntry(ANDROID_NOISE_REDUCTION_MODE, value);
-	}
-
-	/* 33.3 msec */
-	const int64_t rolling_shutter_skew = 33300000;
-	resultMetadata->addEntry(ANDROID_SENSOR_ROLLING_SHUTTER_SKEW,
-				 rolling_shutter_skew);
-
-	// Support FULL mode metadata
-	if (settings.getEntry(ANDROID_COLOR_CORRECTION_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_COLOR_CORRECTION_MODE, *entry.data.u8);
-	}
-
-	if (settings.getEntry(ANDROID_COLOR_CORRECTION_TRANSFORM, &entry)) {
-		resultMetadata->addEntry(ANDROID_COLOR_CORRECTION_TRANSFORM, entry.data.r, entry.count);
-	}
-
-	if (settings.getEntry(ANDROID_COLOR_CORRECTION_GAINS, &entry)) {
-		resultMetadata->addEntry(ANDROID_COLOR_CORRECTION_GAINS, entry.data.f, entry.count);
-	}
-
-	if (settings.getEntry(ANDROID_EDGE_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_EDGE_MODE, *entry.data.u8);
-	}
-
-	if (settings.getEntry(ANDROID_HOT_PIXEL_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_HOT_PIXEL_MODE, *entry.data.u8);
-	}
-
-	if (settings.getEntry(ANDROID_LENS_FILTER_DENSITY, &entry)) {
-		resultMetadata->addEntry(ANDROID_LENS_FILTER_DENSITY, entry.data.f, 1);
-	}
-
-	if (settings.getEntry(ANDROID_LENS_FOCUS_RANGE, &entry)) {
-		resultMetadata->addEntry(ANDROID_LENS_FOCUS_RANGE, entry.data.f, entry.count);
-	}
-
-	if (settings.getEntry(ANDROID_SHADING_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_SHADING_MODE, *entry.data.u8);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_GAMMA, &entry)) {
-		resultMetadata->addEntry(ANDROID_TONEMAP_GAMMA, *entry.data.f);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_PRESET_CURVE, &entry)) {
-		resultMetadata->addEntry(ANDROID_TONEMAP_PRESET_CURVE, *entry.data.u8);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_MODE, &entry)) {
-		resultMetadata->addEntry(ANDROID_TONEMAP_MODE, *entry.data.u8);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_CURVE_RED, &entry)) {
-		resultMetadata->addEntry(ANDROID_TONEMAP_CURVE_RED, entry.data.f, entry.count);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_CURVE_GREEN, &entry)) {
-		resultMetadata->addEntry(ANDROID_TONEMAP_CURVE_GREEN, entry.data.f, entry.count);
-	}
-
-	if (settings.getEntry(ANDROID_TONEMAP_CURVE_BLUE, &entry)) {
-		resultMetadata->addEntry(ANDROID_TONEMAP_CURVE_BLUE, entry.data.f, entry.count);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_AE_TARGET_FPS_RANGE, entry.data.i32, 2);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AF_TRIGGER, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_AF_TRIGGER, *entry.data.u8);
-	} else {
-		resultMetadata->addEntry(ANDROID_CONTROL_AF_TRIGGER, ANDROID_CONTROL_AF_TRIGGER_IDLE);
-	}
-
-	if (settings.getEntry(ANDROID_CONTROL_AF_REGIONS, &entry)) {
-		resultMetadata->addEntry(ANDROID_CONTROL_AF_REGIONS, entry.data.i32, entry.count);
-	}
-
-	if (settings.getEntry(ANDROID_LENS_FOCAL_LENGTH, &entry)) {
-		resultMetadata->addEntry(ANDROID_LENS_FOCAL_LENGTH, *entry.data.f);
-	} else {
-		float lensFocalLength = 1.0f;
-		resultMetadata->addEntry(ANDROID_LENS_FOCAL_LENGTH, lensFocalLength);
-	}
-
-	// Todo, update this with real lens shading map from calbration data
-	if (settings.getEntry(ANDROID_STATISTICS_LENS_SHADING_MAP_MODE, &entry) && *entry.data.u8) {
-		std::vector<float> lensShadingMap(4 * 17 * 17, 1.0f);
-		resultMetadata->addEntry(ANDROID_STATISTICS_LENS_SHADING_MAP, lensShadingMap);
-	}
-
-	/*
-	 * Return the result metadata pack even is not valid: get() will return
-	 * nullptr.
-	 */
-	if (!resultMetadata->isValid()) {
-		LOG(HAL, Error) << "Failed to construct result metadata";
-	}
-
-	if (resultMetadata->resized()) {
-		auto [entryCount, dataCount] = resultMetadata->usage();
-		LOG(HAL, Info)
-			<< "Result metadata resized: " << entryCount
-			<< " entries and " << dataCount << " bytes used";
-	}
-
-	return resultMetadata;
-}
-
-void CameraDevice::cameraDisconnected()
-{
-	notifyError(0, nullptr, CAMERA3_MSG_ERROR_DEVICE);
-}
-
-void CameraDevice::queryManufacturerInfo()
-{
-#ifdef HAVE_ANDROID_OS
-	char model[255] = { '\0' };
-	property_get("ro.product.model", model, defaultModel_.c_str());
-	model_ = model;
-
-	char maker[255] = { '\0' };
-	property_get("ro.product.manufacturer", maker, defaultMaker_.c_str());
-	maker_ = maker;
-#else
-	/* \todo Support getting properties on Android */
-	std::ifstream fstream("/var/cache/camera/camera.prop");
-	if (!fstream.is_open())
-		return;
-
-	std::string line;
-	while (std::getline(fstream, line)) {
-		std::string::size_type delimPos = line.find("=");
-		if (delimPos == std::string::npos)
-			continue;
-		std::string key = line.substr(0, delimPos);
-		std::string val = line.substr(delimPos + 1);
-
-		if (!key.compare("ro.product.model"))
-			model_ = val;
-		else if (!key.compare("ro.product.manufacturer"))
-			maker_ = val;
-	}
-#endif
 }

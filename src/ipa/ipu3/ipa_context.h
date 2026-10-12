@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * ipa_context.h - IPU3 IPA Context
+ * IPU3 IPA Context
  *
  */
 
@@ -12,6 +12,7 @@
 
 #include <libcamera/base/utils.h>
 
+#include <libcamera/controls.h>
 #include <libcamera/geometry.h>
 
 #include <libipa/fc_queue.h>
@@ -32,8 +33,8 @@ struct IPASessionConfiguration {
 	} af;
 
 	struct {
-		utils::Duration minShutterSpeed;
-		utils::Duration maxShutterSpeed;
+		utils::Duration minExposureTime;
+		utils::Duration maxExposureTime;
 		double minAnalogueGain;
 		double maxAnalogueGain;
 	} agc;
@@ -55,6 +56,8 @@ struct IPAActiveState {
 	struct {
 		uint32_t exposure;
 		double gain;
+		uint32_t constraintMode;
+		uint32_t exposureMode;
 	} agc;
 
 	struct {
@@ -81,10 +84,17 @@ struct IPAFrameContext : public FrameContext {
 };
 
 struct IPAContext {
+	IPAContext(unsigned int frameContextSize)
+		: frameContexts(frameContextSize)
+	{
+	}
+
 	IPASessionConfiguration configuration;
 	IPAActiveState activeState;
 
 	FCQueue<IPAFrameContext> frameContexts;
+
+	ControlInfoMap::Map ctrlMap;
 };
 
 } /* namespace ipa::ipu3 */

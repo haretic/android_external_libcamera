@@ -2,20 +2,22 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * controls.h - Control handling
+ * Control handling
  */
 
 #pragma once
 
 #include <assert.h>
+#include <map>
 #include <optional>
-#include <set>
 #include <stdint.h>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include <libcamera/base/class.h>
+#include <libcamera/base/flags.h>
 #include <libcamera/base/span.h>
 
 #include <libcamera/geometry.h>
@@ -41,72 +43,89 @@ enum ControlType {
 
 namespace details {
 
-template<typename T>
+template<typename T, typename = void>
 struct control_type {
 };
 
 template<>
 struct control_type<void> {
 	static constexpr ControlType value = ControlTypeNone;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<bool> {
 	static constexpr ControlType value = ControlTypeBool;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<uint8_t> {
 	static constexpr ControlType value = ControlTypeByte;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<uint16_t> {
 	static constexpr ControlType value = ControlTypeUnsigned16;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<uint32_t> {
 	static constexpr ControlType value = ControlTypeUnsigned32;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<int32_t> {
 	static constexpr ControlType value = ControlTypeInteger32;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<int64_t> {
 	static constexpr ControlType value = ControlTypeInteger64;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<float> {
 	static constexpr ControlType value = ControlTypeFloat;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
-struct control_type<std::string> {
+struct control_type<std::string_view> {
 	static constexpr ControlType value = ControlTypeString;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<Rectangle> {
 	static constexpr ControlType value = ControlTypeRectangle;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<Size> {
 	static constexpr ControlType value = ControlTypeSize;
+	static constexpr std::size_t size = 0;
 };
 
 template<>
 struct control_type<Point> {
 	static constexpr ControlType value = ControlTypePoint;
+	static constexpr std::size_t size = 0;
 };
 
 template<typename T, std::size_t N>
-struct control_type<Span<T, N>> : public control_type<std::remove_cv_t<T>> {
+struct control_type<Span<T, N>, std::enable_if_t<control_type<std::remove_cv_t<T>>::size == 0>> : public control_type<std::remove_cv_t<T>> {
+	static constexpr std::size_t size = N;
+};
+
+template<typename T>
+struct control_type<T, std::enable_if_t<std::is_enum_v<T> && sizeof(T) == sizeof(int32_t)>> : public control_type<int32_t> {
 };
 
 } /* namespace details */
@@ -119,7 +138,7 @@ public:
 #ifndef __DOXYGEN__
 	template<typename T, std::enable_if_t<!details::is_span<T>::value &&
 					      details::control_type<T>::value &&
-					      !std::is_same<std::string, std::remove_cv_t<T>>::value,
+					      !std::is_same<std::string_view, std::remove_cv_t<T>>::value,
 					      std::nullptr_t> = nullptr>
 	ControlValue(const T &value)
 		: type_(ControlTypeNone), numElements_(0)
@@ -129,7 +148,7 @@ public:
 	}
 
 	template<typename T, std::enable_if_t<details::is_span<T>::value ||
-					      std::is_same<std::string, std::remove_cv_t<T>>::value,
+					      std::is_same<std::string_view, std::remove_cv_t<T>>::value,
 					      std::nullptr_t> = nullptr>
 #else
 	template<typename T>
@@ -163,7 +182,7 @@ public:
 
 #ifndef __DOXYGEN__
 	template<typename T, std::enable_if_t<!details::is_span<T>::value &&
-					      !std::is_same<std::string, std::remove_cv_t<T>>::value,
+					      !std::is_same<std::string_view, std::remove_cv_t<T>>::value,
 					      std::nullptr_t> = nullptr>
 	T get() const
 	{
@@ -174,7 +193,7 @@ public:
 	}
 
 	template<typename T, std::enable_if_t<details::is_span<T>::value ||
-					      std::is_same<std::string, std::remove_cv_t<T>>::value,
+					      std::is_same<std::string_view, std::remove_cv_t<T>>::value,
 					      std::nullptr_t> = nullptr>
 #else
 	template<typename T>
@@ -191,7 +210,7 @@ public:
 
 #ifndef __DOXYGEN__
 	template<typename T, std::enable_if_t<!details::is_span<T>::value &&
-					      !std::is_same<std::string, std::remove_cv_t<T>>::value,
+					      !std::is_same<std::string_view, std::remove_cv_t<T>>::value,
 					      std::nullptr_t> = nullptr>
 	void set(const T &value)
 	{
@@ -200,7 +219,7 @@ public:
 	}
 
 	template<typename T, std::enable_if_t<details::is_span<T>::value ||
-					      std::is_same<std::string, std::remove_cv_t<T>>::value,
+					      std::is_same<std::string_view, std::remove_cv_t<T>>::value,
 					      std::nullptr_t> = nullptr>
 #else
 	template<typename T>
@@ -231,22 +250,43 @@ private:
 class ControlId
 {
 public:
-	ControlId(unsigned int id, const std::string &name, ControlType type)
-		: id_(id), name_(name), type_(type)
-	{
-	}
+	enum class Direction {
+		In = (1 << 0),
+		Out = (1 << 1),
+	};
+
+	using DirectionFlags = Flags<Direction>;
+
+	ControlId(unsigned int id, const std::string &name, const std::string &vendor,
+		  ControlType type, DirectionFlags direction,
+		  std::size_t size = 0,
+		  const std::map<std::string, int32_t> &enumStrMap = {});
 
 	unsigned int id() const { return id_; }
 	const std::string &name() const { return name_; }
+	const std::string &vendor() const { return vendor_; }
 	ControlType type() const { return type_; }
+	DirectionFlags direction() const { return direction_; }
+	bool isInput() const { return !!(direction_ & Direction::In); }
+	bool isOutput() const { return !!(direction_ & Direction::Out); }
+	bool isArray() const { return size_ > 0; }
+	std::size_t size() const { return size_; }
+	const std::map<int32_t, std::string> &enumerators() const { return reverseMap_; }
 
 private:
 	LIBCAMERA_DISABLE_COPY_AND_MOVE(ControlId)
 
 	unsigned int id_;
 	std::string name_;
+	std::string vendor_;
 	ControlType type_;
+	DirectionFlags direction_;
+	std::size_t size_;
+	std::map<std::string, int32_t> enumStrMap_;
+	std::map<int32_t, std::string> reverseMap_;
 };
+
+LIBCAMERA_FLAGS_ENABLE_OPERATORS(ControlId::Direction)
 
 static inline bool operator==(unsigned int lhs, const ControlId &rhs)
 {
@@ -274,8 +314,11 @@ class Control : public ControlId
 public:
 	using type = T;
 
-	Control(unsigned int id, const char *name)
-		: ControlId(id, name, details::control_type<std::remove_cv_t<T>>::value)
+	Control(unsigned int id, const char *name, const char *vendor,
+		ControlId::DirectionFlags direction,
+		const std::map<std::string, int32_t> &enumStrMap = {})
+		: ControlId(id, name, vendor, details::control_type<std::remove_cv_t<T>>::value,
+			    direction, details::control_type<std::remove_cv_t<T>>::size, enumStrMap)
 	{
 	}
 
@@ -291,8 +334,6 @@ public:
 			     const ControlValue &def = {});
 	explicit ControlInfo(Span<const ControlValue> values,
 			     const ControlValue &def = {});
-	explicit ControlInfo(std::set<bool> values, bool def);
-	explicit ControlInfo(bool value);
 
 	const ControlValue &min() const { return min_; }
 	const ControlValue &max() const { return max_; }

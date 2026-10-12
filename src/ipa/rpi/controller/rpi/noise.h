@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * noise.h - Noise control algorithm
+ * Noise control algorithm
  */
 #pragma once
 
@@ -19,7 +19,7 @@ public:
 	Noise(Controller *controller);
 	char const *name() const override;
 	void switchMode(CameraMode const &cameraMode, Metadata *metadata) override;
-	int read(const libcamera::YamlObject &params) override;
+	int read(const libcamera::ValueNode &params) override;
 	void prepare(Metadata *imageMetadata) override;
 
 private:

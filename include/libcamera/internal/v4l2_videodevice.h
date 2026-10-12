@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * v4l2_videodevice.h - V4L2 Video Device
+ * V4L2 Video Device
  */
 
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <memory>
 #include <optional>
 #include <ostream>
@@ -34,6 +33,7 @@
 #include "libcamera/internal/formats.h"
 #include "libcamera/internal/v4l2_device.h"
 #include "libcamera/internal/v4l2_pixelformat.h"
+#include "libcamera/internal/v4l2_request.h"
 
 namespace libcamera {
 
@@ -124,22 +124,13 @@ struct V4L2Capability final : v4l2_capability {
 class V4L2BufferCache
 {
 public:
-	virtual bool isEmpty() const = 0;
-	virtual int get(const FrameBuffer &buffer, uint32_t userId) = 0;
-	virtual void put(unsigned int offsetedIdx) = 0;
-	virtual ~V4L2BufferCache() = default;
-};
+	V4L2BufferCache(unsigned int numEntries);
+	V4L2BufferCache(const std::vector<std::unique_ptr<FrameBuffer>> &buffers);
+	~V4L2BufferCache();
 
-class SimpleV4L2BufferCache : public V4L2BufferCache
-{
-public:
-	SimpleV4L2BufferCache(unsigned int numEntries, unsigned int offset = 0);
-	SimpleV4L2BufferCache(const std::vector<std::unique_ptr<FrameBuffer>> &buffers, unsigned int offset = 0);
-	~SimpleV4L2BufferCache();
-
-	bool isEmpty() const override;
-	int get(const FrameBuffer &buffer, uint32_t userId) override;
-	void put(unsigned int offsetedIdx) override;
+	bool isEmpty() const;
+	int get(const FrameBuffer &buffer);
+	void put(unsigned int index);
 
 private:
 	class Entry
@@ -167,11 +158,10 @@ private:
 		std::vector<Plane> planes_;
 	};
 
-	std::atomic<uint64_t> lastUsedCounter_;
+	uint64_t lastUsedCounter_;
 	std::vector<Entry> cache_;
 	/* \todo Expose the miss counter through an instrumentation API. */
 	unsigned int missCounter_;
-	unsigned int offset_;
 };
 
 class V4L2DeviceFormat
@@ -189,14 +179,8 @@ public:
 	std::array<Plane, 3> planes;
 	unsigned int planesCount = 0;
 
-	const std::string toString() const;
+	std::string toString() const;
 };
-
-bool operator==(const V4L2DeviceFormat &lhs, const V4L2DeviceFormat &rhs);
-static inline bool operator!=(const V4L2DeviceFormat &lhs, const V4L2DeviceFormat &rhs)
-{
-	return !(lhs == rhs);
-}
 
 std::ostream &operator<<(std::ostream &out, const V4L2DeviceFormat &f);
 
@@ -222,9 +206,9 @@ public:
 	int getFormat(V4L2DeviceFormat *format);
 	int tryFormat(V4L2DeviceFormat *format);
 	int setFormat(V4L2DeviceFormat *format);
-	int setFormatVideo(V4L2DeviceFormat *format);
 	Formats formats(uint32_t code = 0);
 
+	int getSelection(unsigned int target, Rectangle *rect);
 	int setSelection(unsigned int target, Rectangle *rect);
 
 	int allocateBuffers(unsigned int count,
@@ -234,9 +218,8 @@ public:
 	int importBuffers(unsigned int count);
 	int releaseBuffers();
 
-	int queueBuffer(FrameBuffer *buffer, int requestFd = -1, uint32_t userId = 0);
+	int queueBuffer(FrameBuffer *buffer, const V4L2Request *request = nullptr);
 	Signal<FrameBuffer *> bufferReady;
-	Signal<std::pair<FrameBuffer *, int>> requestBufferReady;
 
 	int streamOn();
 	int streamOff();
@@ -249,16 +232,8 @@ public:
 
 	V4L2PixelFormat toV4L2PixelFormat(const PixelFormat &pixelFormat) const;
 
-	void changePollerThread(Thread *thread);
-
 protected:
 	std::string logPrefix() const override;
-	int requestBuffers(unsigned int count, enum v4l2_memory memoryType);
-
-	V4L2DeviceFormat format_;
-	enum v4l2_memory memoryType_;
-	enum v4l2_buf_type bufferType_;
-	V4L2BufferCache *cache_;
 
 private:
 	LIBCAMERA_DISABLE_COPY(V4L2VideoDevice)
@@ -271,12 +246,8 @@ private:
 
 	int initFormats();
 
-	void cacheFormat(V4L2DeviceFormat *format);
-
 	int getFormatMeta(V4L2DeviceFormat *format);
 	int trySetFormatMeta(V4L2DeviceFormat *format, bool set);
-
-	int trySetFormatVideo(V4L2DeviceFormat *format, bool set);
 
 	int getFormatMultiplane(V4L2DeviceFormat *format);
 	int trySetFormatMultiplane(V4L2DeviceFormat *format, bool set);
@@ -287,13 +258,14 @@ private:
 	std::vector<V4L2PixelFormat> enumPixelformats(uint32_t code);
 	std::vector<SizeRange> enumSizes(V4L2PixelFormat pixelFormat);
 
+	int requestBuffers(unsigned int count, enum v4l2_memory memoryType);
 	int createBuffers(unsigned int count,
 			  std::vector<std::unique_ptr<FrameBuffer>> *buffers);
 	std::unique_ptr<FrameBuffer> createBuffer(unsigned int index);
 	UniqueFD exportDmabufFd(unsigned int index, unsigned int plane);
 
 	void bufferAvailable();
-	std::pair<FrameBuffer *, int> dequeueBuffer();
+	FrameBuffer *dequeueBuffer();
 
 	void watchdogExpired();
 
@@ -301,11 +273,17 @@ private:
 	static std::optional<ColorSpace> toColorSpace(const T &v4l2Format);
 
 	V4L2Capability caps_;
+	V4L2DeviceFormat format_;
 	const PixelFormatInfo *formatInfo_;
 	std::unordered_set<V4L2PixelFormat> pixelFormats_;
+
+	enum v4l2_buf_type bufferType_;
+	enum v4l2_memory memoryType_;
+
+	std::unique_ptr<V4L2BufferCache> cache_;
 	std::map<unsigned int, FrameBuffer *> queuedBuffers_;
 
-	EventNotifier *fdBufferNotifier_;
+	std::unique_ptr<EventNotifier> fdBufferNotifier_;
 
 	State state_;
 	std::optional<unsigned int> firstFrame_;
@@ -320,18 +298,17 @@ public:
 	V4L2M2MDevice(const std::string &deviceNode);
 	~V4L2M2MDevice();
 
-	int open(enum v4l2_buf_type outputType = V4L2_BUF_TYPE_VIDEO_OUTPUT,
-	          enum v4l2_buf_type captureType = V4L2_BUF_TYPE_VIDEO_CAPTURE);
+	int open();
 	void close();
 
-	V4L2VideoDevice *output() { return output_; }
-	V4L2VideoDevice *capture() { return capture_; }
+	V4L2VideoDevice *output() { return output_.get(); }
+	V4L2VideoDevice *capture() { return capture_.get(); }
 
 private:
 	std::string deviceNode_;
 
-	V4L2VideoDevice *output_;
-	V4L2VideoDevice *capture_;
+	std::unique_ptr<V4L2VideoDevice> output_;
+	std::unique_ptr<V4L2VideoDevice> capture_;
 };
 
 } /* namespace libcamera */

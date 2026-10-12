@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * filter.h - RkISP1 Filter control
+ * RkISP1 Filter control
  */
 
 #pragma once
@@ -21,12 +21,13 @@ public:
 	Filter() = default;
 	~Filter() = default;
 
+	int init(IPAContext &context, const ValueNode &tuningData) override;
 	void queueRequest(IPAContext &context, const uint32_t frame,
 			  IPAFrameContext &frameContext,
 			  const ControlList &controls) override;
 	void prepare(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
-		     rkisp1_params_cfg *params) override;
+		     RkISP1Params *params) override;
 };
 
 } /* namespace ipa::rkisp1::algorithms */

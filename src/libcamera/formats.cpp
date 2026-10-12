@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * formats.cpp - libcamera image formats
+ * libcamera image formats
  */
 
 #include "libcamera/internal/formats.h"
 
-#include <algorithm>
-#include <errno.h>
+#include <map>
 
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
@@ -16,7 +15,7 @@
 #include <libcamera/formats.h>
 
 /**
- * \file internal/formats.h
+ * \file libcamera/internal/formats.h
  * \brief Types and helper functions to handle libcamera image formats
  */
 
@@ -33,7 +32,7 @@ LOG_DEFINE_CATEGORY(Formats)
  * used in pipeline handlers.
  *
  * \var PixelFormatInfo::name
- * \brief The format name as a human-readable string, used as the test
+ * \brief The format name as a human-readable string, used as the text
  * representation of the PixelFormat
  *
  * \var PixelFormatInfo::format
@@ -49,9 +48,9 @@ LOG_DEFINE_CATEGORY(Formats)
  * \var PixelFormatInfo::bitsPerPixel
  * \brief The average number of bits per pixel
  *
- * The number per pixel averages the total number of bits for all colour
- * components over the whole image, excluding any padding bits or padding
- * pixels.
+ * The number of bits per pixel averages the total number of bits for all
+ * colour components over the whole image, excluding any padding bits or
+ * padding pixels.
  *
  * For formats that store pixels with bit padding within words, only the
  * effective bits are taken into account. For instance, 12-bit Bayer data
@@ -158,7 +157,7 @@ const std::map<PixelFormat, PixelFormatInfo> pixelFormatInfo{
 		.colourEncoding = PixelFormatInfo::ColourEncodingRGB,
 		.packed = false,
 		.pixelsPerGroup = 1,
-		.planes = {{ { 3, 1 }, { 0, 0 }, { 0, 0 } }},
+		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
 	{ formats::RGB565_BE, {
 		.name = "RGB565_BE",
@@ -168,7 +167,7 @@ const std::map<PixelFormat, PixelFormatInfo> pixelFormatInfo{
 		.colourEncoding = PixelFormatInfo::ColourEncodingRGB,
 		.packed = false,
 		.pixelsPerGroup = 1,
-		.planes = {{ { 3, 1 }, { 0, 0 }, { 0, 0 } }},
+		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
 	{ formats::BGR888, {
 		.name = "BGR888",
@@ -269,6 +268,26 @@ const std::map<PixelFormat, PixelFormatInfo> pixelFormatInfo{
 		.packed = false,
 		.pixelsPerGroup = 1,
 		.planes = {{ { 4, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
+	{ formats::BGR161616, {
+		.name = "BGR161616",
+		.format = formats::BGR161616,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_RGB48), },
+		.bitsPerPixel = 48,
+		.colourEncoding = PixelFormatInfo::ColourEncodingRGB,
+		.packed = false,
+		.pixelsPerGroup = 1,
+		.planes = {{ { 3, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
+	{ formats::RGB161616, {
+		.name = "RGB161616",
+		.format = formats::RGB161616,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_BGR48), },
+		.bitsPerPixel = 48,
+		.colourEncoding = PixelFormatInfo::ColourEncodingRGB,
+		.packed = false,
+		.pixelsPerGroup = 1,
+		.planes = {{ { 3, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
 
 	/* YUV packed formats. */
@@ -487,31 +506,11 @@ const std::map<PixelFormat, PixelFormatInfo> pixelFormatInfo{
 		.pixelsPerGroup = 1,
 		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
-	{ formats::GREY, {
-		.name = "GREY",
-		.format = formats::R8,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_GREY), },
-		.bitsPerPixel = 8,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
 	{ formats::R10, {
 		.name = "R10",
 		.format = formats::R10,
 		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_Y10), },
 		.bitsPerPixel = 10,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::R12, {
-		.name = "R12",
-		.format = formats::R12,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_Y12), },
-		.bitsPerPixel = 12,
 		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
 		.packed = false,
 		.pixelsPerGroup = 1,
@@ -526,6 +525,46 @@ const std::map<PixelFormat, PixelFormatInfo> pixelFormatInfo{
 		.packed = true,
 		.pixelsPerGroup = 4,
 		.planes = {{ { 5, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
+	{ formats::R12_CSI2P, {
+		.name = "R12_CSI2P",
+		.format = formats::R12_CSI2P,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_Y12P), },
+		.bitsPerPixel = 12,
+		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
+		.packed = true,
+		.pixelsPerGroup = 2,
+		.planes = {{ { 3, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
+	{ formats::R12, {
+		.name = "R12",
+		.format = formats::R12,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_Y12), },
+		.bitsPerPixel = 12,
+		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
+		.packed = false,
+		.pixelsPerGroup = 1,
+		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
+	{ formats::R16, {
+		.name = "R16",
+		.format = formats::R16,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_Y16), },
+		.bitsPerPixel = 16,
+		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
+		.packed = false,
+		.pixelsPerGroup = 1,
+		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
+	{ formats::MONO_PISP_COMP1, {
+		.name = "MONO_PISP_COMP1",
+		.format = formats::MONO_PISP_COMP1,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_MONO), },
+		.bitsPerPixel = 8,
+		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
+		.packed = true,
+		.pixelsPerGroup = 1,
+		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
 
 	/* Bayer formats. */
@@ -890,199 +929,46 @@ const std::map<PixelFormat, PixelFormatInfo> pixelFormatInfo{
 		.pixelsPerGroup = 25,
 		.planes = {{ { 32, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
-	{ formats::SBGGR10_MTISP, {
-		.name = "SBGGR10_MTISP",
-		.format = formats::SBGGR10_MTISP,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SBGGR10), },
-		.bitsPerPixel = 10,
-		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
-		.packed = true,
-		.pixelsPerGroup = 64,
-		.planes = {{ { 80, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::SGBRG10_MTISP, {
-		.name = "SGBRG10_MTISP",
-		.format = formats::SGBRG10_MTISP,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SGBRG10), },
-		.bitsPerPixel = 10,
-		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
-		.packed = true,
-		.pixelsPerGroup = 64,
-		.planes = {{ { 80, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::SGRBG10_MTISP, {
-		.name = "SGRBG10_MTISP",
-		.format = formats::SGRBG10_MTISP,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SGRBG10), },
-		.bitsPerPixel = 10,
-		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
-		.packed = true,
-		.pixelsPerGroup = 64,
-		.planes = {{ { 80, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::SRGGB10_MTISP, {
-		.name = "SRGGB10_MTISP",
-		.format = formats::SRGGB10_MTISP,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SRGGB10), },
-		.bitsPerPixel = 10,
-		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
-		.packed = true,
-		.pixelsPerGroup = 64,
-		.planes = {{ { 80, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::NV12_10P_MTISP, {
-		.name = "NV12_10P_MTISP",
-		.format = formats::NV12_10P_MTISP,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_MTISP_NV12_10P), },
-		.bitsPerPixel = 15,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = true,
-		.pixelsPerGroup = 64,
-		.planes = {{ { 80, 1 }, { 80, 2 }, { 0, 0 } }},
-	} },
-	{ formats::NV12_12P_MTISP, {
-		.name = "NV12_12P_MTISP",
-		.format = formats::NV12_12P_MTISP,
-		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_MTISP_NV12_12P), },
-		.bitsPerPixel = 12,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = true,
-		.pixelsPerGroup = 64,
-		.planes = {{ { 96, 1 }, { 96, 2 }, { 0, 0 } }},
-	} },
-	{ formats::MTFP_MTISP, {
-		.name = "MTFP_MTISP",
-		.format = formats::MTFP_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_META_FMT_MTISP_PARAMS),
-		},
-		.bitsPerPixel = 0,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::MTFA_MTISP, {
-		.name = "MTFA_MTISP",
-		.format = formats::MTFA_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_META_FMT_MTISP_3A),
-		},
-		.bitsPerPixel = 0,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::MTFF_MTISP, {
-		.name = "MTFF_MTISP",
-		.format = formats::MTFF_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_META_FMT_MTISP_AF),
-		},
-		.bitsPerPixel = 0,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::MTFD_MTISP, {
-		.name = "MTFD_MTISP",
-		.format = formats::MTFD_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_META_FMT_MTISP_DESC),
-		},
+	{ formats::BGGR_PISP_COMP1, {
+		.name = "BGGR_PISP_COMP1",
+		.format = formats::BGGR_PISP_COMP1,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_BGGR), },
 		.bitsPerPixel = 8,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 8,
-		.planes = {{ { 8, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::MTFS_MTISP, {
-		.name = "MTFS_MTISP",
-		.format = formats::MTFS_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_META_FMT_MTISP_SD),
-		},
-		.bitsPerPixel = 8,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 8,
-		.planes = {{ { 8, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::MTFR_MTISP, {
-		.name = "MTFR_MTISP",
-		.format = formats::MTFR_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_META_FMT_MTISP_DESCNORM),
-		},
-		.bitsPerPixel = 0,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::MTSR_MTISP, {
-		.name = "MTSR_MTISP",
-		.format = formats::MTSR_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_META_FMT_MTISP_SDNORM),
-		},
-		.bitsPerPixel = 0,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::WARP2P_MTISP, {
-		.name = "WARP2P_MTISP",
-		.format = formats::WARP2P_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_PIX_FMT_WARP2P),
-		},
-		.bitsPerPixel = 32,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
+		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
+		.packed = true,
 		.pixelsPerGroup = 2,
-		.planes = {{ { 8, 1 }, { 8, 1 }, { 0, 0 } }},
-	} },
-	{ formats::Y8_MTISP, {
-		.name = "Y8_MTISP",
-		.format = formats::Y8_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_PIX_FMT_MTISP_Y8),
-		},
-		.bitsPerPixel = 8,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 1, 1 }, { 0, 0 }, { 0, 0 } }},
-	} },
-	{ formats::Y16_MTISP, {
-		.name = "Y16_MTISP",
-		.format = formats::Y16_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_PIX_FMT_MTISP_Y16),
-		},
-		.bitsPerPixel = 16,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
 		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
-	{ formats::Y32_MTISP, {
-		.name = "Y32_MTISP",
-		.format = formats::Y32_MTISP,
-		.v4l2Formats = {
-			V4L2PixelFormat(V4L2_PIX_FMT_MTISP_Y32),
-		},
-		.bitsPerPixel = 32,
-		.colourEncoding = PixelFormatInfo::ColourEncodingYUV,
-		.packed = false,
-		.pixelsPerGroup = 1,
-		.planes = {{ { 4, 1 }, { 0, 0 }, { 0, 0 } }},
+	{ formats::GBRG_PISP_COMP1, {
+		.name = "GBRG_PISP_COMP1",
+		.format = formats::GBRG_PISP_COMP1,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_GBRG), },
+		.bitsPerPixel = 8,
+		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
+		.packed = true,
+		.pixelsPerGroup = 2,
+		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
 	} },
-
+	{ formats::GRBG_PISP_COMP1, {
+		.name = "GRBG_PISP_COMP1",
+		.format = formats::GRBG_PISP_COMP1,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_GRBG), },
+		.bitsPerPixel = 8,
+		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
+		.packed = true,
+		.pixelsPerGroup = 2,
+		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
+	{ formats::RGGB_PISP_COMP1, {
+		.name = "RGGB_PISP_COMP1",
+		.format = formats::RGGB_PISP_COMP1,
+		.v4l2Formats = { V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_RGGB), },
+		.bitsPerPixel = 8,
+		.colourEncoding = PixelFormatInfo::ColourEncodingRAW,
+		.packed = true,
+		.pixelsPerGroup = 2,
+		.planes = {{ { 2, 1 }, { 0, 0 }, { 0, 0 } }},
+	} },
 	/* Compressed formats. */
 	{ formats::MJPEG, {
 		.name = "MJPEG",
@@ -1189,10 +1075,11 @@ unsigned int PixelFormatInfo::stride(unsigned int width, unsigned int plane,
 		return 0;
 	}
 
-	if (plane > planes.size() || !planes[plane].bytesPerGroup) {
+	if (plane >= planes.size() || !planes[plane].bytesPerGroup) {
 		LOG(Formats, Warning) << "Invalid plane index, stride is zero";
 		return 0;
 	}
+
 	/* ceil(width / pixelsPerGroup) * bytesPerGroup */
 	unsigned int stride = (width + pixelsPerGroup - 1) / pixelsPerGroup
 			    * planes[plane].bytesPerGroup;
@@ -1206,7 +1093,6 @@ unsigned int PixelFormatInfo::stride(unsigned int width, unsigned int plane,
  * \param[in] size The size of the frame, in pixels
  * \param[in] plane The plane index
  * \param[in] align The stride alignment, in bytes (1 for default alignment)
- * \param[in] scanAlign The scanline alignment, in bytes (1 for default alignment)
  *
  * The plane size is computed by multiplying the line stride and the frame
  * height, taking subsampling and other format characteristics into account.
@@ -1219,19 +1105,13 @@ unsigned int PixelFormatInfo::stride(unsigned int width, unsigned int plane,
  * format
  */
 unsigned int PixelFormatInfo::planeSize(const Size &size, unsigned int plane,
-					unsigned int align, unsigned scanAlign) const
+					unsigned int align) const
 {
 	unsigned int stride = PixelFormatInfo::stride(size.width, plane, align);
 	if (!stride)
 		return 0;
 
-	unsigned int vertSubSample = planes[plane].verticalSubSampling;
-	if (!vertSubSample)
-		return 0;
-
-	unsigned int planeHeight = (size.height + vertSubSample - 1) / vertSubSample;
-
-	return stride * ((planeHeight + scanAlign - 1) / scanAlign * scanAlign);
+	return planeSize(size.height, plane, stride);
 }
 
 /**

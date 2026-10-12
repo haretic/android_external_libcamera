@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * alsc.h - ALSC (auto lens shading correction) control algorithm
+ * ALSC (auto lens shading correction) control algorithm
  */
 #pragma once
 
@@ -112,7 +112,7 @@ public:
 	char const *name() const override;
 	void initialise() override;
 	void switchMode(CameraMode const &cameraMode, Metadata *metadata) override;
-	int read(const libcamera::YamlObject &params) override;
+	int read(const libcamera::ValueNode &params) override;
 	void prepare(Metadata *imageMetadata) override;
 	void process(StatisticsPtr &stats, Metadata *imageMetadata) override;
 

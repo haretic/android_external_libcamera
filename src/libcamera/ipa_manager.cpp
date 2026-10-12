@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * ipa_manager.cpp - Image Processing Algorithm module manager
+ * Image Processing Algorithm module manager
  */
 
 #include "libcamera/internal/ipa_manager.h"
@@ -10,12 +10,15 @@
 #include <algorithm>
 #include <dirent.h>
 #include <string.h>
+#include <string>
 #include <sys/types.h>
+#include <vector>
 
 #include <libcamera/base/file.h>
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
 
+#include "libcamera/internal/global_configuration.h"
 #include "libcamera/internal/ipa_module.h"
 #include "libcamera/internal/ipa_proxy.h"
 #include "libcamera/internal/pipeline_handler.h"
@@ -95,41 +98,43 @@ LOG_DEFINE_CATEGORY(IPAManager)
  * IPC.
  */
 
-IPAManager *IPAManager::self_ = nullptr;
-
 /**
  * \brief Construct an IPAManager instance
+ * \param[in] cm The camera manager
  *
  * The IPAManager class is meant to only be instantiated once, by the
  * CameraManager.
  */
-IPAManager::IPAManager()
+IPAManager::IPAManager(const CameraManager &cm)
+	: cm_(cm)
 {
-	if (self_)
-		LOG(IPAManager, Fatal)
-			<< "Multiple IPAManager objects are not allowed";
+	const GlobalConfiguration &configuration = cm._d()->configuration();
 
 #if HAVE_IPA_PUBKEY
 	if (!pubKey_.isValid())
 		LOG(IPAManager, Warning) << "Public key not valid";
+
+	forceIsolation_ = configuration.option<bool>({ "ipa", "force_isolation" })
+				       .value_or(false);
 #endif
 
 	unsigned int ipaCount = 0;
 
 	/* User-specified paths take precedence. */
-	const char *modulePaths = utils::secure_getenv("LIBCAMERA_IPA_MODULE_PATH");
-	if (modulePaths) {
-		for (const auto &dir : utils::split(modulePaths, ":")) {
-			if (dir.empty())
-				continue;
+	const auto modulePaths =
+		configuration.listOption({ "ipa", "module_paths" })
+			.value_or(utils::defopt);
+	for (const auto &dir : modulePaths) {
+		if (dir.empty())
+			continue;
 
-			ipaCount += addDir(dir.c_str());
-		}
-
-		if (!ipaCount)
-			LOG(IPAManager, Warning)
-				<< "No IPA found in '" << modulePaths << "'";
+		ipaCount += addDir(dir.c_str());
 	}
+
+	if (!modulePaths.empty() && !ipaCount)
+		LOG(IPAManager, Warning) << "No IPA found in '"
+					 << utils::join(modulePaths, ":")
+					 << "'";
 
 	/*
 	 * When libcamera is used before it is installed, load IPAs from the
@@ -153,17 +158,9 @@ IPAManager::IPAManager()
 	if (!ipaCount)
 		LOG(IPAManager, Warning)
 			<< "No IPA found in '" IPA_MODULE_DIR "'";
-
-	self_ = this;
 }
 
-IPAManager::~IPAManager()
-{
-	for (IPAModule *module : modules_)
-		delete module;
-
-	self_ = nullptr;
-}
+IPAManager::~IPAManager() = default;
 
 /**
  * \brief Identify shared library objects within a directory
@@ -236,15 +233,13 @@ unsigned int IPAManager::addDir(const char *libDir, unsigned int maxDepth)
 
 	unsigned int count = 0;
 	for (const std::string &file : files) {
-		IPAModule *ipaModule = new IPAModule(file);
-		if (!ipaModule->isValid()) {
-			delete ipaModule;
+		auto ipaModule = std::make_unique<IPAModule>(file);
+		if (!ipaModule->isValid())
 			continue;
-		}
 
 		LOG(IPAManager, Debug) << "Loaded IPA module '" << file << "'";
 
-		modules_.push_back(ipaModule);
+		modules_.push_back(std::move(ipaModule));
 		count++;
 	}
 
@@ -260,9 +255,9 @@ unsigned int IPAManager::addDir(const char *libDir, unsigned int maxDepth)
 IPAModule *IPAManager::module(PipelineHandler *pipe, uint32_t minVersion,
 			      uint32_t maxVersion)
 {
-	for (IPAModule *module : modules_) {
+	for (const auto &module : modules_) {
 		if (module->match(pipe, minVersion, maxVersion))
-			return module;
+			return module.get();
 	}
 
 	return nullptr;
@@ -295,11 +290,10 @@ IPAModule *IPAManager::module(PipelineHandler *pipe, uint32_t minVersion,
 bool IPAManager::isSignatureValid([[maybe_unused]] IPAModule *ipa) const
 {
 #if HAVE_IPA_PUBKEY
-	char *force = utils::secure_getenv("LIBCAMERA_IPA_FORCE_ISOLATION");
-	if (force && force[0] != '\0') {
+	if (forceIsolation_) {
 		LOG(IPAManager, Debug)
 			<< "Isolation of IPA module " << ipa->path()
-			<< " forced through environment variable";
+			<< " forced through configuration";
 		return false;
 	}
 
@@ -319,11 +313,7 @@ bool IPAManager::isSignatureValid([[maybe_unused]] IPAModule *ipa) const
 
 	return valid;
 #else
-#ifdef HAVE_ANDROID_OS
-	return true;
-#else
 	return false;
-#endif
 #endif
 }
 

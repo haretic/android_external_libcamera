@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * timer.h - Generic timer
+ * Generic timer
  */
 
 #pragma once
 
 #include <chrono>
-#include <stdint.h>
 
 #include <libcamera/base/private.h>
 

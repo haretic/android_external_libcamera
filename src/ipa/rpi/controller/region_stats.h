@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2022, Raspberry Pi Ltd
  *
- * region_stats.h - Raspberry Pi region based statistics container
+ * Raspberry Pi region based statistics container
  */
 #pragma once
 
@@ -76,7 +76,7 @@ public:
 	{
 		if (index >= numFloatingRegions())
 			return;
-		set(numRegions() + index, region);
+		set_(numRegions() + index, region);
 	}
 
 	const Region &get(unsigned int index) const

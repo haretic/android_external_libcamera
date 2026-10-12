@@ -2,16 +2,14 @@
 /*
  * Copyright (C) 2019-2021, Google Inc.
  *
- * camera_request.cpp - libcamera Android Camera Request Descriptor
+ * libcamera Android Camera Request Descriptor
  */
 
 #include "camera_request.h"
 
-#include <libcamera/base/log.h>
 #include <libcamera/base/span.h>
 
 #include "camera_buffer.h"
-#include "camera_stream.h"
 
 using namespace libcamera;
 
@@ -44,25 +42,25 @@ using namespace libcamera;
  * │  processCaptureRequest(camera3_capture_request_t request)   │
  * │                                                             │
  * │   - Create Camera3RequestDescriptor tracking this request   │
- * │   - Buffers requiring post-processing are marked by the     │
- * │     CameraStream::Type as Mapped or Internal                │
+ * │   - Streams requiring post-processing are stored in the     │
+ * │     pendingStreamsToProcess map                             │
  * │   - Add this Camera3RequestDescriptor to descriptors' queue │
- * │     CameraDevice::pendingRequests_                          │
- * │                                                             │ ┌────────────────────────────────┐
- * │   - Queue the capture request to libcamera core ────────────┤►│libcamera core                  │
- * │                                                             │ ├────────────────────────────────┤
- * │                                                             │ │- Capture from Camera           │
- * │                                                             │ │                                │
- * │                                                             │ │- Emit                          │
- * │                                                             │ │  Camera::partialResultCompleted│
- * │  partialResultComplete(Request *request, Result result*) ◄──┼─┼────                            │
- * │                                                             │ │                                │
- * │   - Check request completion status                         │ └────────────────────────────────┘
+ * │     CameraDevice::descriptors_                              │
+ * │                                                             │ ┌─────────────────────────┐
+ * │   - Queue the capture request to libcamera core ────────────┤►│libcamera core           │
+ * │                                                             │ ├─────────────────────────┤
+ * │                                                             │ │- Capture from Camera    │
+ * │                                                             │ │                         │
+ * │                                                             │ │- Emit                   │
+ * │                                                             │ │  Camera::requestComplete│
+ * │  requestCompleted(Request *request) ◄───────────────────────┼─┼────                     │
+ * │                                                             │ │                         │
+ * │   - Check request completion status                         │ └─────────────────────────┘
  * │                                                             │
- * │   - if (pendingBuffersToProcess > 0)                        │
- * │      Queue all entries from pendingBuffersToProcess         │
+ * │   - if (pendingStreamsToProcess > 0)                        │
+ * │      Queue all entries from pendingStreamsToProcess         │
  * │    else                                   │                 │
- * │      completeResultDescriptor()           │                 └──────────────────────┐
+ * │      completeDescriptor()                 │                 └──────────────────────┐
  * │                                           │                                        │
  * │                ┌──────────────────────────┴───┬──────────────────┐                 │
  * │                │                              │                  │                 │
@@ -95,10 +93,10 @@ using namespace libcamera;
  * │ |                                       |     |              |                     │
  * │ | - Check and set buffer status         |     |     ....     |                     │
  * │ | - Remove post+processing entry        |     |              |                     │
- * │ |   from pendingBuffersToProcess        |     |              |                     │
+ * │ |   from pendingStreamsToProcess        |     |              |                     │
  * │ |                                       |     |              |                     │
- * │ | - if (pendingBuffersToProcess.empty())|     |              |                     │
- * │ |        completeResultDescriptor       |     |              |                     │
+ * │ | - if (pendingStreamsToProcess.empty())|     |              |                     │
+ * │ |        completeDescriptor             |     |              |                     │
  * │ |                                       |     |              |                     │
  * │ +---------------------------------------+     +--------------+                     │
  * │                                                                                    │
@@ -111,12 +109,7 @@ using namespace libcamera;
  */
 
 Camera3RequestDescriptor::Camera3RequestDescriptor(
-	Camera *camera,
-#ifdef HAVE_ANDROID_OS
-	std::shared_ptr<android::BufferAdapter> bufferAdaptor,
-#endif
-	const camera3_capture_request_t *camera3Request)
-	: status_(Status::Pending), nextPartialResultIndex_(1), completed_(false)
+	Camera *camera, const camera3_capture_request_t *camera3Request)
 {
 	frameNumber_ = camera3Request->frame_number;
 
@@ -132,12 +125,7 @@ Camera3RequestDescriptor::Camera3RequestDescriptor(
 		CameraStream *stream =
 			static_cast<CameraStream *>(buffer.stream->priv);
 
-#ifdef HAVE_ANDROID_OS
-		camera3_stream_buffer_t outputBuffer = bufferAdaptor->prepareStreamBufferPtr(&buffer);
-		buffers_.emplace_back(stream, outputBuffer, this);
-#else
 		buffers_.emplace_back(stream, buffer, this);
-#endif
 	}
 
 	/* Clone the controls associated with the camera3 request. */
@@ -150,30 +138,10 @@ Camera3RequestDescriptor::Camera3RequestDescriptor(
 	request_ = camera->createRequest(reinterpret_cast<uint64_t>(this));
 }
 
-Camera3RequestDescriptor::~Camera3RequestDescriptor()
-{
-	/*
-	 * Recycle the allocated internal buffer back to its source stream.
-	 */
-	for (auto &[sourceStream, frameBuffer] : internalBuffers_)
-		sourceStream->putBuffer(frameBuffer);
-}
-
-/*
- * \class Camera3ResultDescriptor
- *
- * A utility class that groups information about a capture result to be later
- * sent to framework.
- */
-Camera3ResultDescriptor::Camera3ResultDescriptor(Camera3RequestDescriptor *request)
-	: request_(request), metadataPackIndex_(1), completed_(false)
-{
-}
-
-Camera3ResultDescriptor::~Camera3ResultDescriptor() = default;
+Camera3RequestDescriptor::~Camera3RequestDescriptor() = default;
 
 /**
- * \class StreamBuffer
+ * \struct Camera3RequestDescriptor::StreamBuffer
  * \brief Group information for per-stream buffer of Camera3RequestDescriptor
  *
  * A capture request placed to the libcamera HAL can contain multiple streams.
@@ -182,35 +150,35 @@ Camera3ResultDescriptor::~Camera3ResultDescriptor() = default;
  * generation. The generation of the stream will depend on its type (refer to
  * the CameraStream::Type documentation).
  *
- * \var StreamBuffer::stream
+ * \var Camera3RequestDescriptor::StreamBuffer::stream
  * \brief Pointer to the corresponding CameraStream
  *
- * \var StreamBuffer::camera3Buffer
+ * \var Camera3RequestDescriptor::StreamBuffer::camera3Buffer
  * \brief Native handle to the buffer
  *
- * \var StreamBuffer::frameBuffer
+ * \var Camera3RequestDescriptor::StreamBuffer::frameBuffer
  * \brief Encapsulate the dmabuf handle inside a libcamera::FrameBuffer for
  * direct streams
  *
- * \var StreamBuffer::fence
+ * \var Camera3RequestDescriptor::StreamBuffer::fence
  * \brief Acquire fence of the buffer
  *
- * \var StreamBuffer::status
+ * \var Camera3RequestDescriptor::StreamBuffer::status
  * \brief Track the status of the buffer
  *
- * \var StreamBuffer::srcBuffer
+ * \var Camera3RequestDescriptor::StreamBuffer::internalBuffer
+ * \brief Pointer to a buffer internally handled by CameraStream (if any)
+ *
+ * \var Camera3RequestDescriptor::StreamBuffer::srcBuffer
  * \brief Pointer to the source frame buffer used for post-processing
  *
- * \var StreamBuffer::dstBuffer
+ * \var Camera3RequestDescriptor::StreamBuffer::dstBuffer
  * \brief Pointer to the destination frame buffer used for post-processing
  *
- * \var StreamBuffer::request
+ * \var Camera3RequestDescriptor::StreamBuffer::request
  * \brief Back pointer to the Camera3RequestDescriptor to which the StreamBuffer belongs
- *
- * \var StreamBuffer::result
- * \brief Back pointer to the Camera3ResultDescriptor to which the StreamBuffer belongs
  */
-StreamBuffer::StreamBuffer(
+Camera3RequestDescriptor::StreamBuffer::StreamBuffer(
 	CameraStream *cameraStream, const camera3_stream_buffer_t &buffer,
 	Camera3RequestDescriptor *requestDescriptor)
 	: stream(cameraStream), camera3Buffer(buffer.buffer),
@@ -218,8 +186,9 @@ StreamBuffer::StreamBuffer(
 {
 }
 
-StreamBuffer::~StreamBuffer() = default;
+Camera3RequestDescriptor::StreamBuffer::~StreamBuffer() = default;
 
-StreamBuffer::StreamBuffer(StreamBuffer &&) = default;
+Camera3RequestDescriptor::StreamBuffer::StreamBuffer(StreamBuffer &&) = default;
 
-StreamBuffer &StreamBuffer::operator=(StreamBuffer &&) = default;
+Camera3RequestDescriptor::StreamBuffer &
+Camera3RequestDescriptor::StreamBuffer::operator=(Camera3RequestDescriptor::StreamBuffer &&) = default;

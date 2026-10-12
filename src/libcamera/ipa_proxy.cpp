@@ -2,19 +2,21 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * ipa_proxy.cpp - Image Processing Algorithm proxy
+ * Image Processing Algorithm proxy
  */
 
 #include "libcamera/internal/ipa_proxy.h"
 
-#include <string.h>
+#include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <vector>
 
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
 
+#include "libcamera/internal/global_configuration.h"
 #include "libcamera/internal/ipa_module.h"
 
 /**
@@ -26,95 +28,36 @@ namespace libcamera {
 
 LOG_DEFINE_CATEGORY(IPAProxy)
 
-/**
- * \class IPAProxy
- * \brief IPA Proxy
- *
- * Isolate IPA into separate process.
- */
+namespace {
 
-/**
- * \enum IPAProxy::ProxyState
- * \brief Identifies the available operational states of the proxy
- *
- * \var IPAProxy::ProxyStopped
- * \brief The proxy is not active and only synchronous operations are permitted
- * \var IPAProxy::ProxyStopping
- * \brief No new tasks can be submitted to the proxy, however existing events
- * can be completed
- * \var IPAProxy::ProxyRunning
- * \brief The Proxy is active and asynchronous tasks may be queued
- */
-
-/**
- * \brief Construct an IPAProxy instance
- * \param[in] ipam The IPA module
- */
-IPAProxy::IPAProxy(IPAModule *ipam)
-	: valid_(false), state_(ProxyStopped), ipam_(ipam)
+std::string ipaConfigurationFile(const std::string &ipaName, const std::string &name,
+				 const std::vector<std::string> &configPaths)
 {
-}
+	/*
+	 * Start with any user override through the module-specific environment
+	 * variable. Use the name of the IPA module up to the first '/' to
+	 * construct the variable name.
+	 */
+	std::string ipaEnvName = ipaName.substr(0, ipaName.find('/'));
+	std::transform(ipaEnvName.begin(), ipaEnvName.end(), ipaEnvName.begin(),
+		       [](unsigned char c) { return std::toupper(c); });
+	ipaEnvName = "LIBCAMERA_" + ipaEnvName + "_TUNING_FILE";
 
-IPAProxy::~IPAProxy()
-{
-}
+	char const *configFromEnv = utils::secure_getenv(ipaEnvName.c_str());
+	if (configFromEnv && *configFromEnv != '\0')
+		return { configFromEnv };
 
-/**
- * \fn IPAProxy::isValid()
- * \brief Check if the IPAProxy instance is valid
- *
- * An IPAProxy instance is valid if the IPA interface is successfully created in
- * isolation, and IPC is successfully set up.
- *
- * \return True if the IPAProxy is valid, false otherwise
- */
-
-/**
- * \brief Retrieve the absolute path to an IPA configuration file
- * \param[in] name The configuration file name
- *
- * This function locates the configuration file for an IPA and returns its
- * absolute path. It searches the following directories, in order:
- *
- * - All directories specified in the colon-separated LIBCAMERA_IPA_CONFIG_PATH
- *   environment variable ; or
- * - If libcamera is not installed, the src/ipa/ directory within the source
- *   tree ; otherwise
- * - The system sysconf (etc/libcamera/ipa) and the data (share/libcamera/ipa/)
- *   directories.
- *
- * The system directories are not searched if libcamera is not installed.
- *
- * Within each of those directories, the function looks for a subdirectory
- * named after the IPA module name, as reported in IPAModuleInfo::name, and for
- * a file named \a name within that directory. The \a name is IPA-specific.
- *
- * \return The full path to the IPA configuration file, or an empty string if
- * no configuration file can be found
- */
-std::string IPAProxy::configurationFile(const std::string &name) const
-{
 	struct stat statbuf;
 	int ret;
 
-	/*
-	 * The IPA module name can be used as-is to build directory names as it
-	 * has been validated when loading the module.
-	 */
-	std::string ipaName = ipam_->info().name;
-
-	/* Check the environment variable first. */
-	const char *confPaths = utils::secure_getenv("LIBCAMERA_IPA_CONFIG_PATH");
-	if (confPaths) {
-		for (const auto &dir : utils::split(confPaths, ":")) {
-			if (dir.empty())
-				continue;
-
-			std::string confPath = dir + "/" + ipaName + "/" + name;
-			ret = stat(confPath.c_str(), &statbuf);
-			if (ret == 0 && (statbuf.st_mode & S_IFMT) == S_IFREG)
-				return confPath;
-		}
+	/* Check the directory pointed to by the IPA config path next. */
+	for (const auto &dir : configPaths) {
+		if (dir.empty())
+			continue;
+		std::string confPath = dir + "/" + ipaName + "/" + name;
+		ret = stat(confPath.c_str(), &statbuf);
+		if (ret == 0 && (statbuf.st_mode & S_IFMT) == S_IFREG)
+			return confPath;
 	}
 
 	std::string root = utils::libcameraSourcePath();
@@ -146,11 +89,115 @@ std::string IPAProxy::configurationFile(const std::string &name) const
 		}
 	}
 
-	LOG(IPAProxy, Error)
-		<< "Configuration file '" << name
-		<< "' not found for IPA module '" << ipaName << "'";
+	return {};
+}
 
-	return std::string();
+} /* namespace */
+
+/**
+ * \class IPAProxy
+ * \brief IPA Proxy
+ *
+ * Isolate IPA into separate process.
+ */
+
+/**
+ * \enum IPAProxy::ProxyState
+ * \brief Identifies the available operational states of the proxy
+ *
+ * \var IPAProxy::ProxyStopped
+ * \brief The proxy is not active and only synchronous operations are permitted
+ * \var IPAProxy::ProxyStopping
+ * \brief No new tasks can be submitted to the proxy, however existing events
+ * can be completed
+ * \var IPAProxy::ProxyRunning
+ * \brief The Proxy is active and asynchronous tasks may be queued
+ */
+
+/**
+ * \brief Construct an IPAProxy instance
+ * \param[in] ipam The IPA module
+ * \param[in] cm The camera manager
+ */
+IPAProxy::IPAProxy(IPAModule *ipam, const CameraManager &cm)
+	: valid_(false), state_(ProxyStopped), ipam_(ipam)
+{
+	const GlobalConfiguration &configuration = cm._d()->configuration();
+
+	configPaths_ = configuration.listOption({ "ipa", "config_paths" })
+				    .value_or(utils::defopt);
+	execPaths_ = configuration.listOption({ "ipa", "proxy_paths" })
+				  .value_or(utils::defopt);
+}
+
+IPAProxy::~IPAProxy()
+{
+}
+
+/**
+ * \fn IPAProxy::isValid()
+ * \brief Check if the IPAProxy instance is valid
+ *
+ * An IPAProxy instance is valid if the IPA interface is successfully created in
+ * isolation, and IPC is successfully set up.
+ *
+ * \return True if the IPAProxy is valid, false otherwise
+ */
+
+/**
+ * \brief Retrieve the absolute path to an IPA configuration file
+ * \param[in] name The configuration file name
+ * \param[in] fallbackName The name of a fallback configuration file
+ *
+ * This function locates the configuration file for an IPA and returns its
+ * absolute path. It searches the following directories, in order:
+ *
+ * - All directories specified in the colon-separated LIBCAMERA_IPA_CONFIG_PATH
+ *   environment variable ; or
+ * - If libcamera is not installed, the src/ipa/ directory within the source
+ *   tree ; otherwise
+ * - The system sysconf (etc/libcamera/ipa) and the data (share/libcamera/ipa/)
+ *   directories.
+ *
+ * The system directories are not searched if libcamera is not installed.
+ *
+ * Within each of those directories, the function looks for a subdirectory
+ * named after the IPA module name, as reported in IPAModuleInfo::name, and for
+ * a file named \a name within that directory. The \a name is IPA-specific.
+ *
+ * If the file named \a name is not found and \a fallbackName is non-empty then
+ * the whole search is repeated for \a fallbackName.
+ *
+ * \return The full path to the IPA configuration file, or an empty string if
+ * no configuration file can be found
+ */
+std::string IPAProxy::configurationFile(const std::string &name,
+					const std::string &fallbackName) const
+{
+	/*
+	 * The IPA module name can be used as-is to build directory names as it
+	 * has been validated when loading the module.
+	 */
+	const std::string ipaName = ipam_->info().name;
+	std::string confPath = ipaConfigurationFile(ipaName, name, configPaths_);
+	if (!confPath.empty()) {
+		LOG(IPAProxy, Info) << "Using tuning file " << confPath;
+		return confPath;
+	}
+
+	if (fallbackName.empty()) {
+		LOG(IPAProxy, Error)
+			<< "Configuration file '" << name
+			<< "' not found for IPA module '" << ipaName << "'";
+		return std::string();
+	}
+
+	confPath = ipaConfigurationFile(ipaName, fallbackName, configPaths_);
+	LOG(IPAProxy, Warning)
+		<< "Configuration file '" << name
+		<< "' not found for IPA module '" << ipaName
+		<< "', falling back to '" << confPath << "'";
+	return confPath;
 }
 
 /**
@@ -171,18 +218,14 @@ std::string IPAProxy::resolvePath(const std::string &file) const
 {
 	std::string proxyFile = "/" + file;
 
-	/* Check env variable first. */
-	const char *execPaths = utils::secure_getenv("LIBCAMERA_IPA_PROXY_PATH");
-	if (execPaths) {
-		for (const auto &dir : utils::split(execPaths, ":")) {
-			if (dir.empty())
-				continue;
+	/* Try paths from the configuration first. */
+	for (const auto &dir : execPaths_) {
+		if (dir.empty())
+			continue;
 
-			std::string proxyPath = dir;
-			proxyPath += proxyFile;
-			if (!access(proxyPath.c_str(), X_OK))
-				return proxyPath;
-		}
+		std::string proxyPath = dir + proxyFile;
+		if (!access(proxyPath.c_str(), X_OK))
+			return proxyPath;
 	}
 
 	/*

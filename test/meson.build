@@ -46,6 +46,7 @@ public_tests = [
     {'name': 'public-api', 'sources': ['public-api.cpp']},
     {'name': 'signal', 'sources': ['signal.cpp']},
     {'name': 'span', 'sources': ['span.cpp']},
+    {'name': 'transform', 'sources': ['transform.cpp']},
 ]
 
 internal_tests = [
@@ -59,6 +60,7 @@ internal_tests = [
     {'name': 'file', 'sources': ['file.cpp']},
     {'name': 'flags', 'sources': ['flags.cpp']},
     {'name': 'hotplug-cameras', 'sources': ['hotplug-cameras.cpp']},
+    {'name': 'matrix', 'sources': ['matrix.cpp']},
     {'name': 'message', 'sources': ['message.cpp']},
     {'name': 'object', 'sources': ['object.cpp']},
     {'name': 'object-delete', 'sources': ['object-delete.cpp']},
@@ -68,9 +70,12 @@ internal_tests = [
     {'name': 'signal-threads', 'sources': ['signal-threads.cpp']},
     {'name': 'threads', 'sources': 'threads.cpp', 'dependencies': [libthreads]},
     {'name': 'timer', 'sources': ['timer.cpp']},
+    {'name': 'timer-fail', 'sources': ['timer-fail.cpp'], 'should_fail': true},
     {'name': 'timer-thread', 'sources': ['timer-thread.cpp']},
     {'name': 'unique-fd', 'sources': ['unique-fd.cpp']},
     {'name': 'utils', 'sources': ['utils.cpp']},
+    {'name': 'value-node', 'sources': ['value-node.cpp']},
+    {'name': 'vector', 'sources': ['vector.cpp']},
     {'name': 'yaml-parser', 'sources': ['yaml-parser.cpp']},
 ]
 
@@ -87,10 +92,11 @@ foreach test : public_tests
 
     exe = executable(test['name'], test['sources'],
                      dependencies : deps,
+                     implicit_include_directories : false,
                      link_with : test_libraries,
                      include_directories : test_includes_public)
 
-    test(test['name'], exe)
+    test(test['name'], exe, should_fail : test.get('should_fail', false))
 endforeach
 
 foreach test : internal_tests
@@ -101,10 +107,11 @@ foreach test : internal_tests
 
     exe = executable(test['name'], test['sources'],
                      dependencies : deps,
+                     implicit_include_directories : false,
                      link_with : test_libraries,
                      include_directories : test_includes_internal)
 
-    test(test['name'], exe)
+    test(test['name'], exe, should_fail : test.get('should_fail', false))
 endforeach
 
 foreach test : internal_non_parallel_tests
@@ -115,8 +122,11 @@ foreach test : internal_non_parallel_tests
 
     exe = executable(test['name'], test['sources'],
                      dependencies : deps,
+                     implicit_include_directories : false,
                      link_with : test_libraries,
                      include_directories : test_includes_internal)
 
-    test(test['name'], exe, is_parallel : false)
+    test(test['name'], exe,
+         is_parallel : false,
+         should_fail : test.get('should_fail', false))
 endforeach

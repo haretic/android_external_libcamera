@@ -2,19 +2,21 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * rkisp1.cpp - Pipeline handler for Rockchip ISP1
+ * Pipeline handler for Rockchip ISP1
  */
 
 #include <algorithm>
-#include <array>
-#include <iomanip>
+#include <map>
 #include <memory>
 #include <numeric>
+#include <optional>
 #include <queue>
+#include <vector>
 
 #include <linux/media-bus-format.h>
 #include <linux/rkisp1-config.h>
 
+#include <libcamera/base/file.h>
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
 
@@ -23,7 +25,7 @@
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
 #include <libcamera/framebuffer.h>
-#include <libcamera/request.h>
+#include <libcamera/property_ids.h>
 #include <libcamera/stream.h>
 #include <libcamera/transform.h>
 
@@ -33,14 +35,18 @@
 
 #include "libcamera/internal/camera.h"
 #include "libcamera/internal/camera_sensor.h"
+#include "libcamera/internal/camera_sensor_properties.h"
+#include "libcamera/internal/converter/converter_dw100.h"
 #include "libcamera/internal/delayed_controls.h"
 #include "libcamera/internal/device_enumerator.h"
 #include "libcamera/internal/framebuffer.h"
-#include "libcamera/internal/ipa_manager.h"
 #include "libcamera/internal/media_device.h"
+#include "libcamera/internal/media_pipeline.h"
 #include "libcamera/internal/pipeline_handler.h"
+#include "libcamera/internal/request.h"
 #include "libcamera/internal/v4l2_subdevice.h"
 #include "libcamera/internal/v4l2_videodevice.h"
+#include "libcamera/internal/yaml_parser.h"
 
 #include "rkisp1_path.h"
 
@@ -79,8 +85,10 @@ public:
 	RkISP1FrameInfo *find(Request *request);
 
 private:
+	void recycleBuffers(const RkISP1FrameInfo &info);
+
 	PipelineHandlerRkISP1 *pipe_;
-	std::map<unsigned int, RkISP1FrameInfo *> frameInfo_;
+	std::map<unsigned int, RkISP1FrameInfo> frameInfo_;
 };
 
 class RkISP1CameraData : public Camera::Private
@@ -89,12 +97,14 @@ public:
 	RkISP1CameraData(PipelineHandler *pipe, RkISP1MainPath *mainPath,
 			 RkISP1SelfPath *selfPath)
 		: Camera::Private(pipe), frame_(0), frameInfo_(pipe),
-		  mainPath_(mainPath), selfPath_(selfPath)
+		  mainPath_(mainPath), selfPath_(selfPath),
+		  canUseDewarper_(false), usesDewarper_(false)
 	{
 	}
 
 	PipelineHandlerRkISP1 *pipe();
-	int loadIPA(unsigned int hwRevision);
+	const PipelineHandlerRkISP1 *pipe() const;
+	int loadIPA(unsigned int hwRevision, uint32_t supportedBlocks);
 
 	Stream mainPathStream_;
 	Stream selfPathStream_;
@@ -109,12 +119,23 @@ public:
 
 	std::unique_ptr<ipa::rkisp1::IPAProxyRkISP1> ipa_;
 
+	ControlInfoMap ipaControls_;
+
+	/*
+	 * All entities in the pipeline, from the camera sensor to the RKISP1.
+	 */
+	MediaPipeline pipe_;
+
+	bool canUseDewarper_;
+	bool usesDewarper_;
+
 private:
-	void paramFilled(unsigned int frame);
+	void paramsComputed(unsigned int frame, unsigned int bytesused);
 	void setSensorControls(unsigned int frame,
 			       const ControlList &sensorControls);
 
 	void metadataReady(unsigned int frame, const ControlList &metadata);
+	int loadTuningFile(const std::string &file);
 };
 
 class RkISP1CameraConfiguration : public CameraConfiguration
@@ -141,6 +162,24 @@ private:
 	V4L2SubdeviceFormat sensorFormat_;
 	Transform combinedTransform_;
 };
+
+namespace {
+
+/*
+ * Maximum number of requests that shall be queued into the pipeline to keep
+ * the regulation fast.
+ * \todo This needs revisiting as soon as buffers got decoupled from requests
+ * and/or a fast path for controls was implemented.
+ */
+static constexpr unsigned int kRkISP1MaxQueuedRequests = 4;
+
+/*
+ * This many internal buffers (or rather parameter and statistics buffer
+ * pairs) ensures that the pipeline runs smoothly, without frame drops.
+ */
+static constexpr unsigned int kRkISP1MinBufferCount = 4;
+
+} /* namespace */
 
 class PipelineHandlerRkISP1 : public PipelineHandler
 {
@@ -170,25 +209,28 @@ private:
 	}
 
 	friend RkISP1CameraData;
+	friend RkISP1CameraConfiguration;
 	friend RkISP1Frames;
 
-	int initLinks(Camera *camera, const CameraSensor *sensor,
-		      const RkISP1CameraConfiguration &config);
+	int initLinks(Camera *camera, const RkISP1CameraConfiguration &config);
 	int createCamera(MediaEntity *sensor);
 	void tryCompleteRequest(RkISP1FrameInfo *info);
-	void bufferReady(FrameBuffer *buffer);
-	void paramReady(FrameBuffer *buffer);
-	void statReady(FrameBuffer *buffer);
+	void cancelDewarpRequest(RkISP1FrameInfo *info);
+	void imageBufferReady(FrameBuffer *buffer);
+	void paramBufferReady(FrameBuffer *buffer);
+	void statBufferReady(FrameBuffer *buffer);
+	void dewarpBufferReady(FrameBuffer *buffer);
 	void frameStart(uint32_t sequence);
 
 	int allocateBuffers(Camera *camera);
 	int freeBuffers(Camera *camera);
 
-	MediaDevice *media_;
+	int updateControls(RkISP1CameraData *data);
+
+	std::shared_ptr<MediaDevice> media_;
 	std::unique_ptr<V4L2Subdevice> isp_;
 	std::unique_ptr<V4L2VideoDevice> param_;
 	std::unique_ptr<V4L2VideoDevice> stat_;
-	std::unique_ptr<V4L2Subdevice> csi_;
 
 	bool hasSelfPath_;
 	bool isRaw_;
@@ -196,14 +238,18 @@ private:
 	RkISP1MainPath mainPath_;
 	RkISP1SelfPath selfPath_;
 
+	std::unique_ptr<ConverterDW100Module> dewarper_;
+
+	/* Internal buffers used when dewarper is being used */
+	std::vector<std::unique_ptr<FrameBuffer>> mainPathBuffers_;
+	std::queue<FrameBuffer *> availableMainPathBuffers_;
+
 	std::vector<std::unique_ptr<FrameBuffer>> paramBuffers_;
 	std::vector<std::unique_ptr<FrameBuffer>> statBuffers_;
 	std::queue<FrameBuffer *> availableParamBuffers_;
 	std::queue<FrameBuffer *> availableStatBuffers_;
 
 	Camera *activeCamera_;
-
-	const MediaPad *ispSink_;
 };
 
 RkISP1Frames::RkISP1Frames(PipelineHandler *pipe)
@@ -218,6 +264,8 @@ RkISP1FrameInfo *RkISP1Frames::create(const RkISP1CameraData *data, Request *req
 
 	FrameBuffer *paramBuffer = nullptr;
 	FrameBuffer *statBuffer = nullptr;
+	FrameBuffer *mainPathBuffer = nullptr;
+	FrameBuffer *selfPathBuffer = nullptr;
 
 	if (!isRaw) {
 		if (pipe_->availableParamBuffers_.empty()) {
@@ -235,55 +283,64 @@ RkISP1FrameInfo *RkISP1Frames::create(const RkISP1CameraData *data, Request *req
 
 		statBuffer = pipe_->availableStatBuffers_.front();
 		pipe_->availableStatBuffers_.pop();
+
+		if (data->usesDewarper_) {
+			mainPathBuffer = pipe_->availableMainPathBuffers_.front();
+			pipe_->availableMainPathBuffers_.pop();
+		}
 	}
 
-	FrameBuffer *mainPathBuffer = request->findBuffer(&data->mainPathStream_);
-	FrameBuffer *selfPathBuffer = request->findBuffer(&data->selfPathStream_);
+	if (!mainPathBuffer)
+		mainPathBuffer = request->findBuffer(&data->mainPathStream_);
+	selfPathBuffer = request->findBuffer(&data->selfPathStream_);
 
-	RkISP1FrameInfo *info = new RkISP1FrameInfo;
+	auto [it, inserted] = frameInfo_.try_emplace(frame);
+	ASSERT(inserted);
 
-	info->frame = frame;
-	info->request = request;
-	info->paramBuffer = paramBuffer;
-	info->mainPathBuffer = mainPathBuffer;
-	info->selfPathBuffer = selfPathBuffer;
-	info->statBuffer = statBuffer;
-	info->paramDequeued = false;
-	info->metadataProcessed = false;
+	auto &info = it->second;
 
-	frameInfo_[frame] = info;
+	info.frame = frame;
+	info.request = request;
+	info.paramBuffer = paramBuffer;
+	info.mainPathBuffer = mainPathBuffer;
+	info.selfPathBuffer = selfPathBuffer;
+	info.statBuffer = statBuffer;
+	info.paramDequeued = false;
+	info.metadataProcessed = false;
 
-	return info;
+	return &info;
 }
 
 int RkISP1Frames::destroy(unsigned int frame)
 {
-	RkISP1FrameInfo *info = find(frame);
-	if (!info)
+	auto it = frameInfo_.find(frame);
+	if (it == frameInfo_.end())
 		return -ENOENT;
 
-	pipe_->availableParamBuffers_.push(info->paramBuffer);
-	pipe_->availableStatBuffers_.push(info->statBuffer);
-
-	frameInfo_.erase(info->frame);
-
-	delete info;
+	recycleBuffers(it->second);
+	frameInfo_.erase(it);
 
 	return 0;
 }
 
 void RkISP1Frames::clear()
 {
-	for (const auto &entry : frameInfo_) {
-		RkISP1FrameInfo *info = entry.second;
-
-		pipe_->availableParamBuffers_.push(info->paramBuffer);
-		pipe_->availableStatBuffers_.push(info->statBuffer);
-
-		delete info;
-	}
+	for (const auto &[frame, info] : frameInfo_)
+		recycleBuffers(info);
 
 	frameInfo_.clear();
+}
+
+void RkISP1Frames::recycleBuffers(const RkISP1FrameInfo &info)
+{
+	if (info.paramBuffer)
+		pipe_->availableParamBuffers_.push(info.paramBuffer);
+
+	if (info.statBuffer)
+		pipe_->availableStatBuffers_.push(info.statBuffer);
+
+	if (info.mainPathBuffer && pipe_->cameraData(pipe_->activeCamera_)->usesDewarper_)
+		pipe_->availableMainPathBuffers_.push(info.mainPathBuffer);
 }
 
 RkISP1FrameInfo *RkISP1Frames::find(unsigned int frame)
@@ -291,7 +348,7 @@ RkISP1FrameInfo *RkISP1Frames::find(unsigned int frame)
 	auto itInfo = frameInfo_.find(frame);
 
 	if (itInfo != frameInfo_.end())
-		return itInfo->second;
+		return &itInfo->second;
 
 	LOG(RkISP1, Fatal) << "Can't locate info from frame";
 
@@ -300,14 +357,12 @@ RkISP1FrameInfo *RkISP1Frames::find(unsigned int frame)
 
 RkISP1FrameInfo *RkISP1Frames::find(FrameBuffer *buffer)
 {
-	for (auto &itInfo : frameInfo_) {
-		RkISP1FrameInfo *info = itInfo.second;
-
-		if (info->paramBuffer == buffer ||
-		    info->statBuffer == buffer ||
-		    info->mainPathBuffer == buffer ||
-		    info->selfPathBuffer == buffer)
-			return info;
+	for (auto &[frame, info] : frameInfo_) {
+		if (info.paramBuffer == buffer ||
+		    info.statBuffer == buffer ||
+		    info.mainPathBuffer == buffer ||
+		    info.selfPathBuffer == buffer)
+			return &info;
 	}
 
 	LOG(RkISP1, Fatal) << "Can't locate info from buffer";
@@ -317,11 +372,9 @@ RkISP1FrameInfo *RkISP1Frames::find(FrameBuffer *buffer)
 
 RkISP1FrameInfo *RkISP1Frames::find(Request *request)
 {
-	for (auto &itInfo : frameInfo_) {
-		RkISP1FrameInfo *info = itInfo.second;
-
-		if (info->request == request)
-			return info;
+	for (auto &[frame, info] : frameInfo_) {
+		if (info.request == request)
+			return &info;
 	}
 
 	LOG(RkISP1, Fatal) << "Can't locate info from request";
@@ -334,33 +387,24 @@ PipelineHandlerRkISP1 *RkISP1CameraData::pipe()
 	return static_cast<PipelineHandlerRkISP1 *>(Camera::Private::pipe());
 }
 
-int RkISP1CameraData::loadIPA(unsigned int hwRevision)
+const PipelineHandlerRkISP1 *RkISP1CameraData::pipe() const
 {
-	ipa_ = IPAManager::createIPA<ipa::rkisp1::IPAProxyRkISP1>(pipe(), 1, 1);
+	return static_cast<const PipelineHandlerRkISP1 *>(Camera::Private::pipe());
+}
+
+int RkISP1CameraData::loadIPA(unsigned int hwRevision, uint32_t supportedBlocks)
+{
+	ipa_ = pipe()->createIPA<ipa::rkisp1::IPAProxyRkISP1>(1, 1);
 	if (!ipa_)
 		return -ENOENT;
 
 	ipa_->setSensorControls.connect(this, &RkISP1CameraData::setSensorControls);
-	ipa_->paramsBufferReady.connect(this, &RkISP1CameraData::paramFilled);
+	ipa_->paramsComputed.connect(this, &RkISP1CameraData::paramsComputed);
 	ipa_->metadataReady.connect(this, &RkISP1CameraData::metadataReady);
 
-	/*
-	 * The API tuning file is made from the sensor name unless the
-	 * environment variable overrides it.
-	 */
-	std::string ipaTuningFile;
-	char const *configFromEnv = utils::secure_getenv("LIBCAMERA_RKISP1_TUNING_FILE");
-	if (!configFromEnv || *configFromEnv == '\0') {
-		ipaTuningFile = ipa_->configurationFile(sensor_->model() + ".yaml");
-		/*
-		 * If the tuning file isn't found, fall back to the
-		 * 'uncalibrated' configuration file.
-		 */
-		if (ipaTuningFile.empty())
-			ipaTuningFile = ipa_->configurationFile("uncalibrated.yaml");
-	} else {
-		ipaTuningFile = std::string(configFromEnv);
-	}
+	/* The IPA tuning file is made from the sensor name. */
+	std::string ipaTuningFile =
+		ipa_->configurationFile(sensor_->model() + ".yaml", "uncalibrated.yaml");
 
 	IPACameraSensorInfo sensorInfo{};
 	int ret = sensor_->sensorInfo(&sensorInfo);
@@ -370,25 +414,83 @@ int RkISP1CameraData::loadIPA(unsigned int hwRevision)
 	}
 
 	ret = ipa_->init({ ipaTuningFile, sensor_->model() }, hwRevision,
-			 sensorInfo, sensor_->controls(), &controlInfo_);
+			 supportedBlocks, sensorInfo, sensor_->controls(),
+			 &ipaControls_);
 	if (ret < 0) {
 		LOG(RkISP1, Error) << "IPA initialization failure";
+		return ret;
+	}
+
+	ret = loadTuningFile(ipaTuningFile);
+	if (ret < 0) {
+		LOG(RkISP1, Error) << "Failed to load tuning file";
 		return ret;
 	}
 
 	return 0;
 }
 
-void RkISP1CameraData::paramFilled(unsigned int frame)
+int RkISP1CameraData::loadTuningFile(const std::string &path)
+{
+	int ret;
+
+	if (!pipe()->dewarper_)
+		/* Nothing to do without dewarper */
+		return 0;
+
+	LOG(RkISP1, Debug) << "Load tuning file " << path;
+
+	File file(path);
+	if (!file.open(File::OpenModeFlag::ReadOnly)) {
+		ret = file.error();
+		LOG(RkISP1, Error)
+			<< "Failed to open tuning file "
+			<< path << ": " << strerror(-ret);
+		return ret;
+	}
+
+	std::unique_ptr<ValueNode> data = YamlParser::parse(file);
+	if (!data)
+		return -EINVAL;
+
+	if (!data->contains("modules"))
+		return 0;
+
+	const auto &modules = (*data)["modules"].asList();
+	for (const auto &module : modules) {
+		const auto &params = module["Dewarp"];
+		if (!params)
+			continue;
+
+		ret = pipe()->dewarper_->init(params);
+		if (ret)
+			return ret;
+
+		LOG(RkISP1, Info) << "Dw100 dewarper initialized";
+
+		canUseDewarper_ = true;
+		return 0;
+	}
+
+	return 0;
+}
+
+void RkISP1CameraData::paramsComputed(unsigned int frame, unsigned int bytesused)
 {
 	PipelineHandlerRkISP1 *pipe = RkISP1CameraData::pipe();
 	RkISP1FrameInfo *info = frameInfo_.find(frame);
 	if (!info)
 		return;
 
-	info->paramBuffer->_d()->metadata().planes()[0].bytesused =
-		sizeof(struct rkisp1_params_cfg);
-	pipe->param_->queueBuffer(info->paramBuffer);
+	info->paramBuffer->_d()->metadata().planes()[0].bytesused = bytesused;
+
+	int ret = pipe->param_->queueBuffer(info->paramBuffer);
+	if (ret < 0) {
+		LOG(RkISP1, Error) << "Failed to queue parameter buffer: "
+				   << strerror(-ret);
+		return;
+	}
+
 	pipe->stat_->queueBuffer(info->statBuffer);
 
 	if (info->mainPathBuffer)
@@ -410,7 +512,7 @@ void RkISP1CameraData::metadataReady(unsigned int frame, const ControlList &meta
 	if (!info)
 		return;
 
-	info->request->metadata().merge(metadata);
+	info->request->_d()->metadata().merge(metadata);
 	info->metadataProcessed = true;
 
 	pipe()->tryCompleteRequest(info);
@@ -454,11 +556,12 @@ bool RkISP1CameraConfiguration::fitsAllPaths(const StreamConfiguration &cfg)
 	StreamConfiguration config;
 
 	config = cfg;
-	if (data_->mainPath_->validate(sensor, &config) != Valid)
+	if (data_->mainPath_->validate(sensor, sensorConfig, &config) != Valid)
 		return false;
 
 	config = cfg;
-	if (data_->selfPath_ && data_->selfPath_->validate(sensor, &config) != Valid)
+	if (data_->selfPath_ &&
+	    data_->selfPath_->validate(sensor, sensorConfig, &config) != Valid)
 		return false;
 
 	return true;
@@ -466,6 +569,7 @@ bool RkISP1CameraConfiguration::fitsAllPaths(const StreamConfiguration &cfg)
 
 CameraConfiguration::Status RkISP1CameraConfiguration::validate()
 {
+	const PipelineHandlerRkISP1 *pipe = data_->pipe();
 	const CameraSensor *sensor = data_->sensor_.get();
 	unsigned int pathCount = data_->selfPath_ ? 2 : 1;
 	Status status;
@@ -475,30 +579,73 @@ CameraConfiguration::Status RkISP1CameraConfiguration::validate()
 
 	status = validateColorSpaces(ColorSpaceFlag::StreamsShareColorSpace);
 
+	/*
+	 * Make sure that if a sensor configuration has been requested it
+	 * is valid.
+	 */
+	if (sensorConfig) {
+		if (!sensorConfig->isValid()) {
+			LOG(RkISP1, Error)
+				<< "Invalid sensor configuration request";
+
+			return Invalid;
+		}
+
+		unsigned int bitDepth = sensorConfig->bitDepth;
+		if (bitDepth != 8 && bitDepth != 10 && bitDepth != 12) {
+			LOG(RkISP1, Error)
+				<< "Invalid sensor configuration bit depth";
+
+			return Invalid;
+		}
+	}
+
 	/* Cap the number of entries to the available streams. */
 	if (config_.size() > pathCount) {
 		config_.resize(pathCount);
 		status = Adjusted;
 	}
 
-	Transform requestedTransform = transform;
-	Transform combined = sensor->validateTransform(&transform);
-	if (transform != requestedTransform)
-		status = Adjusted;
+	/*
+	 * Simultaneous capture of raw and processed streams isn't possible.
+	 * Let the first stream decide on the type.
+	 */
+	bool isRaw = (PixelFormatInfo::info(config_[0].pixelFormat).colourEncoding ==
+		      PixelFormatInfo::ColourEncodingRAW);
+	if (isRaw) {
+		if (config_.size() > 1) {
+			config_.resize(1);
+			status = Adjusted;
+		}
+	} else {
+		/* Drop all raw configs. */
+		for (auto it = config_.begin(); it != config_.end();) {
+			if (PixelFormatInfo::info(it->pixelFormat).colourEncoding ==
+			    PixelFormatInfo::ColourEncodingRAW) {
+				it = config_.erase(it);
+				status = Adjusted;
+				continue;
+			}
+			++it;
+		}
+	}
 
 	/*
-	 * Simultaneous capture of raw and processed streams isn't possible. If
-	 * there is any raw stream, cap the number of streams to one.
+	 * If the dewarper supports orientation adjustments, apply that completely
+	 * there. Even if the sensor supports flips, it is beneficial to do that
+	 * in the dewarper so that lens dewarping happens on the unflipped image
 	 */
-	if (config_.size() > 1) {
-		for (const auto &cfg : config_) {
-			if (PixelFormatInfo::info(cfg.pixelFormat).colourEncoding ==
-			    PixelFormatInfo::ColourEncodingRAW) {
-				config_.resize(1);
-				status = Adjusted;
-				break;
-			}
-		}
+	bool transposeAfterIsp = false;
+	bool useDewarper = (data_->canUseDewarper_ && !isRaw);
+	if (useDewarper) {
+		combinedTransform_ = orientation / data_->sensor_->mountingOrientation();
+		if (!!(combinedTransform_ & Transform::Transpose))
+			transposeAfterIsp = true;
+	} else {
+		Orientation requestedOrientation = orientation;
+		combinedTransform_ = data_->sensor_->computeTransform(&orientation);
+		if (orientation != requestedOrientation)
+			status = Adjusted;
 	}
 
 	/*
@@ -513,50 +660,93 @@ CameraConfiguration::Status RkISP1CameraConfiguration::validate()
 	if (config_.size() == 2 && fitsAllPaths(config_[0]))
 		std::reverse(order.begin(), order.end());
 
+	/*
+	 * Validate the configuration against the desired path and, if the
+	 * platform supports it, the dewarper. While iterating over the
+	 * configurations collect the smallest common sensor format.
+	 */
+	Size accumulatedSensorSize;
+	auto validateConfig = [&](StreamConfiguration &cfg, RkISP1Path *path,
+				  Stream *stream, Status expectedStatus) {
+		StreamConfiguration tryCfg = cfg;
+
+		/* Need to validate the path before the transpose */
+		if (transposeAfterIsp)
+			tryCfg.size.transpose();
+
+		Status ret = path->validate(sensor, sensorConfig, &tryCfg);
+		if (ret == Invalid)
+			return false;
+
+		if (!useDewarper &&
+		    (expectedStatus == Valid && ret == Adjusted))
+			return false;
+
+		Size sensorSize = tryCfg.size;
+
+		if (useDewarper) {
+			/*
+			 * The dewarper output is independent of the ISP path.
+			 * Reset to the originally requested size.
+			 */
+			tryCfg.size = cfg.size;
+			bool adjusted;
+
+			pipe->dewarper_->validateOutput(&tryCfg, &adjusted,
+							Converter::Alignment::Down);
+			if (expectedStatus == Valid && adjusted)
+				return false;
+		}
+
+		if (tryCfg.bufferCount < kRkISP1MinBufferCount) {
+			if (expectedStatus == Valid)
+				return false;
+			tryCfg.bufferCount = kRkISP1MinBufferCount;
+		}
+
+		cfg = tryCfg;
+		cfg.setStream(stream);
+
+		accumulatedSensorSize = std::max(accumulatedSensorSize, sensorSize);
+		return true;
+	};
+
 	bool mainPathAvailable = true;
 	bool selfPathAvailable = data_->selfPath_;
+	RkISP1Path *mainPath = data_->mainPath_;
+	RkISP1Path *selfPath = data_->selfPath_;
+	Stream *mainPathStream = const_cast<Stream *>(&data_->mainPathStream_);
+	Stream *selfPathStream = const_cast<Stream *>(&data_->selfPathStream_);
 	for (unsigned int index : order) {
 		StreamConfiguration &cfg = config_[index];
 
 		/* Try to match stream without adjusting configuration. */
 		if (mainPathAvailable) {
-			StreamConfiguration tryCfg = cfg;
-			if (data_->mainPath_->validate(sensor, &tryCfg) == Valid) {
+			if (validateConfig(cfg, mainPath, mainPathStream, Valid)) {
 				mainPathAvailable = false;
-				cfg = tryCfg;
-				cfg.setStream(const_cast<Stream *>(&data_->mainPathStream_));
 				continue;
 			}
 		}
 
 		if (selfPathAvailable) {
-			StreamConfiguration tryCfg = cfg;
-			if (data_->selfPath_->validate(sensor, &tryCfg) == Valid) {
+			if (validateConfig(cfg, selfPath, selfPathStream, Valid)) {
 				selfPathAvailable = false;
-				cfg = tryCfg;
-				cfg.setStream(const_cast<Stream *>(&data_->selfPathStream_));
 				continue;
 			}
 		}
 
 		/* Try to match stream allowing adjusting configuration. */
 		if (mainPathAvailable) {
-			StreamConfiguration tryCfg = cfg;
-			if (data_->mainPath_->validate(sensor, &tryCfg) == Adjusted) {
+			if (validateConfig(cfg, mainPath, mainPathStream, Adjusted)) {
 				mainPathAvailable = false;
-				cfg = tryCfg;
-				cfg.setStream(const_cast<Stream *>(&data_->mainPathStream_));
 				status = Adjusted;
 				continue;
 			}
 		}
 
 		if (selfPathAvailable) {
-			StreamConfiguration tryCfg = cfg;
-			if (data_->selfPath_->validate(sensor, &tryCfg) == Adjusted) {
+			if (validateConfig(cfg, selfPath, selfPathStream, Adjusted)) {
 				selfPathAvailable = false;
-				cfg = tryCfg;
-				cfg.setStream(const_cast<Stream *>(&data_->selfPathStream_));
 				status = Adjusted;
 				continue;
 			}
@@ -568,34 +758,21 @@ CameraConfiguration::Status RkISP1CameraConfiguration::validate()
 		return Invalid;
 	}
 
-	/* Select the sensor format. */
-	PixelFormat rawFormat;
-	Size maxSize;
-
-	for (const StreamConfiguration &cfg : config_) {
-		const PixelFormatInfo &info = PixelFormatInfo::info(cfg.pixelFormat);
-		if (info.colourEncoding == PixelFormatInfo::ColourEncodingRAW)
-			rawFormat = cfg.pixelFormat;
-
-		maxSize = std::max(maxSize, cfg.size);
-	}
-
 	std::vector<unsigned int> mbusCodes;
 
-	if (rawFormat.isValid()) {
-		mbusCodes = { rawFormats.at(rawFormat) };
+	if (isRaw) {
+		mbusCodes = { rawFormats.at(config_[0].pixelFormat) };
 	} else {
 		std::transform(rawFormats.begin(), rawFormats.end(),
 			       std::back_inserter(mbusCodes),
 			       [](const auto &value) { return value.second; });
 	}
 
-	sensorFormat_ = sensor->getFormat(mbusCodes, maxSize);
+	sensorFormat_ = sensor->getFormat(mbusCodes, accumulatedSensorSize,
+					  mainPath->maxResolution());
 
 	if (sensorFormat_.size.isNull())
 		sensorFormat_.size = sensor->resolution();
-
-	combinedTransform_ = combined;
 
 	return status;
 }
@@ -605,7 +782,7 @@ CameraConfiguration::Status RkISP1CameraConfiguration::validate()
  */
 
 PipelineHandlerRkISP1::PipelineHandlerRkISP1(CameraManager *manager)
-	: PipelineHandler(manager), hasSelfPath_(true)
+	: PipelineHandler(manager, kRkISP1MaxQueuedRequests), hasSelfPath_(true)
 {
 }
 
@@ -626,6 +803,22 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 	if (roles.empty())
 		return config;
 
+	Transform transform = Transform::Identity;
+	Size previewSize = kRkISP1PreviewSize;
+	bool transposeAfterIsp = false;
+	if (data->canUseDewarper_) {
+		transform = Orientation::Rotate0 / data->sensor_->mountingOrientation();
+		if (!!(transform & Transform::Transpose))
+			transposeAfterIsp = true;
+	}
+
+	/*
+	 * In case of a transpose transform we need to create a path for the
+	 * transposed size.
+	 */
+	if (transposeAfterIsp)
+		previewSize.transpose();
+
 	/*
 	 * As the ISP can't output different color spaces for the main and self
 	 * path, pick a sensible default color space based on the role of the
@@ -638,7 +831,6 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 		Size size;
 
 		switch (role) {
-		case StreamRole::YuvSnapshot:
 		case StreamRole::StillCapture:
 			/* JPEG encoders typically expect sYCC. */
 			if (!colorSpace)
@@ -655,7 +847,7 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 			if (!colorSpace)
 				colorSpace = ColorSpace::Sycc;
 
-			size = kRkISP1PreviewSize;
+			size = previewSize;
 			break;
 
 		case StreamRole::VideoRecording:
@@ -663,7 +855,7 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 			if (!colorSpace)
 				colorSpace = ColorSpace::Rec709;
 
-			size = kRkISP1PreviewSize;
+			size = previewSize;
 			break;
 
 		case StreamRole::Raw:
@@ -705,7 +897,11 @@ PipelineHandlerRkISP1::generateConfiguration(Camera *camera,
 		if (!cfg.pixelFormat.isValid())
 			return nullptr;
 
+		if (transposeAfterIsp && role != StreamRole::Raw)
+			cfg.size.transpose();
+
 		cfg.colorSpace = colorSpace;
+		cfg.bufferCount = kRkISP1MinBufferCount;
 		config->addConfiguration(cfg);
 	}
 
@@ -722,9 +918,22 @@ int PipelineHandlerRkISP1::configure(Camera *camera, CameraConfiguration *c)
 	CameraSensor *sensor = data->sensor_.get();
 	int ret;
 
-	ret = initLinks(camera, sensor, *config);
+	ret = initLinks(camera, *config);
 	if (ret)
 		return ret;
+
+	const PixelFormat &streamFormat = config->at(0).pixelFormat;
+	const PixelFormatInfo &info = PixelFormatInfo::info(streamFormat);
+	isRaw_ = info.colourEncoding == PixelFormatInfo::ColourEncodingRAW;
+	data->usesDewarper_ = data->canUseDewarper_ && !isRaw_;
+
+	Transform transform = config->combinedTransform();
+	bool transposeAfterIsp = false;
+	if (data->usesDewarper_) {
+		if (!!(transform & Transform::Transpose))
+			transposeAfterIsp = true;
+		transform = Transform::Identity;
+	}
 
 	/*
 	 * Configure the format on the sensor output and propagate it through
@@ -733,44 +942,81 @@ int PipelineHandlerRkISP1::configure(Camera *camera, CameraConfiguration *c)
 	V4L2SubdeviceFormat format = config->sensorFormat();
 	LOG(RkISP1, Debug) << "Configuring sensor with " << format;
 
-	ret = sensor->setFormat(&format, config->combinedTransform());
+	if (config->sensorConfig)
+		ret = sensor->applyConfiguration(*config->sensorConfig,
+						 transform,
+						 &format);
+	else
+		ret = sensor->setFormat(&format, transform);
+
 	if (ret < 0)
 		return ret;
 
 	LOG(RkISP1, Debug) << "Sensor configured with " << format;
 
-	if (csi_) {
-		ret = csi_->setFormat(0, &format);
-		if (ret < 0)
-			return ret;
-	}
+	/* Propagate format through the internal media pipeline up to the ISP */
+	ret = data->pipe_.configure(sensor, &format);
+	if (ret < 0)
+		return ret;
 
+	LOG(RkISP1, Debug) << "Configuring ISP with : " << format;
 	ret = isp_->setFormat(0, &format);
 	if (ret < 0)
 		return ret;
 
-	Rectangle rect(0, 0, format.size);
-	ret = isp_->setSelection(0, V4L2_SEL_TGT_CROP, &rect);
+	Rectangle inputCrop(0, 0, format.size);
+	ret = isp_->setSelection(0, V4L2_SEL_TGT_CROP, &inputCrop);
 	if (ret < 0)
 		return ret;
 
 	LOG(RkISP1, Debug)
 		<< "ISP input pad configured with " << format
-		<< " crop " << rect;
+		<< " crop " << inputCrop;
 
-	const PixelFormat &streamFormat = config->at(0).pixelFormat;
-	const PixelFormatInfo &info = PixelFormatInfo::info(streamFormat);
-	isRaw_ = info.colourEncoding == PixelFormatInfo::ColourEncodingRAW;
+	Rectangle outputCrop = inputCrop;
 
 	/* YUYV8_2X8 is required on the ISP source path pad for YUV output. */
 	if (!isRaw_)
-		format.mbus_code = MEDIA_BUS_FMT_YUYV8_2X8;
+		format.code = MEDIA_BUS_FMT_YUYV8_2X8;
+
+	/*
+	 * On devices without DUAL_CROP (like the imx8mp) cropping needs to be
+	 * done on the ISP/IS output.
+	 *
+	 * If the dewarper is used, the cropping shall be done by the dewarper.
+	 */
+	if (media_->hwRevision() == RKISP1_V_IMX8MP) {
+		/* imx8mp has only a single path. */
+		const auto &cfg = config->at(0);
+		/*
+		 * If the dewarper is used, all cropping including aspect ratio
+		 * preservation shall be done there. To ensure that the output
+		 * format provided by the ISP is supported by the dewarper, a
+		 * minimal crop still needs to be applied on the ISP output.
+		 *
+		 * \todo It might be possible to allocate bigger buffers
+		 * (aligned to 8 pixels) with a stride matching format.size for
+		 * the ISP. The not-filled border could later be ignored by the
+		 * dewarper. This way we could skip the minimal crop here and
+		 * the MaximumScalerCrop would always match the isp output.
+		 */
+		Size ispCrop;
+		if (data->usesDewarper_)
+			ispCrop = dewarper_->adjustInputSize(cfg.pixelFormat,
+							     format.size);
+		else
+			ispCrop = format.size.boundedToAspectRatio(cfg.size)
+					  .alignedUpTo(2, 2);
+
+		outputCrop = ispCrop.centeredTo(Rectangle(format.size).center());
+		format.size = ispCrop;
+	}
 
 	LOG(RkISP1, Debug)
 		<< "Configuring ISP output pad with " << format
-		<< " crop " << rect;
+		<< " crop " << outputCrop;
 
-	ret = isp_->setSelection(2, V4L2_SEL_TGT_CROP, &rect);
+	ret = isp_->setSelection(2, V4L2_SEL_TGT_CROP, &outputCrop);
 	if (ret < 0)
 		return ret;
 
@@ -781,13 +1027,57 @@ int PipelineHandlerRkISP1::configure(Camera *camera, CameraConfiguration *c)
 
 	LOG(RkISP1, Debug)
 		<< "ISP output pad configured with " << format
-		<< " crop " << rect;
+		<< " crop " << outputCrop;
+
+	IPACameraSensorInfo sensorInfo;
+	ret = data->sensor_->sensorInfo(&sensorInfo);
+	if (ret)
+		return ret;
+
+	/* Apply the actual sensor crop for proper dewarp map calculation. */
+	Rectangle sensorCrop = outputCrop.transformedBetween(
+		inputCrop, sensorInfo.analogCrop);
+	if (data->usesDewarper_)
+		dewarper_->setSensorCrop(sensorCrop);
+	data->properties_.set(properties::ScalerCropMaximum, sensorCrop);
 
 	std::map<unsigned int, IPAStream> streamConfig;
 
 	for (const StreamConfiguration &cfg : *config) {
 		if (cfg.stream() == &data->mainPathStream_) {
-			ret = mainPath_.configure(cfg, format);
+			/*
+			 * To allow for digital zoom, scaling down should happen
+			 * in the dewarper, instead of the resizer. Configure
+			 * the isp output to the same size as the sensor output.
+			 */
+			StreamConfiguration ispCfg = cfg;
+			if (data->usesDewarper_) {
+				ispCfg.bufferCount = kRkISP1MinBufferCount;
+				ispCfg.size = format.size;
+				ispCfg.stride =
+					PixelFormatInfo::info(ispCfg.pixelFormat)
+						.stride(ispCfg.size.width, 0);
+
+				ret = dewarper_->configure(ispCfg, { cfg });
+				if (ret)
+					return ret;
+
+				dewarper_->setTransform(cfg.stream(), config->combinedTransform());
+				/*
+				 * Apply a default scaler crop that keeps the
+				 * aspect ratio.
+				 */
+				Size size = cfg.size;
+				if (transposeAfterIsp)
+					size.transpose();
+				size = sensorCrop.size().boundedToAspectRatio(size);
+
+				ControlList ctrls;
+				ctrls.set(controls::ScalerCrop, size.centeredTo(sensorCrop.center()));
+				dewarper_->setControls(cfg.stream(), ctrls);
+			}
+
+			ret = mainPath_.configure(ispCfg, format);
 			streamConfig[0] = IPAStream(cfg.pixelFormat,
 						    cfg.size);
 		} else if (hasSelfPath_) {
@@ -803,7 +1093,7 @@ int PipelineHandlerRkISP1::configure(Camera *camera, CameraConfiguration *c)
 	}
 
 	V4L2DeviceFormat paramFormat;
-	paramFormat.fourcc = V4L2PixelFormat(V4L2_META_FMT_RK_ISP1_PARAMS);
+	paramFormat.fourcc = V4L2PixelFormat(V4L2_META_FMT_RK_ISP1_EXT_PARAMS);
 	ret = param_->setFormat(&paramFormat);
 	if (ret)
 		return ret;
@@ -815,20 +1105,17 @@ int PipelineHandlerRkISP1::configure(Camera *camera, CameraConfiguration *c)
 		return ret;
 
 	/* Inform IPA of stream configuration and sensor controls. */
-	ipa::rkisp1::IPAConfigInfo ipaConfig{};
+	ipa::rkisp1::IPAConfigInfo ipaConfig{ sensorInfo,
+					      data->sensor_->controls(),
+					      paramFormat.fourcc };
 
-	ret = data->sensor_->sensorInfo(&ipaConfig.sensorInfo);
-	if (ret)
-		return ret;
-
-	ipaConfig.sensorControls = data->sensor_->controls();
-
-	ret = data->ipa_->configure(ipaConfig, streamConfig, &data->controlInfo_);
+	ret = data->ipa_->configure(ipaConfig, streamConfig, &data->ipaControls_);
 	if (ret) {
 		LOG(RkISP1, Error) << "failed configuring IPA (" << ret << ")";
 		return ret;
 	}
-	return 0;
+
+	return updateControls(data);
 }
 
 int PipelineHandlerRkISP1::exportFrameBuffers([[maybe_unused]] Camera *camera, Stream *stream,
@@ -837,10 +1124,19 @@ int PipelineHandlerRkISP1::exportFrameBuffers([[maybe_unused]] Camera *camera, S
 	RkISP1CameraData *data = cameraData(camera);
 	unsigned int count = stream->configuration().bufferCount;
 
-	if (stream == &data->mainPathStream_)
-		return mainPath_.exportBuffers(count, buffers);
-	else if (hasSelfPath_ && stream == &data->selfPathStream_)
+	if (stream == &data->mainPathStream_) {
+		/*
+		 * Currently, i.MX8MP is the only platform with DW100 dewarper.
+		 * It has mainpath and no self path. Hence, export buffers from
+		 * dewarper just for the main path stream, for now.
+		 */
+		if (data->usesDewarper_)
+			return dewarper_->exportBuffers(&data->mainPathStream_, count, buffers);
+		else
+			return mainPath_.exportBuffers(count, buffers);
+	} else if (hasSelfPath_ && stream == &data->selfPathStream_) {
 		return selfPath_.exportBuffers(count, buffers);
+	}
 
 	return -EINVAL;
 }
@@ -851,44 +1147,52 @@ int PipelineHandlerRkISP1::allocateBuffers(Camera *camera)
 	unsigned int ipaBufferId = 1;
 	int ret;
 
-	unsigned int maxCount = std::max({
-		data->mainPathStream_.configuration().bufferCount,
-		data->selfPathStream_.configuration().bufferCount,
-	});
+	auto errorCleanup = utils::scope_exit{ [&]() {
+		paramBuffers_.clear();
+		statBuffers_.clear();
+		mainPathBuffers_.clear();
+	} };
 
 	if (!isRaw_) {
-		ret = param_->allocateBuffers(maxCount, &paramBuffers_);
+		ret = param_->allocateBuffers(kRkISP1MinBufferCount, &paramBuffers_);
 		if (ret < 0)
-			goto error;
+			return ret;
 
-		ret = stat_->allocateBuffers(maxCount, &statBuffers_);
+		ret = stat_->allocateBuffers(kRkISP1MinBufferCount, &statBuffers_);
 		if (ret < 0)
-			goto error;
+			return ret;
 	}
 
-	for (std::unique_ptr<FrameBuffer> &buffer : paramBuffers_) {
-		buffer->setCookie(ipaBufferId++);
-		data->ipaBuffers_.emplace_back(buffer->cookie(),
-					       buffer->planes());
-		availableParamBuffers_.push(buffer.get());
+	/* If the dewarper is being used, allocate internal buffers for ISP. */
+	if (data->usesDewarper_) {
+		ret = mainPath_.exportBuffers(kRkISP1MinBufferCount, &mainPathBuffers_);
+		if (ret < 0)
+			return ret;
+
+		for (std::unique_ptr<FrameBuffer> &buffer : mainPathBuffers_)
+			availableMainPathBuffers_.push(buffer.get());
 	}
 
-	for (std::unique_ptr<FrameBuffer> &buffer : statBuffers_) {
-		buffer->setCookie(ipaBufferId++);
-		data->ipaBuffers_.emplace_back(buffer->cookie(),
-					       buffer->planes());
-		availableStatBuffers_.push(buffer.get());
-	}
+	auto pushBuffers = [&](const std::vector<std::unique_ptr<FrameBuffer>> &buffers,
+			       std::queue<FrameBuffer *> &queue) {
+		for (const std::unique_ptr<FrameBuffer> &buffer : buffers) {
+			Span<const FrameBuffer::Plane> planes = buffer->planes();
+
+			buffer->setCookie(ipaBufferId++);
+			data->ipaBuffers_.emplace_back(buffer->cookie(),
+						       std::vector<FrameBuffer::Plane>{ planes.begin(),
+											planes.end() });
+			queue.push(buffer.get());
+		}
+	};
+
+	pushBuffers(paramBuffers_, availableParamBuffers_);
+	pushBuffers(statBuffers_, availableStatBuffers_);
 
 	data->ipa_->mapBuffers(data->ipaBuffers_);
 
+	errorCleanup.release();
 	return 0;
-
-error:
-	paramBuffers_.clear();
-	statBuffers_.clear();
-
-	return ret;
 }
 
 int PipelineHandlerRkISP1::freeBuffers(Camera *camera)
@@ -901,8 +1205,12 @@ int PipelineHandlerRkISP1::freeBuffers(Camera *camera)
 	while (!availableParamBuffers_.empty())
 		availableParamBuffers_.pop();
 
+	while (!availableMainPathBuffers_.empty())
+		availableMainPathBuffers_.pop();
+
 	paramBuffers_.clear();
 	statBuffers_.clear();
+	mainPathBuffers_.clear();
 
 	std::vector<unsigned int> ids;
 	for (IPABuffer &ipabuf : data->ipaBuffers_)
@@ -923,71 +1231,74 @@ int PipelineHandlerRkISP1::freeBuffers(Camera *camera)
 int PipelineHandlerRkISP1::start(Camera *camera, [[maybe_unused]] const ControlList *controls)
 {
 	RkISP1CameraData *data = cameraData(camera);
+	utils::ScopeExitActions actions;
 	int ret;
 
 	/* Allocate buffers for internal pipeline usage. */
 	ret = allocateBuffers(camera);
 	if (ret)
 		return ret;
+	actions += [&]() { freeBuffers(camera); };
 
 	ret = data->ipa_->start();
 	if (ret) {
-		freeBuffers(camera);
 		LOG(RkISP1, Error)
 			<< "Failed to start IPA " << camera->id();
 		return ret;
 	}
+	actions += [&]() { data->ipa_->stop(); };
 
 	data->frame_ = 0;
 
 	if (!isRaw_) {
 		ret = param_->streamOn();
 		if (ret) {
-			data->ipa_->stop();
-			freeBuffers(camera);
 			LOG(RkISP1, Error)
 				<< "Failed to start parameters " << camera->id();
 			return ret;
 		}
+		actions += [&]() { param_->streamOff(); };
 
 		ret = stat_->streamOn();
 		if (ret) {
-			param_->streamOff();
-			data->ipa_->stop();
-			freeBuffers(camera);
 			LOG(RkISP1, Error)
 				<< "Failed to start statistics " << camera->id();
 			return ret;
 		}
+		actions += [&]() { stat_->streamOff(); };
+
+		if (data->usesDewarper_) {
+			if (controls)
+				dewarper_->setControls(&data->mainPathStream_, *controls);
+
+			ret = dewarper_->start();
+			if (ret) {
+				LOG(RkISP1, Error) << "Failed to start dewarper";
+				return ret;
+			}
+			actions += [&]() { dewarper_->stop(); };
+		}
 	}
 
 	if (data->mainPath_->isEnabled()) {
-		ret = mainPath_.start();
-		if (ret) {
-			param_->streamOff();
-			stat_->streamOff();
-			data->ipa_->stop();
-			freeBuffers(camera);
+		ret = mainPath_.start(data->mainPathStream_.configuration().bufferCount);
+		if (ret)
 			return ret;
-		}
+		actions += [&]() { mainPath_.stop(); };
 	}
 
 	if (hasSelfPath_ && data->selfPath_->isEnabled()) {
-		ret = selfPath_.start();
-		if (ret) {
-			mainPath_.stop();
-			param_->streamOff();
-			stat_->streamOff();
-			data->ipa_->stop();
-			freeBuffers(camera);
+		ret = selfPath_.start(data->selfPathStream_.configuration().bufferCount);
+		if (ret)
 			return ret;
-		}
 	}
 
 	isp_->setFrameStartEnabled(true);
 
 	activeCamera_ = camera;
-	return ret;
+
+	actions.release();
+	return 0;
 }
 
 void PipelineHandlerRkISP1::stopDevice(Camera *camera)
@@ -1013,6 +1324,9 @@ void PipelineHandlerRkISP1::stopDevice(Camera *camera)
 		if (ret)
 			LOG(RkISP1, Warning)
 				<< "Failed to stop parameters for " << camera->id();
+
+		if (data->usesDewarper_)
+			dewarper_->stop();
 	}
 
 	ASSERT(data->queuedRequests_.empty());
@@ -1039,8 +1353,8 @@ int PipelineHandlerRkISP1::queueRequestDevice(Camera *camera, Request *request)
 		if (data->selfPath_ && info->selfPathBuffer)
 			data->selfPath_->queueBuffer(info->selfPathBuffer);
 	} else {
-		data->ipa_->fillParamsBuffer(data->frame_,
-					     info->paramBuffer->cookie());
+		data->ipa_->computeParams(data->frame_,
+					  info->paramBuffer->cookie());
 	}
 
 	data->frame_++;
@@ -1053,7 +1367,6 @@ int PipelineHandlerRkISP1::queueRequestDevice(Camera *camera, Request *request)
  */
 
 int PipelineHandlerRkISP1::initLinks(Camera *camera,
-				     const CameraSensor *sensor,
 				     const RkISP1CameraConfiguration &config)
 {
 	RkISP1CameraData *data = cameraData(camera);
@@ -1064,31 +1377,16 @@ int PipelineHandlerRkISP1::initLinks(Camera *camera,
 		return ret;
 
 	/*
-	 * Configure the sensor links: enable the link corresponding to this
-	 * camera.
+	 * Configure the sensor links: enable the links corresponding to this
+	 * pipeline all the way up to the ISP, through any connected CSI receiver.
 	 */
-	for (MediaLink *link : ispSink_->links()) {
-		if (link->source()->entity() != sensor->entity())
-			continue;
-
-		LOG(RkISP1, Debug)
-			<< "Enabling link from sensor '"
-			<< link->source()->entity()->name()
-			<< "' to ISP";
-
-		ret = link->setEnabled(true);
-		if (ret < 0)
-			return ret;
+	ret = data->pipe_.initLinks();
+	if (ret) {
+		LOG(RkISP1, Error) << "Failed to set up pipe links";
+		return ret;
 	}
 
-	if (csi_) {
-		MediaLink *link = isp_->entity()->getPadByIndex(0)->links().at(0);
-
-		ret = link->setEnabled(true);
-		if (ret < 0)
-			return ret;
-	}
-
+	/* Configure the paths after the ISP */
 	for (const StreamConfiguration &cfg : config) {
 		if (cfg.stream() == &data->mainPathStream_)
 			ret = data->mainPath_->setEnabled(true);
@@ -1104,6 +1402,44 @@ int PipelineHandlerRkISP1::initLinks(Camera *camera,
 	return 0;
 }
 
+/**
+ * \brief Update the camera controls
+ * \param[in] data The camera data
+ *
+ * Compute the camera controls by calculating controls which the pipeline
+ * is reponsible for and merge them with the controls computed by the IPA.
+ *
+ * This function needs data->ipaControls_ to be refreshed when a new
+ * configuration is applied to the camera by the IPA configure() function.
+ *
+ * Always call this function after IPA configure() to make sure to have a
+ * properly refreshed IPA controls list.
+ *
+ * \return 0 on success or a negative error code otherwise
+ */
+int PipelineHandlerRkISP1::updateControls(RkISP1CameraData *data)
+{
+	ControlInfoMap::Map controls;
+
+	if (data->usesDewarper_)
+		dewarper_->updateControlInfos(&data->mainPathStream_, controls);
+
+	/* Add the IPA registered controls to list of camera controls. */
+	for (const auto &ipaControl : data->ipaControls_)
+		controls[ipaControl.first] = ipaControl.second;
+
+	data->controlInfo_ = ControlInfoMap(std::move(controls),
+					    controls::controls);
+
+	return 0;
+}
+
+/*
+ * By default we assume all the blocks that were included in the first
+ * extensible parameters series are available. That is the lower 20bits.
+ */
+const uint32_t kDefaultExtParamsBlocks = 0xfffff;
+
 int PipelineHandlerRkISP1::createCamera(MediaEntity *sensor)
 {
 	int ret;
@@ -1112,22 +1448,25 @@ int PipelineHandlerRkISP1::createCamera(MediaEntity *sensor)
 		std::make_unique<RkISP1CameraData>(this, &mainPath_,
 						   hasSelfPath_ ? &selfPath_ : nullptr);
 
-	data->sensor_ = std::make_unique<CameraSensor>(sensor);
-	ret = data->sensor_->init();
-	if (ret)
+	/* Identify the pipeline path between the sensor and the rkisp1_isp */
+	ret = data->pipe_.init(sensor, "rkisp1_isp");
+	if (ret) {
+		LOG(RkISP1, Error) << "Failed to identify path from sensor to sink";
 		return ret;
+	}
+
+	data->sensor_ = CameraSensorFactoryBase::create(sensor);
+	if (!data->sensor_)
+		return -ENODEV;
 
 	/* Initialize the camera properties. */
 	data->properties_ = data->sensor_->properties();
 
-	/*
-	 * \todo Read dealy values from the sensor itself or from a
-	 * a sensor database. For now use generic values taken from
-	 * the Raspberry Pi and listed as generic values.
-	 */
+	const CameraSensorProperties::SensorDelays &delays = data->sensor_->sensorDelays();
 	std::unordered_map<uint32_t, DelayedControls::ControlParams> params = {
-		{ V4L2_CID_ANALOGUE_GAIN, { 1, false } },
-		{ V4L2_CID_EXPOSURE, { 2, false } },
+		{ V4L2_CID_ANALOGUE_GAIN, { delays.gainDelay, false } },
+		{ V4L2_CID_EXPOSURE, { delays.exposureDelay, false } },
+		{ V4L2_CID_VBLANK, { delays.vblankDelay, true } },
 	};
 
 	data->delayedCtrls_ =
@@ -1136,9 +1475,25 @@ int PipelineHandlerRkISP1::createCamera(MediaEntity *sensor)
 	isp_->frameStart.connect(data->delayedCtrls_.get(),
 				 &DelayedControls::applyControls);
 
-	ret = data->loadIPA(media_->hwRevision());
+	uint32_t supportedBlocks = kDefaultExtParamsBlocks;
+
+	auto &controls = param_->controls();
+	if (controls.find(RKISP1_CID_SUPPORTED_PARAMS_BLOCKS) != controls.end()) {
+		auto list = param_->getControls({ { RKISP1_CID_SUPPORTED_PARAMS_BLOCKS } });
+		if (!list.empty())
+			supportedBlocks = static_cast<uint32_t>(
+				list.get(RKISP1_CID_SUPPORTED_PARAMS_BLOCKS)
+					.get<int32_t>());
+	} else {
+		LOG(RkISP1, Error)
+			<< "Failed to query supported params blocks. Falling back to defaults.";
+	}
+
+	ret = data->loadIPA(media_->hwRevision(), supportedBlocks);
 	if (ret)
 		return ret;
+
+	updateControls(data.get());
 
 	std::set<Stream *> streams{
 		&data->mainPathStream_,
@@ -1147,6 +1502,7 @@ int PipelineHandlerRkISP1::createCamera(MediaEntity *sensor)
 	const std::string &id = data->sensor_->id();
 	std::shared_ptr<Camera> camera =
 		Camera::create(std::move(data), id, streams);
+
 	registerCamera(std::move(camera));
 
 	return 0;
@@ -1154,8 +1510,6 @@ int PipelineHandlerRkISP1::createCamera(MediaEntity *sensor)
 
 bool PipelineHandlerRkISP1::match(DeviceEnumerator *enumerator)
 {
-	const MediaPad *pad;
-
 	DeviceMatch dm("rkisp1");
 	dm.add("rkisp1_isp");
 	dm.add("rkisp1_resizer_mainpath");
@@ -1176,32 +1530,16 @@ bool PipelineHandlerRkISP1::match(DeviceEnumerator *enumerator)
 	hasSelfPath_ = !!media_->getEntityByName("rkisp1_selfpath");
 
 	/* Create the V4L2 subdevices we will need. */
-	isp_ = V4L2Subdevice::fromEntityName(media_, "rkisp1_isp");
+	isp_ = V4L2Subdevice::fromEntityName(media_.get(), "rkisp1_isp");
 	if (isp_->open() < 0)
 		return false;
 
-	/* Locate and open the optional CSI-2 receiver. */
-	ispSink_ = isp_->entity()->getPadByIndex(0);
-	if (!ispSink_ || ispSink_->links().empty())
-		return false;
-
-	pad = ispSink_->links().at(0)->source();
-	if (pad->entity()->function() == MEDIA_ENT_F_VID_IF_BRIDGE) {
-		csi_ = std::make_unique<V4L2Subdevice>(pad->entity());
-		if (csi_->open() < 0)
-			return false;
-
-		ispSink_ = csi_->entity()->getPadByIndex(0);
-		if (!ispSink_)
-			return false;
-	}
-
 	/* Locate and open the stats and params video nodes. */
-	stat_ = V4L2VideoDevice::fromEntityName(media_, "rkisp1_stats");
+	stat_ = V4L2VideoDevice::fromEntityName(media_.get(), "rkisp1_stats");
 	if (stat_->open() < 0)
 		return false;
 
-	param_ = V4L2VideoDevice::fromEntityName(media_, "rkisp1_params");
+	param_ = V4L2VideoDevice::fromEntityName(media_.get(), "rkisp1_params");
 	if (param_->open() < 0)
 		return false;
 
@@ -1212,19 +1550,28 @@ bool PipelineHandlerRkISP1::match(DeviceEnumerator *enumerator)
 	if (hasSelfPath_ && !selfPath_.init(media_))
 		return false;
 
-	mainPath_.bufferReady().connect(this, &PipelineHandlerRkISP1::bufferReady);
+	mainPath_.bufferReady().connect(this, &PipelineHandlerRkISP1::imageBufferReady);
 	if (hasSelfPath_)
-		selfPath_.bufferReady().connect(this, &PipelineHandlerRkISP1::bufferReady);
-	stat_->bufferReady.connect(this, &PipelineHandlerRkISP1::statReady);
-	param_->bufferReady.connect(this, &PipelineHandlerRkISP1::paramReady);
+		selfPath_.bufferReady().connect(this, &PipelineHandlerRkISP1::imageBufferReady);
+	stat_->bufferReady.connect(this, &PipelineHandlerRkISP1::statBufferReady);
+	param_->bufferReady.connect(this, &PipelineHandlerRkISP1::paramBufferReady);
+
+	dewarper_ = ConverterDW100Module::createModule(enumerator);
+	if (dewarper_) {
+		dewarper_->outputBufferReady.connect(
+			this, &PipelineHandlerRkISP1::dewarpBufferReady);
+		LOG(RkISP1, Debug) << "Found DW100 dewarper";
+	}
 
 	/*
 	 * Enumerate all sensors connected to the ISP and create one
 	 * camera instance for each of them.
 	 */
 	bool registered = false;
-	for (MediaLink *link : ispSink_->links()) {
-		if (!createCamera(link->source()->entity()))
+
+	for (MediaEntity *entity : media_->locateEntities(MEDIA_ENT_F_CAM_SENSOR)) {
+		LOG(RkISP1, Debug) << "Identified " << entity->name();
+		if (!createCamera(entity))
 			registered = true;
 	}
 
@@ -1254,7 +1601,32 @@ void PipelineHandlerRkISP1::tryCompleteRequest(RkISP1FrameInfo *info)
 	completeRequest(request);
 }
 
-void PipelineHandlerRkISP1::bufferReady(FrameBuffer *buffer)
+void PipelineHandlerRkISP1::cancelDewarpRequest(RkISP1FrameInfo *info)
+{
+	RkISP1CameraData *data = cameraData(activeCamera_);
+	Request *request = info->request;
+	/*
+	 * i.MX8MP is the only known platform with dewarper. It has
+	 * no self path. Hence, only main path buffer completion is
+	 * required.
+	 *
+	 * Also, we cannot completeBuffer(request, buffer) as buffer
+	 * here, is an internal buffer (between ISP and dewarper) and
+	 * is not associated to the any specific request. The request
+	 * buffer associated with main path stream is the one that
+	 * is required to be completed (not the internal buffer).
+	 */
+	for (auto [stream, buffer] : request->buffers()) {
+		if (stream == &data->mainPathStream_) {
+			buffer->_d()->cancel();
+			completeBuffer(request, buffer);
+		}
+	}
+
+	tryCompleteRequest(info);
+}
+
+void PipelineHandlerRkISP1::imageBufferReady(FrameBuffer *buffer)
 {
 	ASSERT(activeCamera_);
 	RkISP1CameraData *data = cameraData(activeCamera_);
@@ -1264,7 +1636,7 @@ void PipelineHandlerRkISP1::bufferReady(FrameBuffer *buffer)
 		return;
 
 	const FrameMetadata &metadata = buffer->metadata();
-	Request *request = buffer->request();
+	Request *request = info->request;
 
 	if (metadata.status != FrameMetadata::FrameCancelled) {
 		/*
@@ -1273,24 +1645,67 @@ void PipelineHandlerRkISP1::bufferReady(FrameBuffer *buffer)
 		 * \todo The sensor timestamp should be better estimated by connecting
 		 * to the V4L2Device::frameStart signal.
 		 */
-		request->metadata().set(controls::SensorTimestamp,
-					metadata.timestamp);
+		request->_d()->metadata().set(controls::SensorTimestamp,
+					      metadata.timestamp);
 
 		if (isRaw_) {
 			const ControlList &ctrls =
 				data->delayedCtrls_->get(metadata.sequence);
-			data->ipa_->processStatsBuffer(info->frame, 0, ctrls);
+			data->ipa_->processStats(info->frame, 0, ctrls);
 		}
 	} else {
 		if (isRaw_)
 			info->metadataProcessed = true;
 	}
 
+	if (!data->usesDewarper_) {
+		completeBuffer(request, buffer);
+		tryCompleteRequest(info);
+
+		return;
+	}
+
+	/* Do not queue cancelled frames to dewarper. */
+	if (metadata.status == FrameMetadata::FrameCancelled) {
+		cancelDewarpRequest(info);
+		return;
+	}
+
+	dewarper_->setControls(&data->mainPathStream_, request->controls());
+
+	/*
+	 * Queue input and output buffers to the dewarper. The output
+	 * buffers for the dewarper are the buffers of the request, supplied
+	 * by the application.
+	 */
+	int ret = dewarper_->queueBuffers(buffer, request->buffers());
+	if (ret < 0) {
+		LOG(RkISP1, Error) << "Failed to queue buffers to dewarper: -"
+				   << strerror(-ret);
+
+		cancelDewarpRequest(info);
+
+		return;
+	}
+
+	dewarper_->populateMetadata(&data->mainPathStream_, request->_d()->metadata());
+}
+
+void PipelineHandlerRkISP1::dewarpBufferReady(FrameBuffer *buffer)
+{
+	ASSERT(activeCamera_);
+	RkISP1CameraData *data = cameraData(activeCamera_);
+	Request *request = buffer->request();
+
+	RkISP1FrameInfo *info = data->frameInfo_.find(buffer->request());
+	if (!info)
+		return;
+
 	completeBuffer(request, buffer);
 	tryCompleteRequest(info);
 }
 
-void PipelineHandlerRkISP1::paramReady(FrameBuffer *buffer)
+void PipelineHandlerRkISP1::paramBufferReady(FrameBuffer *buffer)
 {
 	ASSERT(activeCamera_);
 	RkISP1CameraData *data = cameraData(activeCamera_);
@@ -1303,7 +1718,7 @@ void PipelineHandlerRkISP1::paramReady(FrameBuffer *buffer)
 	tryCompleteRequest(info);
 }
 
-void PipelineHandlerRkISP1::statReady(FrameBuffer *buffer)
+void PipelineHandlerRkISP1::statBufferReady(FrameBuffer *buffer)
 {
 	ASSERT(activeCamera_);
 	RkISP1CameraData *data = cameraData(activeCamera_);
@@ -1321,10 +1736,10 @@ void PipelineHandlerRkISP1::statReady(FrameBuffer *buffer)
 	if (data->frame_ <= buffer->metadata().sequence)
 		data->frame_ = buffer->metadata().sequence + 1;
 
-	data->ipa_->processStatsBuffer(info->frame, info->statBuffer->cookie(),
-				       data->delayedCtrls_->get(buffer->metadata().sequence));
+	data->ipa_->processStats(info->frame, info->statBuffer->cookie(),
+				 data->delayedCtrls_->get(buffer->metadata().sequence));
 }
 
-REGISTER_PIPELINE_HANDLER(PipelineHandlerRkISP1)
+REGISTER_PIPELINE_HANDLER(PipelineHandlerRkISP1, "rkisp1")
 
 } /* namespace libcamera */

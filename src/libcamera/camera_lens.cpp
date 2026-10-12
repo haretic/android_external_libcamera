@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * camera_lens.cpp - A camera lens
+ * A camera lens
  */
 
 #include "libcamera/internal/camera_lens.h"
@@ -73,17 +73,6 @@ int CameraLens::init()
 		return ret;
 
 	model_ = subdev_->model();
-	return 0;
-}
-
-int CameraLens::open()
-{
-	return subdev_->open();
-}
-
-int CameraLens::close()
-{
-	subdev_->close();
 	return 0;
 }
 

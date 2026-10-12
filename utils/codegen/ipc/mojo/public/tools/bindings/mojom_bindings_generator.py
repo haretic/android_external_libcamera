@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright 2013 The Chromium Authors. All rights reserved.
+# Copyright 2013 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
@@ -21,15 +21,15 @@ import sys
 # Disable lint check for finding modules:
 # pylint: disable=F0401
 
-# def _GetDirAbove(dirname):
-#   """Returns the directory "above" this file containing |dirname| (which must
-#   also be "above" this file)."""
-#   path = os.path.abspath(__file__)
-#   while True:
-#     path, tail = os.path.split(path)
-#     assert tail
-#     if tail == dirname:
-#       return path
+def _GetDirAbove(dirname):
+  """Returns the directory "above" this file containing |dirname| (which must
+  also be "above" this file)."""
+  path = os.path.abspath(__file__)
+  while True:
+    path, tail = os.path.split(path)
+    assert tail
+    if tail == dirname:
+      return path
 
 
 sys.path.insert(
@@ -44,9 +44,9 @@ from mojom.generate import template_expander
 from mojom.generate import translate
 from mojom.generate.generator import WriteFile
 
-# sys.path.append(
-#     os.path.join(_GetDirAbove("mojo"), "tools", "diagnosis"))
-# import crbug_1001171
+sys.path.append(
+    os.path.join(_GetDirAbove("mojo"), "tools", "diagnosis"))
+import crbug_1001171
 
 
 _BUILTIN_GENERATORS = {
@@ -57,10 +57,17 @@ _BUILTIN_GENERATORS = {
     "typescript": "mojom_ts_generator",
 }
 
+_BUILTIN_CHECKS = {
+    "attributes": "mojom_attributes_check",
+    "definitions": "mojom_definitions_check",
+    "features": "mojom_interface_feature_check",
+    "restrictions": "mojom_restrictions_check",
+}
+
 
 def LoadGenerators(generators_string):
   if not generators_string:
-    return []  # No generators.
+    return {}  # No generators.
 
   generators = {}
   for generator_name in [s.strip() for s in generators_string.split(",")]:
@@ -69,9 +76,24 @@ def LoadGenerators(generators_string):
       print("Unknown generator name %s" % generator_name)
       sys.exit(1)
     generator_module = importlib.import_module(
-        "%s" % _BUILTIN_GENERATORS[language])
+        "generators.%s" % _BUILTIN_GENERATORS[language])
     generators[language] = generator_module
   return generators
+
+
+def LoadChecks(checks_string):
+  if not checks_string:
+    return {}  # No checks.
+
+  checks = {}
+  for check_name in [s.strip() for s in checks_string.split(",")]:
+    check = check_name.lower()
+    if check not in _BUILTIN_CHECKS:
+      print("Unknown check name %s" % check_name)
+      sys.exit(1)
+    check_module = importlib.import_module("checks.%s" % _BUILTIN_CHECKS[check])
+    checks[check] = check_module
+  return checks
 
 
 def MakeImportStackMessage(imported_filename_stack):
@@ -82,7 +104,7 @@ def MakeImportStackMessage(imported_filename_stack):
                     zip(imported_filename_stack[1:], imported_filename_stack)]))
 
 
-class RelativePath(object):
+class RelativePath:
   """Represents a path relative to the source tree or generated output dir."""
 
   def __init__(self, path, source_root, output_dir):
@@ -142,7 +164,7 @@ def ReadFileContents(filename):
     return f.read()
 
 
-class MojomProcessor(object):
+class MojomProcessor:
   """Takes parsed mojom modules and generates language bindings from them.
 
   Attributes:
@@ -169,8 +191,8 @@ class MojomProcessor(object):
     if 'c++' in self._typemap:
       self._typemap['mojolpm'] = self._typemap['c++']
 
-  def _GenerateModule(self, args, remaining_args, generator_modules,
-                      rel_filename, imported_filename_stack):
+  def _GenerateModule(self, args, remaining_args, check_modules,
+                      generator_modules, rel_filename, imported_filename_stack):
     # Return the already-generated module.
     if rel_filename.path in self._processed_files:
       return self._processed_files[rel_filename.path]
@@ -190,12 +212,16 @@ class MojomProcessor(object):
       ScrambleMethodOrdinals(module.interfaces, salt)
 
     if self._should_generate(rel_filename.path):
+      # Run checks on module first.
+      for check_module in check_modules.values():
+        checker = check_module.Check(module)
+        checker.CheckModule()
+      # Then run generation.
       for language, generator_module in generator_modules.items():
         generator = generator_module.Generator(
             module, args.output_dir, typemap=self._typemap.get(language, {}),
             variant=args.variant, bytecode_path=args.bytecode_path,
             for_blink=args.for_blink,
-            js_bindings_mode=args.js_bindings_mode,
             js_generate_struct_deserializers=\
                     args.js_generate_struct_deserializers,
             export_attribute=args.export_attribute,
@@ -234,6 +260,7 @@ def _Generate(args, remaining_args):
       args.import_directories[idx] = RelativePath(tokens[0], args.depth,
                                                   args.output_dir)
   generator_modules = LoadGenerators(args.generators_string)
+  check_modules = LoadChecks(args.checks_string)
 
   fileutil.EnsureDirectoryExists(args.output_dir)
 
@@ -246,7 +273,7 @@ def _Generate(args, remaining_args):
 
   for filename in args.filename:
     processor._GenerateModule(
-        args, remaining_args, generator_modules,
+        args, remaining_args, check_modules, generator_modules,
         RelativePath(filename, args.depth, args.output_dir), [])
 
   return 0
@@ -255,7 +282,7 @@ def _Generate(args, remaining_args):
 def _Precompile(args, _):
   generator_modules = LoadGenerators(",".join(_BUILTIN_GENERATORS.keys()))
 
-  template_expander.PrecompileTemplates(generator_modules, args.output_file, args.sample_precompile_template)
+  template_expander.PrecompileTemplates(generator_modules, args.output_dir)
   return 0
 
 
@@ -286,6 +313,12 @@ def main():
                                metavar="GENERATORS",
                                default="c++,javascript,java,mojolpm",
                                help="comma-separated list of generators")
+  generate_parser.add_argument("-c",
+                               "--checks",
+                               dest="checks_string",
+                               metavar="CHECKS",
+                               default=",".join(_BUILTIN_CHECKS.keys()),
+                               help="comma-separated list of checks")
   generate_parser.add_argument(
       "--gen_dir", dest="gen_directories", action="append", metavar="directory",
       default=[], help="add a directory to be searched for the syntax trees.")
@@ -308,11 +341,6 @@ def main():
   generate_parser.add_argument("--for_blink", action="store_true",
                                help="Use WTF types as generated types for mojo "
                                "string/array/map.")
-  generate_parser.add_argument(
-      "--js_bindings_mode", choices=["new", "old"], default="old",
-      help="This option only affects the JavaScript bindings. The value could "
-      "be \"new\" to generate new-style lite JS bindings in addition to the "
-      "old, or \"old\" to only generate old bindings.")
   generate_parser.add_argument(
       "--js_generate_struct_deserializers", action="store_true",
       help="Generate javascript deserialize methods for structs in "
@@ -379,14 +407,6 @@ def main():
 
   precompile_parser = subparsers.add_parser("precompile",
       description="Precompile templates for the mojom bindings generator.")
-  precompile_parser.add_argument(
-      "--sample_precompile_template",
-      help="Only used in Android.bp: This script will take the directory and "
-      "precompile templates.")
-  precompile_parser.add_argument(
-      "--output_file",
-      help="Only used in Android.bp: The output path of the precompiled zip file.")
-
   precompile_parser.set_defaults(func=_Precompile)
 
   args, remaining_args = parser.parse_known_args()
@@ -395,4 +415,10 @@ def main():
 
 if __name__ == "__main__":
   with crbug_1001171.DumpStateOnLookupError():
-    sys.exit(main())
+    ret = main()
+    # Exit without running GC, which can save multiple seconds due to the large
+    # number of object created. But flush is necessary as os._exit doesn't do
+    # that.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(ret)

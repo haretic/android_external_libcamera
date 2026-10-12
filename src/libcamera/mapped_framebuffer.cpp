@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * mapped_framebuffer.cpp - Mapped Framebuffer support
+ * Mapped Framebuffer support
  */
 
 #include "libcamera/internal/mapped_framebuffer.h"
@@ -16,7 +16,7 @@
 #include <libcamera/base/log.h>
 
 /**
- * \file libcamera/internal/mapped_framebuffer.h
+ * \file mapped_framebuffer.h
  * \brief Frame buffer memory mapping support
  */
 
@@ -72,7 +72,7 @@ MappedBuffer::MappedBuffer(MappedBuffer &&other)
 
 /**
  * \brief Move assignment operator, replace the mappings with those of \a other
-* \param[in] other The other MappedBuffer
+ * \param[in] other The other MappedBuffer
  *
  * Moving a MappedBuffer moves the mappings contained in the \a other to the new
  * MappedBuffer and invalidates the \a other.

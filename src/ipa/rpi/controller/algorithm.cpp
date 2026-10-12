@@ -2,14 +2,14 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * algorithm.cpp - ISP control algorithms
+ * ISP control algorithms
  */
 
 #include "algorithm.h"
 
 using namespace RPiController;
 
-int Algorithm::read([[maybe_unused]] const libcamera::YamlObject &params)
+int Algorithm::read([[maybe_unused]] const libcamera::ValueNode &params)
 {
 	return 0;
 }

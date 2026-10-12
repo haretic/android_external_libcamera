@@ -2,16 +2,18 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * object.h - Base object
+ * Base object
  */
 
 #pragma once
 
 #include <list>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include <libcamera/base/bound_method.h>
+#include <libcamera/base/class.h>
 
 namespace libcamera {
 
@@ -24,8 +26,6 @@ class Thread;
 class Object
 {
 public:
-	static void Deleter(Object* obj);
-
 	Object(Object *parent = nullptr);
 	virtual ~Object();
 
@@ -40,7 +40,7 @@ public:
 	{
 		T *obj = static_cast<T *>(this);
 		auto *method = new BoundMethodMember<T, R, FuncArgs...>(obj, this, func, type);
-		return method->activate(args..., true);
+		return method->activate(std::forward<Args>(args)..., true);
 	}
 
 	Thread *thread() const { return thread_; }
@@ -51,7 +51,11 @@ public:
 protected:
 	virtual void message(Message *msg);
 
+	bool assertThreadBound(const char *message);
+
 private:
+	LIBCAMERA_DISABLE_COPY_AND_MOVE(Object)
+
 	friend class SignalBase;
 	friend class Thread;
 

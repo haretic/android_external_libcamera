@@ -81,49 +81,49 @@ functionalities described above. Below is a brief overview of each of those:
 .. TODO: (MediaDevice) Reference to the Media Device API (possibly with versioning requirements)
 .. TODO: (IPAInterface) refer to the IPA guide
 
--  `MediaDevice <https://libcamera.org/api-html/classlibcamera_1_1MediaDevice.html>`_:
+-  :doxy-int:`MediaDevice`:
    Instances of this class are associated with a kernel media controller
    device and its connected objects.
 
--  `DeviceEnumerator <https://libcamera.org/api-html/classlibcamera_1_1DeviceEnumerator.html>`_:
+-  :doxy-int:`DeviceEnumerator`:
    Enumerates all media devices attached to the system and the media entities
    registered with it, by creating instances of the ``MediaDevice`` class and
    storing them.
 
--  `DeviceMatch <https://libcamera.org/api-html/classlibcamera_1_1DeviceMatch.html>`_:
+-  :doxy-int:`DeviceMatch`:
    Describes a media device search pattern using entity names, or other
    properties.
 
--  `V4L2VideoDevice <https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html>`_:
+-  :doxy-int:`V4L2VideoDevice`:
    Models an instance of a V4L2 video device constructed with the path to a V4L2
    video device node.
 
--  `V4L2SubDevice <https://libcamera.org/api-html/classlibcamera_1_1V4L2Subdevice.html>`_:
+-  :doxy-int:`V4L2Subdevice`:
    Provides an API to the sub-devices that model the hardware components of a
    V4L2 device.
 
--  `CameraSensor <https://libcamera.org/api-html/classlibcamera_1_1CameraSensor.html>`_:
+-  :doxy-int:`CameraSensor`:
    Abstracts camera sensor handling by hiding the details of the V4L2 subdevice
    kernel API and caching sensor information.
 
--  `Camera::Private <https://libcamera.org/api-html/classlibcamera_1_1Camera_1_1Private.html>`_:
+-  :doxy-int:`Camera::Private`:
    Represents device-specific data a pipeline handler associates to each Camera
    instance.
 
--  `StreamConfiguration <https://libcamera.org/api-html/structlibcamera_1_1StreamConfiguration.html>`_:
+-  :doxy-int:`StreamConfiguration`:
    Models the current configuration of an image stream produced by the camera by
    reporting its format and sizes.
 
--  `CameraConfiguration <https://libcamera.org/api-html/classlibcamera_1_1CameraConfiguration.html>`_:
+-  :doxy-int:`CameraConfiguration`:
    Represents the current configuration of a camera, which includes a list of
    stream configurations for each active stream in a capture session. When
    validated, it is applied to the camera.
 
--  `IPAInterface <https://libcamera.org/api-html/classlibcamera_1_1IPAInterface.html>`_:
+-  :doxy-int:`IPAInterface`:
    The interface to the Image Processing Algorithm (IPA) module which performs
    the computation of the image processing pipeline tuning parameters.
 
--  `ControlList <https://libcamera.org/api-html/classlibcamera_1_1ControlList.html>`_:
+-  :doxy-int:`ControlList`:
    A list of control items, indexed by Control<> instances or by numerical index
    which contains values used by application and IPA to change parameters of
    image streams, used to return to applications and share with IPA the metadata
@@ -151,13 +151,14 @@ integrates with the libcamera build system, and a *vivid.cpp* file that matches
 the name of the pipeline.
 
 In the *meson.build* file, add the *vivid.cpp* file as a build source for
-libcamera by adding it to the global meson ``libcamera_sources`` variable:
+libcamera by adding it to the global meson ``libcamera_internal_sources``
+variable:
 
-.. code-block:: none
+.. code-block:: meson
 
    # SPDX-License-Identifier: CC0-1.0
 
-   libcamera_sources += files([
+   libcamera_internal_sources += files([
        'vivid.cpp',
    ])
 
@@ -169,7 +170,7 @@ a comma separated list with ``-Dpipelines`` when generating a build directory:
 
 .. code-block:: shell
 
-    meson build -Dpipelines=ipu3,uvcvideo,vivid
+    meson setup build -Dpipelines=ipu3,uvcvideo,vivid
 
 Read the `Meson build configuration`_ documentation for more information on
 configuring a build directory.
@@ -179,19 +180,17 @@ configuring a build directory.
 To add the new pipeline handler to this list of options, add its directory name
 to the libcamera build options in the top level ``meson_options.txt``.
 
-.. code-block:: none
+.. code-block:: meson
 
    option('pipelines',
            type : 'array',
-           choices : ['ipu3', 'rkisp1', 'rpi/vc4', 'simple', 'uvcvideo', 'vimc', 'vivid'],
+           choices : ['ipu3', 'rkisp1', 'rpi/pisp', 'rpi/vc4', 'simple', 'uvcvideo', 'vimc', 'vivid'],
            description : 'Select which pipeline handlers to include')
 
 
 In *vivid.cpp* add the pipeline handler to the ``libcamera`` namespace, defining
-a `PipelineHandler`_ derived class named PipelineHandlerVivid, and add stub
-implementations for the overridden class members.
-
-.. _PipelineHandler: https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html
+a :doxy-int:`PipelineHandler` derived class named PipelineHandlerVivid, and add
+stub implementations for the overridden class members.
 
 .. code-block:: cpp
 
@@ -202,15 +201,15 @@ implementations for the overridden class members.
    public:
           PipelineHandlerVivid(CameraManager *manager);
 
-          CameraConfiguration *generateConfiguration(Camera *camera,
-          Span<const StreamRole> roles) override;
+          std::unique_ptr<CameraConfiguration>
+          generateConfiguration(Camera *camera, Span<const StreamRole> roles) override;
           int configure(Camera *camera, CameraConfiguration *config) override;
 
           int exportFrameBuffers(Camera *camera, Stream *stream,
-          std::vector<std::unique_ptr<FrameBuffer>> *buffers) override;
+                                 std::vector<std::unique_ptr<FrameBuffer>> *buffers) override;
 
           int start(Camera *camera, const ControlList *controls) override;
-          void stop(Camera *camera) override;
+          void stopDevice(Camera *camera) override;
 
           int queueRequestDevice(Camera *camera, Request *request) override;
 
@@ -222,8 +221,9 @@ implementations for the overridden class members.
    {
    }
 
-   CameraConfiguration *PipelineHandlerVivid::generateConfiguration(Camera *camera,
-                                                                    Span<const StreamRole> roles)
+   std::unique_ptr<CameraConfiguration>
+   PipelineHandlerVivid::generateConfiguration(Camera *camera,
+                                               Span<const StreamRole> roles)
    {
           return nullptr;
    }
@@ -244,7 +244,7 @@ implementations for the overridden class members.
           return -1;
    }
 
-   void PipelineHandlerVivid::stop(Camera *camera)
+   void PipelineHandlerVivid::stopDevice(Camera *camera)
    {
    }
 
@@ -258,24 +258,22 @@ implementations for the overridden class members.
           return false;
    }
 
-   REGISTER_PIPELINE_HANDLER(PipelineHandlerVivid)
+   REGISTER_PIPELINE_HANDLER(PipelineHandlerVivid, "vivid")
 
    } /* namespace libcamera */
 
 Note that you must register the ``PipelineHandler`` subclass with the pipeline
-handler factory using the `REGISTER_PIPELINE_HANDLER`_ macro which
+handler factory using the :doxy-int:`REGISTER_PIPELINE_HANDLER` macro which
 registers it and creates a global symbol to reference the class and make it
 available to try and match devices.
-
-.. _REGISTER_PIPELINE_HANDLER: https://libcamera.org/api-html/pipeline__handler_8h.html
+String "vivid" is the name assigned to the pipeline, matching the pipeline
+subdirectory name in the source tree.
 
 For debugging and testing a pipeline handler during development, you can define
 a log message category for the pipeline handler. The ``LOG_DEFINE_CATEGORY``
 macro and ``LIBCAMERA_LOG_LEVELS`` environment variable help you use the inbuilt
-libcamera `logging infrastructure`_ that allow for the inspection of internal
-operations in a user-configurable way.
-
-.. _logging infrastructure: https://libcamera.org/api-html/log_8h.html
+libcamera :doxy-int:`logging infrastructure <log.h>` that allow for the
+inspection of internal operations in a user-configurable way.
 
 Add the following before the ``PipelineHandlerVivid`` class declaration:
 
@@ -296,8 +294,7 @@ Run the following commands:
 
 .. code-block:: shell
 
-   meson build
-   ninja -C build
+   meson compile -C build
 
 To build the libcamera code base, and confirm that the build system found the
 new pipeline handler by running:
@@ -308,9 +305,9 @@ new pipeline handler by running:
 
 And you should see output like the below:
 
-.. code-block:: shell
+.. code-block:: text
 
-    DEBUG Camera camera_manager.cpp:148 Found registered pipeline handler 'PipelineHandlerVivid'
+    DEBUG Camera camera_manager.cpp:143 Found registered pipeline handler 'vivid'
 
 Matching devices
 ~~~~~~~~~~~~~~~~
@@ -321,21 +318,18 @@ system configuration, by matching a ``DeviceMatch`` with the system
 have been registered in the system and allows the pipeline handler to be
 initialized.
 
-The main entry point of a pipeline handler is the `match()`_ class member
-function. When the ``CameraManager`` is started (using the `start()`_ function),
-all the registered pipeline handlers are iterated and their ``match`` function
-called with an enumerator of all devices it found on a system.
+The main entry point of a pipeline handler is the :doxy-int:`PipelineHandler::match`
+class member function. When the ``CameraManager`` is started (using the
+:doxy-int:`CameraManager::start` function), all the registered pipeline
+handlers are iterated and their ``match`` function called with an enumerator of
+all devices it found on a system.
 
 The match function should identify if there are suitable devices available in
 the ``DeviceEnumerator`` which the pipeline supports, returning ``true`` if it
 matches a device, and ``false`` if it does not. To do this, construct a
-`DeviceMatch`_ class with the name of the ``MediaController`` device to match.
-You can specify the search further by adding specific media entities to the
-search using the ``.add()`` function on the DeviceMatch.
-
-.. _match(): https://www.libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#a7cd5b652a2414b543ec20ba9dabf61b6
-.. _start(): https://libcamera.org/api-html/classlibcamera_1_1CameraManager.html#a49e322880a2a26013bb0076788b298c5
-.. _DeviceMatch: https://libcamera.org/api-html/classlibcamera_1_1DeviceMatch.html
+:doxy-int:`DeviceMatch` class with the name of the ``MediaController`` device
+to match. You can specify the search further by adding specific media entities
+to the search using the ``.add()`` function on the DeviceMatch.
 
 This example uses search patterns that match vivid, but when developing a new
 pipeline handler, you should change this value to suit your device identifier.
@@ -350,17 +344,15 @@ following:
    return false; // Prevent infinite loops for now
 
 With the device matching criteria defined, attempt to acquire exclusive access
-to the matching media controller device with the `acquireMediaDevice`_ function.
-If the function attempts to acquire a device it has already matched, it returns
-``false``.
-
-.. _acquireMediaDevice: https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#a77e424fe704e7b26094164b9189e0f84
+to the matching media controller device with the :doxy-int:`PipelineHandler::acquireMediaDevice`
+function. If the function attempts to acquire a device it has already matched,
+it returns ``false``.
 
 Add the following below ``dm.add("vivid-000-vid-cap");``:
 
 .. code-block:: cpp
 
-   MediaDevice *media = acquireMediaDevice(enumerator, dm);
+   std::shared_ptr<MediaDevice> media = acquireMediaDevice(enumerator, dm);
    if (!media)
            return false;
 
@@ -390,7 +382,7 @@ running
 
 .. code-block:: shell
 
-   ninja -C build
+   meson compile -C build
    LIBCAMERA_LOG_LEVELS=Pipeline,VIVID:0 ./build/src/cam/cam -l
 
 And you should see output like the below:
@@ -416,11 +408,8 @@ receivers port output.
 The Pipeline Handler is responsible for defining the set of Streams associated
 with the Camera.
 
-Each Camera has instance-specific data represented using the `Camera::Private`_
+Each Camera has instance-specific data represented using the :doxy-int:`Camera::Private`
 class, which can be extended for the specific needs of the pipeline handler.
-
-.. _Camera::Private: https://libcamera.org/api-html/classlibcamera_1_1Camera_1_1Private.html
-
 
 To support the Camera we will later register, we need to create a Camera::Private
 class that we can implement for our specific Pipeline Handler.
@@ -434,21 +423,15 @@ it will be used:
    class VividCameraData : public Camera::Private
    {
    public:
-          VividCameraData(PipelineHandler *pipe, MediaDevice *media)
-                : Camera::Private(pipe), media_(media), video_(nullptr)
+          VividCameraData(PipelineHandler *pipe)
+                : Camera::Private(pipe)
           {
           }
 
-          ~VividCameraData()
-          {
-                delete video_;
-          }
-
-          int init();
+          int init(const MediaDevice *media);
           void bufferReady(FrameBuffer *buffer);
 
-          MediaDevice *media_;
-          V4L2VideoDevice *video_;
+          std::unique_ptr<V4L2VideoDevice> video_;
           Stream stream_;
    };
 
@@ -471,17 +454,15 @@ and is usually responsible for opening all Devices used in the capture pipeline.
 
 We can now implement the ``init`` function for our example Pipeline Handler to
 create a new V4L2 video device from the media entity, which we can specify using
-the `MediaDevice::getEntityByName`_ function from the MediaDevice. As our
-example is based upon the simplistic Vivid test device, we only need to open a
-single capture device named 'vivid-000-vid-cap' by the device.
-
-.. _MediaDevice::getEntityByName: https://libcamera.org/api-html/classlibcamera_1_1MediaDevice.html#ad5d9279329ef4987ceece2694b33e230
+the :doxy-int:`MediaDevice::getEntityByName` function from the MediaDevice. As
+our example is based upon the simplistic Vivid test device, we only need to
+open a single capture device named 'vivid-000-vid-cap' by the device.
 
 .. code-block:: cpp
 
-   int VividCameraData::init()
+   int VividCameraData::init(const MediaDevice *media)
    {
-          video_ = new V4L2VideoDevice(media_->getEntityByName("vivid-000-vid-cap"));
+          video_ = std::make_unique<V4L2VideoDevice>(media->getEntityByName("vivid-000-vid-cap"));
           if (video_->open())
                 return -ENODEV;
 
@@ -500,30 +481,28 @@ handler.
 
 .. code-block:: cpp
 
-   std::unique_ptr<VividCameraData> data = std::make_unique<VividCameraData>(this, media);
+   std::unique_ptr<VividCameraData> data = std::make_unique<VividCameraData>(this);
 
-   if (data->init())
+   if (data->init(media.get()))
            return false;
 
 
 Once the camera data has been initialized, the Camera device instances and the
 associated streams have to be registered. Create a set of streams for the
 camera, which for this device is only one. You create a camera using the static
-`Camera::create`_ function, passing the Camera::Private instance, the id of the
-camera, and the streams available. Then register the camera with the pipeline
-handler and camera manager using `registerCamera`_.
+:doxy-int:`Camera::create` function, passing the Camera::Private instance, the
+id of the camera, and the streams available. Then register the camera with the
+pipeline handler and camera manager using :doxy-int:`PipelineHandler::registerCamera`.
 
 Finally with a successful construction, we return 'true' indicating that the
 PipelineHandler successfully matched and constructed a device.
 
-.. _Camera::create: https://libcamera.org/api-html/classlibcamera_1_1Camera.html#a453740e0d2a2f495048ae307a85a2574
-.. _registerCamera: https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#adf02a7f1bbd87aca73c0e8d8e0e6c98b
-
 .. code-block:: cpp
 
    std::set<Stream *> streams{ &data->stream_ };
-   std::shared_ptr<Camera> camera = Camera::create(this, data->video_->deviceName(), streams);
-   registerCamera(std::move(camera), std::move(data));
+   const char *id = data->video_->deviceName();
+   std::shared_ptr<Camera> camera = Camera::create(std::move(data), id, streams);
+   registerCamera(std::move(camera));
 
    return true;
 
@@ -537,20 +516,20 @@ Our match function should now look like the following:
    	DeviceMatch dm("vivid");
    	dm.add("vivid-000-vid-cap");
 
-   	MediaDevice *media = acquireMediaDevice(enumerator, dm);
+   	std::shared_ptr<MediaDevice> media = acquireMediaDevice(enumerator, dm);
    	if (!media)
    		return false;
 
-   	std::unique_ptr<VividCameraData> data = std::make_unique<VividCameraData>(this, media);
+   	std::unique_ptr<VividCameraData> data = std::make_unique<VividCameraData>(this);
 
    	/* Locate and open the capture video node. */
-   	if (data->init())
+   	if (data->init(media.get()))
    		return false;
 
    	/* Create and register the camera. */
    	std::set<Stream *> streams{ &data->stream_ };
-   	const std::string &id = data->video_->deviceName();
-   	std::shared_ptr<Camera> camera = Camera::create(data.release(), id, streams);
+   	const char *id = data->video_->deviceName();
+   	std::shared_ptr<Camera> camera = Camera::create(std::move(data), id, streams);
    	registerCamera(std::move(camera));
 
    	return true;
@@ -581,33 +560,26 @@ interface, and device interaction interfaces.
 Registering controls and properties
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The libcamera `controls framework`_ allows an application to configure the
-streams capture parameters on a per-frame basis and is also used to advertise
-immutable properties of the ``Camera`` device.
+The libcamera :doxy-int:`controls framework <controls.h>` allows an application
+to configure the streams capture parameters on a per-frame basis and is also
+used to advertise immutable properties of the ``Camera`` device.
 
 The libcamera controls and properties are defined in YAML form which is
 processed to automatically generate documentation and interfaces. Controls are
-defined by the src/libcamera/`control_ids_core.yaml`_ file and camera properties
-are defined by src/libcamera/`properties_ids_core.yaml`_.
-
-.. _controls framework: https://libcamera.org/api-html/controls_8h.html
-.. _control_ids_core.yaml: https://libcamera.org/api-html/control__ids_8h.html
-.. _properties_ids_core.yaml: https://libcamera.org/api-html/property__ids_8h.html
+defined by the :doxy-int:`src/libcamera/control_ids_core.yaml <control_ids.h>`
+file and camera properties are defined by
+:doxy-int:`src/libcamera/property_ids_core.yaml <property_ids.h>`.
 
 Pipeline handlers can optionally register the list of controls an application
 can set as well as a list of immutable camera properties. Being both
 Camera-specific values, they are represented in the ``Camera::Private`` base
 class, which provides two members for this purpose: the
-`Camera::Private::controlInfo_`_ and the `Camera::Private::properties_`_ fields.
-
-.. _Camera::Private::controlInfo_: https://libcamera.org/api-html/classlibcamera_1_1Camera_1_1Private.html#ab4e183eb4dabe929d1b2bbbb519b969f
-.. _Camera::Private::properties_: https://libcamera.org/api-html/classlibcamera_1_1Camera_1_1Private.html#ad31f12f5ed9c1fbe25750902f4791064
+:doxy-int:`Camera::Private::controlInfo_` and the
+:doxy-int:`Camera::Private::properties_` fields.
 
 The ``controlInfo_`` field represents a map of ``ControlId`` instances
 associated with the limits of valid values supported for the control. More
-information can be found in the `ControlInfoMap`_ class documentation.
-
-.. _ControlInfoMap: https://libcamera.org/api-html/classlibcamera_1_1ControlInfoMap.html
+information can be found in the :doxy-int:`ControlInfoMap` class documentation.
 
 Pipeline handlers register controls to expose the tunable device and IPA
 parameters to applications. Our example pipeline handler only exposes trivial
@@ -651,7 +623,7 @@ inline in our VividCameraData init:
            ctrls.emplace(id, info);
    }
 
-   controlInfo_ = std::move(ctrls);
+   controlInfo_ = ControlInfoMap(std::move(ctrls), controls::controls);
 
 The ``properties_`` field is  a list of ``ControlId`` instances
 associated with immutable values, which represent static characteristics that can
@@ -749,10 +721,8 @@ This configuration and validation process is managed with another Pipeline
 specific class derived from a common base implementation and interface.
 
 To support validation in our example pipeline handler, Create a new class called
-``VividCameraConfiguration`` derived from the base `CameraConfiguration`_ class
-which we can implement and use within our ``PipelineHandlerVivid`` class.
-
-.. _CameraConfiguration: https://libcamera.org/api-html/classlibcamera_1_1CameraConfiguration.html
+``VividCameraConfiguration`` derived from the base :doxy-int:`CameraConfiguration`
+class which we can implement and use within our ``PipelineHandlerVivid`` class.
 
 The derived ``CameraConfiguration`` class must override the base class
 ``validate()`` function, where the stream configuration inspection and
@@ -774,20 +744,16 @@ adjustment happens.
     }
 
 Applications generate a ``CameraConfiguration`` instance by calling the
-`Camera::generateConfiguration()`_ function, which calls into the pipeline
-implementation of the overridden `PipelineHandler::generateConfiguration()`_
-function.
-
-.. _Camera::generateConfiguration(): https://libcamera.org/api-html/classlibcamera_1_1Camera.html#a25c80eb7fc9b1cf32692ce0c7f09991d
-.. _PipelineHandler::generateConfiguration(): https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#a7932e87735695500ce1f8c7ae449b65b
+:doxy-int:`Camera::generateConfiguration` function, which calls into the
+pipeline implementation of the overridden
+:doxy-int:`PipelineHandler::generateConfiguration` function.
 
 Configurations are generated by receiving a list of ``StreamRole`` instances,
 which libcamera uses as predefined ways an application intends to use a camera
-(You can read the full list in the `StreamRole API`_ documentation). These are
-optional hints on how an application intends to use a stream, and a pipeline
-handler should return an ideal configuration for each role that is requested.
-
-.. _StreamRole API: https://libcamera.org/api-html/stream_8h.html#file_a295d1f5e7828d95c0b0aabc0a8baac03
+(You can read the full list in the :doxy-int:`StreamRole` API documentation).
+These are optional hints on how an application intends to use a stream, and a
+pipeline handler should return an ideal configuration for each role that is
+requested.
 
 In the pipeline handler ``generateConfiguration`` implementation, remove the
 ``return nullptr;``, create a new instance of the ``CameraConfiguration``
@@ -795,8 +761,7 @@ derived class, and assign it to a base class pointer.
 
 .. code-block:: cpp
 
-   VividCameraData *data = cameraData(camera);
-   CameraConfiguration *config = new VividCameraConfiguration();
+   auto config = std::make_unique<VividCameraConfiguration>();
 
 A ``CameraConfiguration`` is specific to each pipeline, so you can only create
 it from the pipeline handler code path. Applications can also generate an empty
@@ -824,9 +789,7 @@ To generate a ``StreamConfiguration``, you need a list of pixel formats and
 frame sizes which are supported as outputs of the stream. You can fetch a map of
 the ``V4LPixelFormat`` and ``SizeRange`` supported by the underlying output
 device, but the pipeline handler needs to convert this to a
-``libcamera::PixelFormat`` type to pass to applications. We do this here using
-``std::transform`` to convert the formats and populate a new ``PixelFormat`` map
-as shown below.
+``libcamera::PixelFormat`` type to pass to applications.
 
 Continue adding the following code example to our ``generateConfiguration``
 implementation.
@@ -836,20 +799,16 @@ implementation.
    std::map<V4L2PixelFormat, std::vector<SizeRange>> v4l2Formats =
            data->video_->formats();
    std::map<PixelFormat, std::vector<SizeRange>> deviceFormats;
-   std::transform(v4l2Formats.begin(), v4l2Formats.end(),
-          std::inserter(deviceFormats, deviceFormats.begin()),
-          [&](const decltype(v4l2Formats)::value_type &format) {
-              return decltype(deviceFormats)::value_type{
-                  format.first.toPixelFormat(),
-                  format.second
-              };
-          });
 
-The `StreamFormats`_ class holds information about the pixel formats and frame
-sizes that a stream can support. The class groups size information by the pixel
-format, which can produce it.
+   for (auto &[v4l2PixelFormat, sizes] : v4l2Formats) {
+           PixelFormat pixelFormat = v4l2PixelFormat.toPixelFormat();
+           if (pixelFormat.isValid())
+                   deviceFormats.try_emplace(pixelFormat, std::move(sizes));
+   }
 
-.. _StreamFormats: https://libcamera.org/api-html/classlibcamera_1_1StreamFormats.html
+The :doxy-int:`StreamFormats` class holds information about the pixel formats
+and frame sizes that a stream can support. The class groups size information by
+the pixel format, which can produce it.
 
 The code below uses the ``StreamFormats`` class to represent all of the
 supported pixel formats, associated with a list of frame sizes. It then
@@ -894,15 +853,13 @@ Add the following code to complete the implementation of
    return config;
 
 To validate a camera configuration, a pipeline handler must implement the
-`CameraConfiguration::validate()`_ function in its derived class to inspect all
-the stream configuration associated to it, make any adjustments required to make
-the configuration valid, and return the validation status.
+:doxy-int:`CameraConfiguration::validate` function in its derived class to
+inspect all the stream configuration associated to it, make any adjustments
+required to make the configuration valid, and return the validation status.
 
 If changes are made, it marks the configuration as ``Adjusted``, however if the
 requested configuration is not supported and cannot be adjusted it shall be
 refused and marked as ``Invalid``.
-
-.. _CameraConfiguration::validate(): https://libcamera.org/api-html/classlibcamera_1_1CameraConfiguration.html#a29f8f263384c6149775b6011c7397093
 
 The validation phase makes sure all the platform-specific constraints are
 respected by the requested configuration. The most trivial examples being making
@@ -933,10 +890,10 @@ Add the following function implementation to your file:
 
            StreamConfiguration &cfg = config_[0];
 
-           const std::vector<libcamera::PixelFormat> formats = cfg.formats().pixelformats();
+           const std::vector<libcamera::PixelFormat> &formats = cfg.formats().pixelformats();
            if (std::find(formats.begin(), formats.end(), cfg.pixelFormat) == formats.end()) {
-                  cfg.pixelFormat = cfg.formats().pixelformats()[0];
-                  LOG(VIVID, Debug) << "Adjusting format to " << cfg.pixelFormat.toString();
+                  cfg.pixelFormat = formats[0];
+                  LOG(VIVID, Debug) << "Adjusting format to " << cfg.pixelFormat;
                   status = Adjusted;
            }
 
@@ -951,13 +908,13 @@ codebase, and test:
 
 .. code-block:: shell
 
-   ninja -C build
+   meson compile -C build
    LIBCAMERA_LOG_LEVELS=Pipeline,VIVID:0 ./build/src/cam/cam -c vivid -I
 
 You should see the following output showing the capabilites of our new pipeline
 handler, and showing that our configurations have been generated:
 
-.. code-block:: shell
+.. code-block:: text
 
     Using camera vivid
     0: 1280x720-BGR888
@@ -997,13 +954,10 @@ With the configuration generated, and optionally modified and re-validated, a
 pipeline handler needs a function that allows an application to apply a
 configuration to the hardware devices.
 
-The `PipelineHandler::configure()`_ function receives a valid
-`CameraConfiguration`_ and applies the settings to hardware devices, using its
-parameters to prepare a device for a streaming session with the desired
-properties.
-
-.. _PipelineHandler::configure(): https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#a930f2a9cdfb51dfb4b9ca3824e84fc29
-.. _CameraConfiguration: https://libcamera.org/api-html/classlibcamera_1_1CameraConfiguration.html
+The :doxy-int:`PipelineHandler::configure` function receives a valid
+:doxy-int:`CameraConfiguration` and applies the settings to hardware devices,
+using its parameters to prepare a device for a streaming session with the
+desired properties.
 
 Replace the contents of the stubbed ``PipelineHandlerVivid::configure`` function
 with the following to obtain the camera data and stream configuration. This
@@ -1018,32 +972,29 @@ system accordingly.
    StreamConfiguration &cfg = config->at(0);
    int ret;
 
-The Vivid capture device is a V4L2 video device, so we use a `V4L2DeviceFormat`_
-with the fourcc and size attributes to apply directly to the capture device
-node. The fourcc attribute is a `V4L2PixelFormat`_ and differs from the
-``libcamera::PixelFormat``. Converting the format requires knowledge of the
-plane configuration for multiplanar formats, so you must explicitly convert it
-using the helper ``V4L2VideoDevice::toV4L2PixelFormat()`` provided by the
-V4L2VideoDevice instance that the format will be applied on.
-
-.. _V4L2DeviceFormat: https://libcamera.org/api-html/classlibcamera_1_1V4L2DeviceFormat.html
-.. _V4L2PixelFormat: https://libcamera.org/api-html/classlibcamera_1_1V4L2PixelFormat.html
+The Vivid capture device is a V4L2 video device, so we use a
+:doxy-int:`V4L2DeviceFormat` with the fourcc and size attributes to apply
+directly to the capture device node. The fourcc attribute is a
+:doxy-int:`V4L2PixelFormat` and differs from the ``libcamera::PixelFormat``.
+Converting the format requires knowledge of the plane configuration for
+multiplanar formats, so you must explicitly convert it using the helper
+``V4L2VideoDevice::toV4L2PixelFormat()`` provided by the V4L2VideoDevice
+instance that the format will be applied on.
 
 Add the following code beneath the code from above:
 
 .. code-block:: cpp
 
+   const V4L2PixelFormat fourcc = data->video_->toV4L2PixelFormat(cfg.pixelFormat);
    V4L2DeviceFormat format = {};
-   format.fourcc = data->video_->toV4L2PixelFormat(cfg.pixelFormat);
+   format.fourcc = fourcc;
    format.size = cfg.size;
 
 Set the video device format defined above using the
-`V4L2VideoDevice::setFormat()`_ function. You should check if the kernel
-driver has adjusted the format, as this shows the pipeline handler has failed to
-handle the validation stages correctly, and the configure operation shall also
-fail.
-
-.. _V4L2VideoDevice::setFormat(): https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#ad67b47dd9327ce5df43350b80c083cca
+:doxy-int:`V4L2VideoDevice::setFormat` function. You should check if the kernel
+driver has adjusted the format, as this shows the pipeline handler has failed
+to handle the validation stages correctly, and the configure operation shall
+also fail.
 
 Continue the implementation with the following code:
 
@@ -1053,16 +1004,13 @@ Continue the implementation with the following code:
    if (ret)
           return ret;
 
-   if (format.size != cfg.size ||
-          format.fourcc != data->video_->toV4L2PixelFormat(cfg.pixelFormat))
+   if (format.size != cfg.size || format.fourcc != fourcc)
           return -EINVAL;
 
 Finally, store and set stream-specific data reflecting the state of the stream.
 Associate the configuration with the stream by using the
-`StreamConfiguration::setStream`_ function, and set the values of individual
-stream configuration members as required.
-
-.. _StreamConfiguration::setStream: https://libcamera.org/api-html/structlibcamera_1_1StreamConfiguration.html#a74a0eb44dad1b00112c7c0443ae54a12
+:doxy-int:`StreamConfiguration::setStream` function, and set the values of
+individual stream configuration members as required.
 
 .. NOTE: the cfg.setStream() call here associates the stream to the
    StreamConfiguration however that should quite likely be done as part of
@@ -1085,9 +1033,7 @@ Initializing device controls
 Pipeline handlers can optionally initialize the video devices and camera sensor
 controls at system configuration time, to make sure they are defaulted to sane
 values. Handling of device controls is again performed using the libcamera
-`controls framework`_.
-
-.. _Controls Framework: https://libcamera.org/api-html/controls_8h.html
+:doxy-int:`controls framework <controls.h>`.
 
 This section is particularly specific to Vivid as it sets the initial values of
 controls to match `Vivid Controls`_ defined by the kernel driver. You won't need
@@ -1108,10 +1054,8 @@ come directly from the kernel sources:
    #define VIVID_CID_HOR_MOVEMENT          (VIVID_CID_VIVID_BASE  + 2)
 
 We can now use the V4L2 control IDs to prepare a list of controls with the
-`ControlList`_ class, and set them using the `ControlList::set()`_ function.
-
-.. _ControlList: https://libcamera.org/api-html/classlibcamera_1_1ControlList.html
-.. _ControlList::set(): https://libcamera.org/api-html/classlibcamera_1_1ControlList.html#a74a1a29abff5243e6e37ace8e24eb4ba
+:doxy-int:`ControlList` class, and set them using the :doxy-int:`ControlList::set`
+function.
 
 In our pipeline ``configure`` function, add the following code after the format
 has been set and checked to initialise the ControlList and apply it to the
@@ -1132,7 +1076,7 @@ device:
    ret = data->video_->setControls(&controls);
    if (ret) {
           LOG(VIVID, Error) << "Failed to set controls: " << ret;
-          return ret < 0 ? ret : -EINVAL;
+          return ret;
    }
 
 These controls configure VIVID to use a default test pattern, and enable all
@@ -1153,7 +1097,7 @@ available to the devices which have to be started and ready to produce
 images. At the end of a capture session the ``Camera`` device needs to be
 stopped, to gracefully clean up any allocated memory and stop the hardware
 devices. Pipeline handlers implement two functions for these purposes, the
-``start()`` and ``stop()`` functions.
+``start()`` and ``stopDevice()`` functions.
 
 The memory initialization phase that happens at ``start()`` time serves to
 configure video devices to be able to use memory buffers exported as dma-buf
@@ -1162,33 +1106,27 @@ provide application facing streams always act as memory importers which use,
 in V4L2 terminology, buffers of V4L2_MEMORY_DMABUF memory type.
 
 libcamera also provides an API to allocate and export memory to applications
-realized through the `exportFrameBuffers`_ function and the
-`FrameBufferAllocator`_ class which will be presented later.
-
-.. _exportFrameBuffers: https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#a6312a69da7129c2ed41f9d9f790adf7c
-.. _FrameBufferAllocator: https://libcamera.org/api-html/classlibcamera_1_1FrameBufferAllocator.html
+realized through the :doxy-int:`PipelineHandler::exportFrameBuffers` function
+and the :doxy-int:`FrameBufferAllocator` class which will be presented later.
 
 Please refer to the V4L2VideoDevice API documentation, specifically the
-`allocateBuffers`_, `importBuffers`_ and `exportBuffers`_ functions for a
+:doxy-int:`allocateBuffers <V4L2VideoDevice::allocateBuffers>`,
+:doxy-int:`importBuffers <V4L2VideoDevice::importBuffers>` and
+:doxy-int:`exportBuffers <V4L2VideoDevice::exportBuffers>` functions for a
 detailed description of the video device memory management.
 
-.. _allocateBuffers: https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#a3a1a77e5e6c220ea7878e89485864a1c
-.. _importBuffers: https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#a154f5283d16ebd5e15d63e212745cb64
-.. _exportBuffers: https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#ae9c0b0a68f350725b63b73a6da5a2ecd
-
-Video memory buffers are represented in libcamera by the `FrameBuffer`_ class.
-A ``FrameBuffer`` instance has to be associated to each ``Stream`` which is part
-of a capture ``Request``. Pipeline handlers should prepare the capture devices
-by importing the dma-buf file descriptors it needs to operate on. This operation
-is performed by using the ``V4L2VideoDevice`` API, which provides an
-``importBuffers()`` function that prepares the video device accordingly.
-
-.. _FrameBuffer: https://libcamera.org/api-html/classlibcamera_1_1FrameBuffer.html
+Video memory buffers are represented in libcamera by the
+:doxy-int:`FrameBuffer` class.  A ``FrameBuffer`` instance has to be associated
+to each ``Stream`` which is part of a capture ``Request``. Pipeline handlers
+should prepare the capture devices by importing the dma-buf file descriptors it
+needs to operate on. This operation is performed by using the
+``V4L2VideoDevice`` API, which provides an ``importBuffers()`` function that
+prepares the video device accordingly.
 
 Implement the pipeline handler ``start()`` function by replacing the stub
 version with the following code:
 
-.. code-block:: c++
+.. code-block:: cpp
 
    VividCameraData *data = cameraData(camera);
    unsigned int count = data->stream_.configuration().bufferCount;
@@ -1207,20 +1145,17 @@ complex pipeline handlers in the libcamera code base.
 
 Applications might want to use memory allocated in the video devices instead of
 allocating it from other parts of the system. libcamera provides an abstraction
-to assist with this task in the `FrameBufferAllocator`_ class. The
+to assist with this task in the :doxy-int:`FrameBufferAllocator` class. The
 ``FrameBufferAllocator`` reserves memory for a ``Stream`` in the video device
 and exports it as dma-buf file descriptors. From this point on, the allocated
 ``FrameBuffer`` are associated to ``Stream`` instances in a ``Request`` and then
 imported by the pipeline hander in exactly the same fashion as if they were
 allocated elsewhere.
 
-.. _FrameBufferAllocator: https://libcamera.org/api-html/classlibcamera_1_1FrameBufferAllocator.html
-
 Pipeline handlers support the ``FrameBufferAllocator`` operations by
-implementing the `exportFrameBuffers`_ function, which will allocate memory in
-the video device associated with a stream and export it.
-
-.. _exportFrameBuffers: https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#a6312a69da7129c2ed41f9d9f790adf7c
+implementing the :doxy-int:`PipelineHandler::exportFrameBuffers` function,
+which will allocate memory in the video device associated with a stream and
+export it.
 
 Implement the ``exportFrameBuffers`` stub function with the following code to
 handle this:
@@ -1247,19 +1182,16 @@ with the following code:
    return 0;
 
 The function starts the video device associated with the stream with the
-`streamOn`_ function. If the call fails, the error value is propagated to the
-caller and the `releaseBuffers`_ function releases any buffers to leave the
-device in a consistent state. If your pipeline handler uses any image processing
-algorithms, or other devices you should also stop them.
-
-.. _streamOn: https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#a588a5dc9d6f4c54c61136ac43ff9a8cc
-.. _releaseBuffers: https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#a191619c152f764e03bc461611f3fcd35
+:doxy-int:`V4L2VideoDevice::streamOn` function. If the call fails, the error
+value is propagated to the caller and the
+:doxy-int:`V4L2VideoDevice::releaseBuffers` function releases any buffers to
+leave the device in a consistent state. If your pipeline handler uses any image
+processing algorithms, or other devices you should also stop them.
 
 Of course we also need to handle the corresponding actions to stop streaming on
-a device, Add the following to the ``stop`` function, to stop the stream with
-the `streamOff`_ function and release all buffers.
-
-.. _streamOff: https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#a61998710615bdf7aa25a046c8565ed66
+a device, Add the following to the ``stopDevice()`` function, to stop the
+stream with the :doxy-int:`V4L2VideoDevice::streamOff` function and release
+all buffers.
 
 .. code-block:: cpp
 
@@ -1278,12 +1210,11 @@ When an application sends a capture request, the pipeline handler identifies
 which video devices have to be provided with buffers to generate a frame from
 the enabled streams.
 
-This example pipeline handler identifies the buffer using the `findBuffer`_
-helper from the only supported stream and queues it to the capture device
-directly with the `queueBuffer`_ function provided by the V4L2VideoDevice.
-
-.. _findBuffer: https://libcamera.org/api-html/classlibcamera_1_1Request.html#ac66050aeb9b92c64218945158559c4d4
-.. _queueBuffer: https://libcamera.org/api-html/classlibcamera_1_1V4L2VideoDevice.html#a594cd594686a8c1cf9ae8dba0b2a8a75
+This example pipeline handler identifies the buffer using the
+:doxy-int:`Request::findBuffer` helper from the only supported stream and
+queues it to the capture device directly with the
+:doxy-int:`V4L2VideoDevice::queueBuffer` function provided by the
+V4L2VideoDevice.
 
 Replace the stubbed contents of ``queueRequestDevice`` with the following:
 
@@ -1327,8 +1258,7 @@ before being set.
    {
           ControlList controls(data->video_->controls());
 
-          for (auto it : request->controls()) {
-                 unsigned int id = it.first;
+          for (const auto &[id, v] : request->controls()) {
                  unsigned int offset;
                  uint32_t cid;
 
@@ -1345,7 +1275,7 @@ before being set.
                         continue;
                  }
 
-                 int32_t value = lroundf(it.second.get<float>() * 128 + offset);
+                 int32_t value = std::lround(v.get<float>() * 128 + offset);
                  controls.set(cid, std::clamp(value, 0, 255));
           }
 
@@ -1355,10 +1285,8 @@ before being set.
                         << " to " << ctrl.second.toString();
 
           int ret = data->video_->setControls(&controls);
-          if (ret) {
+          if (ret)
                  LOG(VIVID, Error) << "Failed to set controls: " << ret;
-                 return ret < 0 ? ret : -EINVAL;
-          }
 
           return ret;
    }
@@ -1378,11 +1306,9 @@ where appropriate by setting controls on V4L2Subdevices directly. Each pipeline
 handler is responsible for understanding the correct procedure for applying
 controls to the device they support.
 
-This example pipeline handler applies controls during the `queueRequestDevice`_
-function for each request, and applies them to the capture device through the
-capture node.
-
-.. _queueRequestDevice: https://libcamera.org/api-html/classlibcamera_1_1PipelineHandler.html#a106914cca210640c9da9ee1f0419e83c
+This example pipeline handler applies controls during the
+:doxy-int:`PipelineHandler::queueRequestDevice` function for each request, and
+applies them to the capture device through the capture node.
 
 In the ``queueRequestDevice`` function, replace the following:
 
@@ -1409,7 +1335,7 @@ value translation operations:
 
 .. code-block:: cpp
 
-   #include <math.h>
+   #include <cmath>
 
 Frame completion and event handling
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1419,11 +1345,10 @@ Slots`_) to connect event sources with callbacks to handle them.
 
 As a general summary, a ``Slot`` can be connected to a ``Signal``, which when
 emitted triggers the execution of the connected slots.  A detailed description
-of the libcamera implementation is available in the `libcamera Signal and Slot`_
-classes documentation.
+of the libcamera implementation is available in the :doxy-int:`libcamera Signal
+and Slot <Signal>` classes documentation.
 
-.. _Qt Signals and Slots: https://doc.qt.io/qt-5/signalsandslots.html
-.. _libcamera Signal and Slot: https://libcamera.org/api-html/classlibcamera_1_1Signal.html#details
+.. _Qt Signals and Slots: https://doc.qt.io/qt-6/signalsandslots.html
 
 In order to notify applications about the availability of new frames and data,
 the ``Camera`` device exposes two ``Signals`` to which applications can connect
@@ -1439,18 +1364,17 @@ The ``bufferComplete`` and ``requestComplete`` signals are emitted by the
 ``Camera`` device upon notifications received from the pipeline handler, which
 tracks the buffers and request completion status.
 
-The single buffer completion notification is implemented by pipeline handlers by
-`connecting`_ the ``bufferReady`` signal of the capture devices they have queued
-buffers to, to a member function slot that handles processing of the completed
-frames. When a buffer is ready, the pipeline handler must propagate the
-completion of that buffer to the Camera by using the PipelineHandler base class
-``completeBuffer`` function. When all of the buffers referenced by a ``Request``
-have been completed, the pipeline handler must again notify the ``Camera`` using
-the PipelineHandler base class ``completeRequest`` function. The PipelineHandler
-class implementation makes sure the request completion notifications are
-delivered to applications in the same order as they have been submitted.
-
-.. _connecting: https://libcamera.org/api-html/classlibcamera_1_1Signal.html#aa04db72d5b3091ffbb4920565aeed382
+The single buffer completion notification is implemented by pipeline handlers
+by :doxy-int:`connecting <Signal::connect>` the ``bufferReady`` signal of the
+capture devices they have queued buffers to, to a member function slot that
+handles processing of the completed frames. When a buffer is ready, the
+pipeline handler must propagate the completion of that buffer to the Camera by
+using the PipelineHandler base class ``completeBuffer`` function. When all of
+the buffers referenced by a ``Request`` have been completed, the pipeline
+handler must again notify the ``Camera`` using the PipelineHandler base class
+``completeRequest`` function. The PipelineHandler class implementation makes
+sure the request completion notifications are delivered to applications in the
+same order as they have been submitted.
 
 Returning to the ``int VividCameraData::init()`` function, add the following
 above the closing ``return 0;`` to connect the pipeline handler ``bufferReady``
@@ -1490,7 +1414,7 @@ capture through the pipeline through both of the cam and qcam utilities.
 
 .. code-block:: shell
 
-   ninja -C build
+   meson compile -C build
    ./build/src/cam/cam -c vivid -C5
 
 To test that the pipeline handler can detect a device, and capture input.
@@ -1499,7 +1423,7 @@ Running the command above outputs (a lot of) information about pixel formats,
 and then starts capturing frame data, and should provide an output such as the
 following:
 
-.. code-block:: none
+.. code-block:: text
 
    user@dev:/home/libcamera$ ./build/src/cam/cam -c vivid -C5
    [42:34:08.573066847] [186470]  INFO IPAManager ipa_manager.cpp:136 libcamera is not installed. Adding '/home/libcamera/build/src/ipa' to the IPA search path

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * post_processor.h - CameraStream Post Processing Interface
+ * CameraStream Post Processing Interface
  */
 
 #pragma once
@@ -27,7 +27,7 @@ public:
 
 	virtual int configure(const libcamera::StreamConfiguration &inCfg,
 			      const libcamera::StreamConfiguration &outCfg) = 0;
-	virtual void process(StreamBuffer *streamBuffer) = 0;
+	virtual void process(Camera3RequestDescriptor::StreamBuffer *streamBuffer) = 0;
 
-	libcamera::Signal<StreamBuffer *, Status> processComplete;
+	libcamera::Signal<Camera3RequestDescriptor::StreamBuffer *, Status> processComplete;
 };

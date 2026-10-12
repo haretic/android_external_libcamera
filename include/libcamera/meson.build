@@ -12,6 +12,7 @@ libcamera_public_headers = files([
     'framebuffer_allocator.h',
     'geometry.h',
     'logging.h',
+    'orientation.h',
     'pixel_format.h',
     'request.h',
     'stream.h',
@@ -36,6 +37,7 @@ controls_map = {
         'core': 'control_ids_core.yaml',
         'debug': 'control_ids_debug.yaml',
         'draft': 'control_ids_draft.yaml',
+        'rpi/pisp': 'control_ids_rpi.yaml',
         'rpi/vc4': 'control_ids_rpi.yaml',
     },
 
@@ -88,6 +90,7 @@ foreach mode, entry : controls_map
                                      command : [gen_controls, '-o', '@OUTPUT@',
                                                 '--mode', mode, '-t', template_file,
                                                 '-r', ranges_file, '@INPUT@'],
+                                     depend_files : [py_mod_controls],
                                      env : py_build_env,
                                      install : true,
                                      install_dir : libcamera_headers_install_dir)

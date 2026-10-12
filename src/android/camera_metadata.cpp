@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * camera_metadata.cpp - libcamera Android Camera Metadata Helper
+ * libcamera Android Camera Metadata Helper
  */
 
 #include "camera_metadata.h"
@@ -145,9 +145,6 @@ bool CameraMetadata::addEntry(uint32_t tag, const void *data, size_t count,
 			      size_t elementSize)
 {
 	if (!valid_)
-		return false;
-
-	if (tagsToAvoid_.contains(tag))
 		return false;
 
 	if (!resize(1, count * elementSize)) {

@@ -30,10 +30,10 @@ controls:
   - Rotation:
       type: int32_t
       description: |
-        The camera rotation is expressed as the angular difference in degrees
-        between two reference systems, one relative to the camera module, and
-        one defined on the external world scene to be captured when projected
-        on the image sensor pixel array.
+        The camera physical mounting rotation. It is expressed as the angular
+        difference in degrees between two reference systems, one relative to the
+        camera module, and one defined on the external world scene to be
+        captured when projected on the image sensor pixel array.
 
         A camera sensor has a 2-dimensional reference system 'Rc' defined by
         its pixel array read-out order. The origin is set to the first pixel
@@ -701,9 +701,13 @@ controls:
 
         Different cameras may report identical devices.
 
-  - ResourceCost:
-      type: int32_t
-      description : |
-        Resource Cost for the camera. Currently identical to Android
-        resource_cost.
+  - PipelineHandler:
+      type: string
+      description: |
+        The name of the pipeline handler that manages this camera device.o
+
+        This property is meant to help development, debugging and support. The
+        pipeline handler name is not guaranteed to be stable across libcamera
+        releases.
+
 ...

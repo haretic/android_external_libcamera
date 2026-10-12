@@ -2,12 +2,8 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * camera_manager.h - Camera management
+ * Camera management
  */
-
-#include <dlfcn.h>
-#include <string.h>
-#include <dirent.h>
 
 #include "libcamera/internal/camera_manager.h"
 
@@ -19,6 +15,8 @@
 
 #include "libcamera/internal/camera.h"
 #include "libcamera/internal/device_enumerator.h"
+#include "libcamera/internal/global_configuration.h"
+#include "libcamera/internal/ipa_manager.h"
 #include "libcamera/internal/pipeline_handler.h"
 
 /**
@@ -27,6 +25,7 @@
  */
 
 /**
+ * \internal
  * \file libcamera/internal/camera_manager.h
  * \brief Internal camera manager support
  */
@@ -38,8 +37,9 @@ namespace libcamera {
 
 LOG_DEFINE_CATEGORY(Camera)
 
+#ifndef __DOXYGEN_PUBLIC__
 CameraManager::Private::Private()
-	: initialized_(false)
+	: Thread("CameraManager"), initialized_(false)
 {
 }
 
@@ -80,8 +80,10 @@ void CameraManager::Private::run()
 	mutex_.unlock();
 	cv_.notify_one();
 
-	if (ret < 0)
+	if (ret < 0) {
+		cleanup();
 		return;
+	}
 
 	/* Now start processing events and messages. */
 	exec();
@@ -91,11 +93,12 @@ void CameraManager::Private::run()
 
 int CameraManager::Private::init()
 {
+	CameraManager *const o = LIBCAMERA_O_PTR();
+	ipaManager_ = std::make_unique<IPAManager>(*o);
+
 	enumerator_ = DeviceEnumerator::create();
 	if (!enumerator_ || enumerator_->enumerate())
 		return -ENODEV;
-
-	loadPipelineHandlerFromLibrary();
 
 	createPipelineHandlers();
 	enumerator_->devicesAdded.connect(this, &Private::createPipelineHandlers);
@@ -103,59 +106,39 @@ int CameraManager::Private::init()
 	return 0;
 }
 
-void CameraManager::Private::loadPipelineHandlerFromLibrary() {
-	LOG(Camera, Info) << "pipeline handler loader";
-	std::string libpath = PIPELINE_PROXY_DIR;
-	std::vector<std::string> libfiles;
-	DIR *dir = opendir(libpath.c_str());
-	if (dir) {
-		struct dirent *ent;
-		while ((ent = readdir(dir)) != nullptr) {
-			if (ent->d_type == DT_DIR)
-				continue;
-
-			if (strlen(ent->d_name) <= 3)
-				continue;
-
-			size_t offset = strlen(ent->d_name) - 3;
-			if (strcmp(&ent->d_name[offset], ".so"))
-				continue;
-
-			libfiles.push_back(libpath + "/" + ent->d_name);
-			LOG(Camera, Info) << ent->d_name << " is found";
-		}
-		closedir(dir);
-	}
-
-	for (const std::string &libfile : libfiles) {
-		void* dlHandler = dlopen(libfile.c_str(), RTLD_LAZY | RTLD_GLOBAL);
-		if (dlHandler) {
-			LOG(Camera, Info) << "dlopen " << libfile.c_str() << " successfully";
-			handleVector_.push_back(dlHandler);
-		}
-	}
-}
-
-void CameraManager::Private::closeLibraryHandles() {
-	for (const auto handle : handleVector_) {
-		dlclose(handle);
-	}
-
-	handleVector_.clear();
-}
-
 void CameraManager::Private::createPipelineHandlers()
 {
-	CameraManager *const o = LIBCAMERA_O_PTR();
-
 	/*
 	 * \todo Try to read handlers and order from configuration
-	 * file and only fallback on all handlers if there is no
-	 * configuration file.
+	 * file and only fallback on environment variable or all handlers, if
+	 * there is no configuration file.
 	 */
+	const auto pipesList =
+		configuration().listOption({ "pipelines_match_list" });
+	if (pipesList.has_value()) {
+		/*
+		 * When a list of preferred pipelines is defined, iterate
+		 * through the ordered list to match the enumerated devices.
+		 */
+		for (const auto &pipeName : pipesList.value()) {
+			const PipelineHandlerFactoryBase *factory;
+			factory = PipelineHandlerFactoryBase::getFactoryByName(pipeName);
+			if (!factory)
+				continue;
+
+			LOG(Camera, Debug)
+				<< "Found listed pipeline handler '"
+				<< pipeName << "'";
+			pipelineFactoryMatch(factory);
+		}
+
+		return;
+	}
+
 	const std::vector<PipelineHandlerFactoryBase *> &factories =
 		PipelineHandlerFactoryBase::factories();
 
+	/* Match all the registered pipeline handlers. */
 	for (const PipelineHandlerFactoryBase *factory : factories) {
 		LOG(Camera, Debug)
 			<< "Found registered pipeline handler '"
@@ -164,15 +147,23 @@ void CameraManager::Private::createPipelineHandlers()
 		 * Try each pipeline handler until it exhaust
 		 * all pipelines it can provide.
 		 */
-		while (1) {
-			std::shared_ptr<PipelineHandler> pipe = factory->create(o);
-			if (!pipe->match(enumerator_.get()))
-				break;
+		pipelineFactoryMatch(factory);
+	}
+}
 
-			LOG(Camera, Debug)
-				<< "Pipeline handler \"" << factory->name()
-				<< "\" matched";
-		}
+void CameraManager::Private::pipelineFactoryMatch(const PipelineHandlerFactoryBase *factory)
+{
+	CameraManager *const o = LIBCAMERA_O_PTR();
+
+	/* Provide as many matching pipelines as possible. */
+	while (1) {
+		std::shared_ptr<PipelineHandler> pipe = factory->create(o);
+		if (!pipe->match(enumerator_.get()))
+			break;
+
+		LOG(Camera, Debug)
+			<< "Pipeline handler \"" << factory->name()
+			<< "\" matched";
 	}
 }
 
@@ -195,8 +186,6 @@ void CameraManager::Private::cleanup()
 	dispatchMessages(Message::Type::DeferredDelete);
 
 	enumerator_.reset(nullptr);
-
-	closeLibraryHandles();
 }
 
 /**
@@ -216,24 +205,28 @@ void CameraManager::Private::addCamera(std::shared_ptr<Camera> camera)
 {
 	ASSERT(Thread::current() == this);
 
-	MutexLocker locker(mutex_);
+	{
+		MutexLocker locker(mutex_);
 
-	for (const std::shared_ptr<Camera> &c : cameras_) {
-		if (c->id() == camera->id()) {
-			LOG(Camera, Fatal)
-				<< "Trying to register a camera with a duplicated ID '"
-				<< camera->id() << "'";
-			return;
+		for (const std::shared_ptr<Camera> &c : cameras_) {
+			if (c->id() == camera->id()) {
+				LOG(Camera, Fatal)
+					<< "Trying to register a camera with a duplicated ID '"
+					<< camera->id() << "'";
+				return;
+			}
 		}
+
+		cameras_.push_back(camera);
 	}
 
-	cameras_.push_back(std::move(camera));
-
-	unsigned int index = cameras_.size() - 1;
+	LOG(Camera, Info)
+		<< "Adding camera '" << camera->id() << "' for pipeline handler "
+		<< camera->_d()->pipe()->name();
 
 	/* Report the addition to the public signal */
 	CameraManager *const o = LIBCAMERA_O_PTR();
-	o->cameraAdded.emit(cameras_[index]);
+	o->cameraAdded.emit(camera);
 }
 
 /**
@@ -250,24 +243,38 @@ void CameraManager::Private::removeCamera(std::shared_ptr<Camera> camera)
 {
 	ASSERT(Thread::current() == this);
 
-	MutexLocker locker(mutex_);
+	{
+		MutexLocker locker(mutex_);
 
-	auto iter = std::find_if(cameras_.begin(), cameras_.end(),
-				 [camera](std::shared_ptr<Camera> &c) {
-					 return c.get() == camera.get();
-				 });
-	if (iter == cameras_.end())
-		return;
+		auto iter = std::find(cameras_.begin(), cameras_.end(), camera);
+		if (iter == cameras_.end())
+			return;
+
+		cameras_.erase(iter);
+	}
 
 	LOG(Camera, Debug)
 		<< "Unregistering camera '" << camera->id() << "'";
-
-	cameras_.erase(iter);
 
 	/* Report the removal to the public signal */
 	CameraManager *const o = LIBCAMERA_O_PTR();
 	o->cameraRemoved.emit(camera);
 }
+
+/**
+ * \fn const GlobalConfiguration &CameraManager::Private::configuration() const
+ * \brief Get global configuration bound to the camera manager
+ *
+ * \return Reference to the configuration
+ */
+
+/**
+ * \fn CameraManager::Private::ipaManager() const
+ * \brief Retrieve the IPAManager
+ * \context This function is \threadsafe.
+ * \return The IPAManager for this CameraManager
+ */
+#endif /* __DOXYGEN_PUBLIC__ */
 
 /**
  * \class CameraManager
@@ -388,13 +395,13 @@ std::vector<std::shared_ptr<Camera>> CameraManager::cameras() const
  *
  * \return Shared pointer to Camera object or nullptr if camera not found
  */
-std::shared_ptr<Camera> CameraManager::get(const std::string &id)
+std::shared_ptr<Camera> CameraManager::get(std::string_view id)
 {
 	Private *const d = _d();
 
 	MutexLocker locker(d->mutex_);
 
-	for (std::shared_ptr<Camera> camera : d->cameras_) {
+	for (const std::shared_ptr<Camera> &camera : d->cameras_) {
 		if (camera->id() == id)
 			return camera;
 	}
@@ -433,7 +440,7 @@ std::shared_ptr<Camera> CameraManager::get(const std::string &id)
 /**
  * \fn const std::string &CameraManager::version()
  * \brief Retrieve the libcamera version string
- * \context This function is \a threadsafe.
+ * \context This function is \threadsafe.
  * \return The libcamera version string
  */
 

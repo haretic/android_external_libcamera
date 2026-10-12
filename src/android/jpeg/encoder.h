@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * encoder.h - Image encoding interface
+ * Image encoding interface
  */
 
 #pragma once
@@ -20,7 +20,7 @@ public:
 	virtual ~Encoder() = default;
 
 	virtual int configure(const libcamera::StreamConfiguration &cfg) = 0;
-	virtual int encode(StreamBuffer *buffer,
+	virtual int encode(Camera3RequestDescriptor::StreamBuffer *buffer,
 			   libcamera::Span<const uint8_t> exifData,
 			   unsigned int quality) = 0;
 };

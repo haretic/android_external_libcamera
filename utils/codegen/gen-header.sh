@@ -1,4 +1,5 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 dst_file="$1"
 shift
@@ -9,7 +10,7 @@ cat <<EOF > "$dst_file"
 /*
  * Copyright (C) 2018-2019, Google Inc.
  *
- * libcamera.h - libcamera public API
+ * libcamera public API
  */
 
 #pragma once

@@ -4,11 +4,14 @@
 #
 # Author: Paul Elder <paul.elder@ideasonboard.com>
 #
-# parser.py - Run mojo parser with python3
+# Run mojo parser with python3
 
 import os
 import sys
 
-import mojom_parser as parser
+# Make sure that mojom_parser.py can import mojom
+sys.path.insert(0, f'{os.path.dirname(__file__)}/mojo/public/tools/mojom')
+
+import mojo.public.tools.mojom.mojom_parser as parser
 
 parser.Run(sys.argv[1:])

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Raspberry Pi Ltd
  *
- * delayed_controls.h - Helper to deal with controls that take effect with a delay
+ * Helper to deal with controls that take effect with a delay
  */
 
 #pragma once
@@ -10,13 +10,15 @@
 #include <stdint.h>
 #include <unordered_map>
 
+#include <libcamera/base/object.h>
+
 #include <libcamera/controls.h>
 
 namespace libcamera {
 
 class V4L2Device;
 
-class DelayedControls
+class DelayedControls : public Object
 {
 public:
 	struct ControlParams {

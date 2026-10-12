@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * cam_helper.h - helper class providing camera information
+ * helper class providing camera information
  */
 #pragma once
 
@@ -36,11 +36,6 @@ namespace RPiController {
  * exposure time, and to convert between the sensor's gain codes and actual
  * gains.
  *
- * A function to return the number of frames of delay between updating exposure,
- * analogue gain and vblanking, and for the changes to take effect. For many
- * sensors these take the values 2, 1 and 2 respectively, but sensors that are
- * different will need to over-ride the default function provided.
- *
  * A function to query if the sensor outputs embedded data that can be parsed.
  *
  * A function to return the sensitivity of a given camera mode.
@@ -67,6 +62,11 @@ namespace RPiController {
  * MistrustFramesModeSwitch(): The number of frames, after a mode switch
  *    (other than start-up), for which control algorithms should not run
  *    (for example, metadata may be unreliable).
+ * getMinDebinFactor(): the binning factor after which we should apply
+ *    "debinning", which corrects for the uneven spatial sampling of the
+ *    standard binning process. A return value of 2 means to enable
+ *    debinning for camera modes using 2x2, or larger, binning. A return
+ *    value of zero means never to enable debinning.
  */
 
 class CamHelper
@@ -76,6 +76,7 @@ public:
 	CamHelper(std::unique_ptr<MdParser> parser, unsigned int frameIntegrationDiff);
 	virtual ~CamHelper();
 	void setCameraMode(const CameraMode &mode);
+	void setHwConfig(const Controller::HardwareConfig &hwConfig);
 	virtual void prepare(libcamera::Span<const uint8_t> buffer,
 			     Metadata &metadata);
 	virtual void process(StatisticsPtr &stats, Metadata &metadata);
@@ -91,14 +92,13 @@ public:
 	libcamera::utils::Duration lineLengthPckToDuration(uint32_t lineLengthPck) const;
 	virtual uint32_t gainCode(double gain) const = 0;
 	virtual double gain(uint32_t gainCode) const = 0;
-	virtual void getDelays(int &exposureDelay, int &gainDelay,
-			       int &vblankDelay, int &hblankDelay) const;
 	virtual bool sensorEmbeddedDataPresent() const;
 	virtual double getModeSensitivity(const CameraMode &mode) const;
 	virtual unsigned int hideFramesStartup() const;
 	virtual unsigned int hideFramesModeSwitch() const;
 	virtual unsigned int mistrustFramesStartup() const;
 	virtual unsigned int mistrustFramesModeSwitch() const;
+	virtual unsigned int getMinDebinFactor() const;
 
 protected:
 	void parseEmbeddedData(libcamera::Span<const uint8_t> buffer,
@@ -108,6 +108,7 @@ protected:
 
 	std::unique_ptr<MdParser> parser_;
 	CameraMode mode_;
+	Controller::HardwareConfig hwConfig_;
 
 private:
 	/*

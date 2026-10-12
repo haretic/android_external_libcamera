@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * camera_hal_manager.cpp - libcamera Android Camera Manager
+ * libcamera Android Camera Manager
  */
 
 #include "camera_hal_manager.h"
@@ -125,7 +125,7 @@ void CameraHalManager::cameraAdded(std::shared_ptr<Camera> cam)
 		 * Now check if this is an external camera and assign
 		 * its id accordingly.
 		 */
-		if (cameraLocation(cam.get()) == properties::CameraLocationExternal) {
+		if (cam->properties().get(properties::Location) == properties::CameraLocationExternal) {
 			isCameraExternal = true;
 			id = nextExternalCameraId_;
 		} else {
@@ -227,11 +227,6 @@ void CameraHalManager::cameraRemoved(std::shared_ptr<Camera> cam)
 	LOG(HAL, Debug) << "Camera ID: " << id << " removed successfully.";
 }
 
-int32_t CameraHalManager::cameraLocation(const Camera *cam)
-{
-	return cam->properties().get(properties::Location).value_or(-1);
-}
-
 CameraDevice *CameraHalManager::cameraDeviceFromHalId(unsigned int id)
 {
 	auto iter = std::find_if(cameras_.begin(), cameras_.end(),
@@ -264,8 +259,8 @@ int CameraHalManager::getCameraInfo(unsigned int id, struct camera_info *info)
 
 	info->facing = camera->facing();
 	info->orientation = camera->orientation();
-	info->device_version = CAMERA_DEVICE_API_VERSION_3_5;
-	info->resource_cost = camera->resourceCost();
+	info->device_version = CAMERA_DEVICE_API_VERSION_3_3;
+	info->resource_cost = 0;
 	info->static_camera_characteristics = camera->getStaticMetadata();
 	info->conflicting_devices = nullptr;
 	info->conflicting_devices_length = 0;

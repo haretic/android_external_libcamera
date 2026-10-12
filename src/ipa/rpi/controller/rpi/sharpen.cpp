@@ -2,10 +2,10 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * sharpen.cpp - sharpening control algorithm
+ * sharpening control algorithm
  */
 
-#include <math.h>
+#include <cmath>
 
 #include <libcamera/base/log.h>
 
@@ -37,7 +37,7 @@ void Sharpen::switchMode(CameraMode const &cameraMode,
 	modeFactor_ = std::max(1.0, cameraMode.noiseFactor);
 }
 
-int Sharpen::read(const libcamera::YamlObject &params)
+int Sharpen::read(const libcamera::ValueNode &params)
 {
 	threshold_ = params["threshold"].get<double>(1.0);
 	strength_ = params["strength"].get<double>(1.0);
@@ -68,7 +68,7 @@ void Sharpen::prepare(Metadata *imageMetadata)
 	 * we adjust the limit and threshold less aggressively. Using a sqrt
 	 * function is an arbitrary but gentle way of accomplishing this.
 	 */
-	double userStrengthSqrt = sqrt(userStrength_);
+	double userStrengthSqrt = std::sqrt(userStrength_);
 	struct SharpenStatus status;
 	/*
 	 * Binned modes seem to need the sharpening toned down with this

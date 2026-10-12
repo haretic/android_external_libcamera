@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * span.cpp - Span tests
+ * Span tests
  */
 
 /*
@@ -143,9 +143,9 @@ protected:
 		Span<const int>{ v };
 		/* Span<float>{ v }; */
 
-		Span<const int>{ v };
-		/* Span<int>{ v }; */
-		/* Span<const float>{ v }; */
+		Span<const int>{ cv };
+		/* Span<int>{ cv }; */
+		/* Span<const float>{ cv }; */
 
 		Span<int> dynamicSpan{ i };
 		Span<int>{ dynamicSpan };

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * dpcc.h - RkISP1 Defect Pixel Cluster Correction control
+ * RkISP1 Defect Pixel Cluster Correction control
  */
 
 #pragma once
@@ -19,10 +19,10 @@ public:
 	DefectPixelClusterCorrection();
 	~DefectPixelClusterCorrection() = default;
 
-	int init(IPAContext &context, const YamlObject &tuningData) override;
+	int init(IPAContext &context, const ValueNode &tuningData) override;
 	void prepare(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
-		     rkisp1_params_cfg *params) override;
+		     RkISP1Params *params) override;
 
 private:
 	rkisp1_cif_isp_dpcc_config config_;

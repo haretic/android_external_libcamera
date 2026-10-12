@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * geometry.cpp - Geometry classes tests
+ * Geometry classes tests
  */
 
 #include <iostream>
@@ -200,6 +200,11 @@ protected:
 		    Size(200, 50).shrunkBy({ 10, 100 }) != Size(190, 0) ||
 		    Size(200, 50).shrunkBy({ 300, 20 }) != Size(0, 30)) {
 			cout << "Size::shrunkBy() test failed" << endl;
+			return TestFail;
+		}
+
+		if (Size(200, 50).transpose() != Size(50, 200)) {
+			cout << "Size::transpose() test failed" << endl;
 			return TestFail;
 		}
 
@@ -492,6 +497,17 @@ protected:
 
 		if (rect1 != rect2 || rect1 != rect3 || rect1 != rect4) {
 			cout << "Point-to-point construction failed" << endl;
+			return TestFail;
+		}
+
+		Rectangle f1 = Rectangle(100, 200, 3000, 2000);
+		Rectangle f2 = Rectangle(200, 300, 1500, 1000);
+		/* Bottom right quarter of the corresponding frames. */
+		Rectangle r1 = Rectangle(100 + 1500, 200 + 1000, 1500, 1000);
+		Rectangle r2 = Rectangle(200 + 750, 300 + 500, 750, 500);
+		if (r1.transformedBetween(f1, f2) != r2 ||
+		    r2.transformedBetween(f2, f1) != r1) {
+			cout << "Rectangle::transformedBetween() test failed" << endl;
 			return TestFail;
 		}
 

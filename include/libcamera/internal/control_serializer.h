@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * control_serializer.h - Control (de)serializer
+ * Control (de)serializer
  */
 
 #pragma once
@@ -47,9 +47,13 @@ private:
 	static void store(const ControlValue &value, ByteStreamBuffer &buffer);
 	static void store(const ControlInfo &info, ByteStreamBuffer &buffer);
 
+	void populateControlValueEntry(struct ipa_control_value_entry &entry,
+				       const ControlValue &value,
+				       uint32_t offset);
+
 	ControlValue loadControlValue(ByteStreamBuffer &buffer,
-				      bool isArray = false, unsigned int count = 1);
-	ControlInfo loadControlInfo(ByteStreamBuffer &buffer);
+				      ControlType type,
+				      bool isArray, unsigned int count);
 
 	unsigned int serial_;
 	unsigned int serialSeed_;

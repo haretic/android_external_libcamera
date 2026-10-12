@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * post_processor_yuv.h - Post Processor using libyuv
+ * Post Processor using libyuv
  */
 
 #pragma once
@@ -18,7 +18,7 @@ public:
 
 	int configure(const libcamera::StreamConfiguration &incfg,
 		      const libcamera::StreamConfiguration &outcfg) override;
-	void process(StreamBuffer *streamBuffer) override;
+	void process(Camera3RequestDescriptor::StreamBuffer *streamBuffer) override;
 
 private:
 	bool isValidBuffers(const libcamera::FrameBuffer &source,
@@ -29,5 +29,7 @@ private:
 	libcamera::Size sourceSize_;
 	libcamera::Size destinationSize_;
 	unsigned int sourceLength_[2] = {};
+	unsigned int destinationLength_[2] = {};
 	unsigned int sourceStride_[2] = {};
+	unsigned int destinationStride_[2] = {};
 };

@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * camera_metadata.h - libcamera Android Camera Metadata Helper
+ * libcamera Android Camera Metadata Helper
  */
 
 #pragma once
 
 #include <stdint.h>
-#include <unordered_set>
 #include <vector>
 
 #include <system/camera_metadata.h>
@@ -21,11 +20,6 @@ public:
 	CameraMetadata(const camera_metadata_t *metadata);
 	CameraMetadata(const CameraMetadata &other);
 	~CameraMetadata();
-
-	void addTagsToAvoid(const std::unordered_set<uint32_t> &tagsToAvoid)
-	{
-		tagsToAvoid_ = tagsToAvoid;
-	}
 
 	CameraMetadata &operator=(const CameraMetadata &other);
 
@@ -115,6 +109,4 @@ private:
 	camera_metadata_t *metadata_;
 	bool valid_;
 	bool resized_;
-
-	std::unordered_set<uint32_t> tagsToAvoid_;
 };

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * frames.h - Intel IPU3 Frames helper
+ * Intel IPU3 Frames helper
  */
 
 #pragma once
@@ -19,11 +19,7 @@
 namespace libcamera {
 
 class FrameBuffer;
-class IPAProxy;
-class PipelineHandler;
 class Request;
-class V4L2VideoDevice;
-struct IPABuffer;
 
 class IPU3Frames
 {
@@ -61,7 +57,7 @@ private:
 	std::queue<FrameBuffer *> availableParamBuffers_;
 	std::queue<FrameBuffer *> availableStatBuffers_;
 
-	std::map<unsigned int, std::unique_ptr<Info>> frameInfo_;
+	std::map<unsigned int, Info> frameInfo_;
 };
 
 } /* namespace libcamera */

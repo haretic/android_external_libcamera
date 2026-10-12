@@ -2,7 +2,7 @@
 #
 # Copyright (C) 2019, Raspberry Pi Ltd
 #
-# image.py - Container for an image and associated metadata
+# Container for an image and associated metadata
 
 import binascii
 import numpy as np
@@ -13,6 +13,9 @@ import re
 
 import libtuning as lt
 import libtuning.utils as utils
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Image:
@@ -21,17 +24,18 @@ class Image:
         self.lsc_only = False
         self.color = -1
         self.lux = -1
+        self.macbeth = None
 
         try:
             self._load_metadata_exif()
         except Exception as e:
-            utils.eprint(f'Failed to load metadata from {self.path}: {e}')
+            logger.error(f'Failed to load metadata from {self.path}: {e}')
             raise e
 
         try:
             self._read_image_dng()
         except Exception as e:
-            utils.eprint(f'Failed to load image data from {self.path}: {e}')
+            logger.error(f'Failed to load image data from {self.path}: {e}')
             raise e
 
     @property
@@ -79,7 +83,7 @@ class Image:
         # is R, then G, then G, then B.
         bayer_case = {
             '0 1 1 2': (lt.Color.R, lt.Color.GR, lt.Color.GB, lt.Color.B),
-            '1 2 0 1': (lt.Color.GB, lt.Color.R, lt.Color.B, lt.Color.GR),
+            '1 2 0 1': (lt.Color.GB, lt.Color.B, lt.Color.R, lt.Color.GR),
             '2 1 1 0': (lt.Color.B, lt.Color.GB, lt.Color.GR, lt.Color.R),
             '1 0 2 1': (lt.Color.GR, lt.Color.R, lt.Color.B, lt.Color.GB)
         }
@@ -131,6 +135,6 @@ class Image:
 
             all_patches.append(ch_patches)
 
-        self.patches = all_patches
+        self.patches = np.array(all_patches)
 
         return not saturated

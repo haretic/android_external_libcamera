@@ -9,6 +9,5 @@ android_hal_sources += files([
 ])
 
 android_deps += dependency('libcros_camera')
-android_deps += dependency('perfetto')
 
 android_cpp_args += ['-DOS_CHROMEOS']

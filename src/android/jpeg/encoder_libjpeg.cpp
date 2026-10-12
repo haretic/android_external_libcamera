@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * encoder_libjpeg.cpp - JPEG encoding using libjpeg native API
+ * JPEG encoding using libjpeg native API
  */
 
 #include "encoder_libjpeg.h"
@@ -38,24 +38,24 @@ struct JPEGPixelFormatInfo {
 	bool nvSwap;
 };
 
+const std::map<PixelFormat, JPEGPixelFormatInfo> pixelInfo{
+	{ formats::R8, { JCS_GRAYSCALE, PixelFormatInfo::info(formats::R8), false } },
+
+	{ formats::RGB888, { JCS_EXT_BGR, PixelFormatInfo::info(formats::RGB888), false } },
+	{ formats::BGR888, { JCS_EXT_RGB, PixelFormatInfo::info(formats::BGR888), false } },
+
+	{ formats::NV12, { JCS_YCbCr, PixelFormatInfo::info(formats::NV12), false } },
+	{ formats::NV21, { JCS_YCbCr, PixelFormatInfo::info(formats::NV21), true } },
+	{ formats::NV16, { JCS_YCbCr, PixelFormatInfo::info(formats::NV16), false } },
+	{ formats::NV61, { JCS_YCbCr, PixelFormatInfo::info(formats::NV61), true } },
+	{ formats::NV24, { JCS_YCbCr, PixelFormatInfo::info(formats::NV24), false } },
+	{ formats::NV42, { JCS_YCbCr, PixelFormatInfo::info(formats::NV42), true } },
+};
+
 const struct JPEGPixelFormatInfo &findPixelInfo(const PixelFormat &format)
 {
 	static const struct JPEGPixelFormatInfo invalidPixelFormat {
 		JCS_UNKNOWN, PixelFormatInfo(), false
-	};
-
-	static const std::map<PixelFormat, JPEGPixelFormatInfo> pixelInfo{
-		{ formats::R8, { JCS_GRAYSCALE, PixelFormatInfo::info(formats::R8), false } },
-
-		{ formats::RGB888, { JCS_EXT_BGR, PixelFormatInfo::info(formats::RGB888), false } },
-		{ formats::BGR888, { JCS_EXT_RGB, PixelFormatInfo::info(formats::BGR888), false } },
-
-		{ formats::NV12, { JCS_YCbCr, PixelFormatInfo::info(formats::NV12), false } },
-		{ formats::NV21, { JCS_YCbCr, PixelFormatInfo::info(formats::NV21), true } },
-		{ formats::NV16, { JCS_YCbCr, PixelFormatInfo::info(formats::NV16), false } },
-		{ formats::NV61, { JCS_YCbCr, PixelFormatInfo::info(formats::NV61), true } },
-		{ formats::NV24, { JCS_YCbCr, PixelFormatInfo::info(formats::NV24), false } },
-		{ formats::NV42, { JCS_YCbCr, PixelFormatInfo::info(formats::NV42), true } },
 	};
 
 	const auto iter = pixelInfo.find(format);
@@ -99,8 +99,6 @@ int EncoderLibJpeg::configure(const StreamConfiguration &cfg)
 
 	pixelFormatInfo_ = &info.pixelFormatInfo;
 
-	stride_ = cfg.stride;
-
 	nv_ = pixelFormatInfo_->numPlanes() == 2;
 	nvSwap_ = info.nvSwap;
 
@@ -110,10 +108,13 @@ int EncoderLibJpeg::configure(const StreamConfiguration &cfg)
 void EncoderLibJpeg::compressRGB(const std::vector<Span<uint8_t>> &planes)
 {
 	unsigned char *src = const_cast<unsigned char *>(planes[0].data());
+	/* \todo Stride information should come from buffer configuration. */
+	unsigned int stride = pixelFormatInfo_->stride(compress_.image_width, 0);
+
 	JSAMPROW row_pointer[1];
 
 	while (compress_.next_scanline < compress_.image_height) {
-		row_pointer[0] = &src[compress_.next_scanline * stride_];
+		row_pointer[0] = &src[compress_.next_scanline * stride];
 		jpeg_write_scanlines(&compress_, row_pointer, 1);
 	}
 }
@@ -124,7 +125,7 @@ void EncoderLibJpeg::compressRGB(const std::vector<Span<uint8_t>> &planes)
  */
 void EncoderLibJpeg::compressNV(const std::vector<Span<uint8_t>> &planes)
 {
-	uint8_t tmprowbuf[compress_.image_width * 3];
+	std::vector<uint8_t> tmprowbuf(compress_.image_width * 3);
 
 	/*
 	 * \todo Use the raw api, and only unpack the cb/cr samples to new line
@@ -134,9 +135,13 @@ void EncoderLibJpeg::compressNV(const std::vector<Span<uint8_t>> &planes)
 	 * Possible hints at:
 	 * https://sourceforge.net/p/libjpeg/mailman/message/30815123/
 	 */
-	unsigned int y_stride = stride_;
-	unsigned int c_stride = stride_;
+	unsigned int y_stride = pixelFormatInfo_->stride(compress_.image_width, 0);
+	unsigned int c_stride = pixelFormatInfo_->stride(compress_.image_width, 1);
 
+	unsigned int horzSubSample = 2 * compress_.image_width / c_stride;
+	unsigned int vertSubSample = pixelFormatInfo_->planes[1].verticalSubSampling;
+
+	unsigned int c_inc = horzSubSample == 1 ? 2 : 0;
 	unsigned int cb_pos = nvSwap_ ? 1 : 0;
 	unsigned int cr_pos = nvSwap_ ? 0 : 1;
 
@@ -144,20 +149,22 @@ void EncoderLibJpeg::compressNV(const std::vector<Span<uint8_t>> &planes)
 	const unsigned char *src_c = planes[1].data();
 
 	JSAMPROW row_pointer[1];
-	row_pointer[0] = &tmprowbuf[0];
+	row_pointer[0] = tmprowbuf.data();
 
 	for (unsigned int y = 0; y < compress_.image_height; y++) {
-		unsigned char *dst = &tmprowbuf[0];
+		unsigned char *dst = tmprowbuf.data();
 
 		const unsigned char *src_y = src + y * y_stride;
-		const unsigned char *src_cb = src_c + (y / 2) * c_stride + cb_pos;
-		const unsigned char *src_cr = src_c + (y / 2) * c_stride + cr_pos;
+		const unsigned char *src_cb = src_c + (y / vertSubSample) * c_stride + cb_pos;
+		const unsigned char *src_cr = src_c + (y / vertSubSample) * c_stride + cr_pos;
 
 		for (unsigned int x = 0; x < compress_.image_width; x += 2) {
 			dst[0] = *src_y;
 			dst[1] = *src_cb;
 			dst[2] = *src_cr;
 			src_y++;
+			src_cb += c_inc;
+			src_cr += c_inc;
 			dst += 3;
 
 			dst[0] = *src_y;
@@ -173,7 +180,7 @@ void EncoderLibJpeg::compressNV(const std::vector<Span<uint8_t>> &planes)
 	}
 }
 
-int EncoderLibJpeg::encode(StreamBuffer *buffer,
+int EncoderLibJpeg::encode(Camera3RequestDescriptor::StreamBuffer *buffer,
 			   libcamera::Span<const uint8_t> exifData,
 			   unsigned int quality)
 {

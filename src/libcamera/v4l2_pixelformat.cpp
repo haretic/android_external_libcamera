@@ -3,7 +3,7 @@
  * Copyright (C) 2019, Google Inc.
  * Copyright (C) 2020, Raspberry Pi Ltd
  *
- * v4l2_pixelformat.cpp - V4L2 Pixel Format
+ * V4L2 Pixel Format
  */
 
 #include "libcamera/internal/v4l2_pixelformat.h"
@@ -71,6 +71,10 @@ const std::map<V4L2PixelFormat, V4L2PixelFormat::Info> vpf2pf{
 		{ formats::BGRA8888, "32-bit ARGB 8-8-8-8" } },
 	{ V4L2PixelFormat(V4L2_PIX_FMT_BGRA32),
 		{ formats::RGBA8888, "32-bit ABGR 8-8-8-8" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_RGB48),
+		{ formats::BGR161616, "48-bit RGB 16-16-16" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_BGR48),
+		{ formats::RGB161616, "48-bit BGR 16-16-16" } },
 
 	/* YUV packed formats. */
 	{ V4L2PixelFormat(V4L2_PIX_FMT_YUYV),
@@ -135,6 +139,10 @@ const std::map<V4L2PixelFormat, V4L2PixelFormat::Info> vpf2pf{
 		{ formats::R10_CSI2P, "10-bit Greyscale Packed" } },
 	{ V4L2PixelFormat(V4L2_PIX_FMT_Y12),
 		{ formats::R12, "12-bit Greyscale" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_Y12P),
+		{ formats::R12_CSI2P, "12-bit Greyscale Packed" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_Y16),
+		{ formats::R16, "16-bit Greyscale" } },
 
 	/* Bayer formats. */
 	{ V4L2PixelFormat(V4L2_PIX_FMT_SBGGR8),
@@ -201,48 +209,22 @@ const std::map<V4L2PixelFormat, V4L2PixelFormat::Info> vpf2pf{
 		{ formats::SGRBG16, "16-bit Bayer GRGR/BGBG" } },
 	{ V4L2PixelFormat(V4L2_PIX_FMT_SRGGB16),
 		{ formats::SRGGB16, "16-bit Bayer RGRG/GBGB" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_BGGR),
+		{ formats::BGGR_PISP_COMP1, "16-bit Bayer BGBG/GRGR PiSP Compress Mode 1" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_GBRG),
+		{ formats::GBRG_PISP_COMP1, "16-bit Bayer GBGB/RGRG PiSP Compress Mode 1" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_GRBG),
+		{ formats::GRBG_PISP_COMP1, "16-bit Bayer GRGR/BGBG PiSP Compress Mode 1" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_RGGB),
+		{ formats::RGGB_PISP_COMP1, "16-bit Bayer RGRG/GBGB PiSP Compress Mode 1" } },
+	{ V4L2PixelFormat(V4L2_PIX_FMT_PISP_COMP1_MONO),
+		{ formats::MONO_PISP_COMP1, "16-bit Mono PiSP Compress Mode 1" } },
 
 	/* Compressed formats. */
 	{ V4L2PixelFormat(V4L2_PIX_FMT_MJPEG),
 		{ formats::MJPEG, "Motion-JPEG" } },
 	{ V4L2PixelFormat(V4L2_PIX_FMT_JPEG),
 		{ formats::MJPEG, "JPEG JFIF" } },
-
-	/*  MTKISP7 */
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SBGGR10),
-		{ formats::SBGGR10_MTISP, "SBGGR10_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SGBRG10),
-		{ formats::SGBRG10_MTISP, "SGBRG10_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SGRBG10),
-		{ formats::SGRBG10_MTISP, "SGRBG10_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SRGGB10),
-		{ formats::SRGGB10_MTISP, "SRGGB10_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_NV12_10P),
-		{ formats::NV12_10P_MTISP, "NV12_10P_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_NV12_12P),
-		{ formats::NV12_12P_MTISP, "NV12_12P_MTISP" } },
-	{ V4L2PixelFormat(V4L2_META_FMT_MTISP_PARAMS),
-		{ formats::MTFP_MTISP, "MTFP_MTISP" } },
-	{ V4L2PixelFormat(V4L2_META_FMT_MTISP_3A),
-		{ formats::MTFA_MTISP, "MTFA_MTISP" } },
-	{ V4L2PixelFormat(V4L2_META_FMT_MTISP_AF),
-		{ formats::MTFF_MTISP, "MTFF_MTISP" } },
-	{ V4L2PixelFormat(V4L2_META_FMT_MTISP_DESC),
-		{ formats::MTFD_MTISP, "MTFD_MTISP" } },
-	{ V4L2PixelFormat(V4L2_META_FMT_MTISP_SD),
-		{ formats::MTFS_MTISP, "MTFS_MTISP" } },
-	{ V4L2PixelFormat(V4L2_META_FMT_MTISP_DESCNORM),
-		{ formats::MTFR_MTISP, "MTFR_MTISP" } },
-	{ V4L2PixelFormat(V4L2_META_FMT_MTISP_SDNORM),
-		{ formats::MTSR_MTISP, "MTSR_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_WARP2P),
-		{ formats::WARP2P_MTISP, "WARP2P_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_Y8),
-		{ formats::Y8_MTISP, "Y8_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_Y16),
-		{ formats::Y16_MTISP, "Y16_MTISP" } },
-	{ V4L2PixelFormat(V4L2_PIX_FMT_MTISP_Y32),
-		{ formats::Y32_MTISP, "Y32_MTISP" } },
 };
 
 } /* namespace */
@@ -388,6 +370,40 @@ V4L2PixelFormat::fromPixelFormat(const PixelFormat &pixelFormat)
 		return empty;
 
 	return info.v4l2Formats;
+}
+
+/**
+ * \brief Test if a V4L2PixelFormat is one of the line based generic metadata
+ * formats
+ *
+ * A limited number of metadata formats, the ones that represents generic
+ * line-based metadata buffers, need to have their width, height and
+ * bytesperline set by userspace.
+ *
+ * This function tests if the current V4L2PixelFormat is one of those.
+ *
+ * Note: It would have been nicer to store this information in a
+ * V4L2PixelFormat::Info instance, but as metadata format are not exposed to
+ * applications, there are no PixelFormat and DRM fourcc codes associated to
+ * them.
+ *
+ * \return True if the V4L2PixelFormat() is a generic line based format, false
+ * otherwise
+ */
+bool V4L2PixelFormat::isGenericLineBasedMetadata() const
+{
+	switch (fourcc_) {
+	case V4L2_META_FMT_GENERIC_8:
+	case V4L2_META_FMT_GENERIC_CSI2_10:
+	case V4L2_META_FMT_GENERIC_CSI2_12:
+	case V4L2_META_FMT_GENERIC_CSI2_14:
+	case V4L2_META_FMT_GENERIC_CSI2_16:
+	case V4L2_META_FMT_GENERIC_CSI2_20:
+	case V4L2_META_FMT_GENERIC_CSI2_24:
+		return true;
+	default:
+		return false;
+	}
 }
 
 /**

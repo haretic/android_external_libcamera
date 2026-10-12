@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2022, Google Inc.
  *
- * encoder_jea.cpp - JPEG encoding using CrOS JEA
+ * JPEG encoding using CrOS JEA
  */
 
 #include "encoder_jea.h"
@@ -33,7 +33,7 @@ int EncoderJea::configure(const libcamera::StreamConfiguration &cfg)
 	return 0;
 }
 
-int EncoderJea::encode(StreamBuffer *buffer,
+int EncoderJea::encode(Camera3RequestDescriptor::StreamBuffer *buffer,
 		       libcamera::Span<const uint8_t> exifData,
 		       unsigned int quality)
 {

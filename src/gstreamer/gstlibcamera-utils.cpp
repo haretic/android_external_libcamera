@@ -3,28 +3,50 @@
  * Copyright (C) 2020, Collabora Ltd.
  *     Author: Nicolas Dufresne <nicolas.dufresne@collabora.com>
  *
- * gstlibcamera-utils.c - GStreamer libcamera Utility Function
+ * GStreamer libcamera Utility Function
  */
 
 #include "gstlibcamera-utils.h"
+
+#include <string>
 
 #include <libcamera/control_ids.h>
 #include <libcamera/formats.h>
 
 using namespace libcamera;
 
-static struct {
+static const struct {
 	GstVideoFormat gst_format;
 	PixelFormat format;
 } format_map[] = {
 	/* Compressed */
 	{ GST_VIDEO_FORMAT_ENCODED, formats::MJPEG },
 
-	/* Bayer formats, gstreamer only supports 8-bit */
+	/* Bayer formats */
 	{ GST_VIDEO_FORMAT_ENCODED, formats::SBGGR8 },
 	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG8 },
 	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG8 },
 	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB8 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SBGGR10 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG10 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG10 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB10 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SBGGR12 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG12 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG12 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB12 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SBGGR14 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG14 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG14 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB14 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SBGGR16 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGBRG16 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SGRBG16 },
+	{ GST_VIDEO_FORMAT_ENCODED, formats::SRGGB16 },
+
+	/* Monochrome */
+	{ GST_VIDEO_FORMAT_GRAY8, formats::R8 },
+	{ GST_VIDEO_FORMAT_GRAY16_LE, formats::R16 },
 
 	/* RGB16 */
 	{ GST_VIDEO_FORMAT_RGB16, formats::RGB565 },
@@ -54,6 +76,7 @@ static struct {
 	{ GST_VIDEO_FORMAT_I420, formats::YUV420 },
 	{ GST_VIDEO_FORMAT_YV12, formats::YVU420 },
 	{ GST_VIDEO_FORMAT_Y42B, formats::YUV422 },
+	{ GST_VIDEO_FORMAT_Y444, formats::YUV444 },
 
 	/* YUV Packed */
 	{ GST_VIDEO_FORMAT_UYVY, formats::UYVY },
@@ -65,7 +88,7 @@ static struct {
 };
 
 static GstVideoColorimetry
-colorimetry_from_colorspace(const ColorSpace &colorSpace)
+colorimetry_from_colorspace(const ColorSpace &colorSpace, GstVideoTransferFunction transfer)
 {
 	GstVideoColorimetry colorimetry;
 
@@ -93,6 +116,8 @@ colorimetry_from_colorspace(const ColorSpace &colorSpace)
 		break;
 	case ColorSpace::TransferFunction::Rec709:
 		colorimetry.transfer = GST_VIDEO_TRANSFER_BT709;
+		if (transfer != GST_VIDEO_TRANSFER_UNKNOWN)
+			colorimetry.transfer = transfer;
 		break;
 	}
 
@@ -124,7 +149,8 @@ colorimetry_from_colorspace(const ColorSpace &colorSpace)
 }
 
 static std::optional<ColorSpace>
-colorspace_from_colorimetry(const GstVideoColorimetry &colorimetry)
+colorspace_from_colorimetry(const GstVideoColorimetry &colorimetry,
+			    GstVideoTransferFunction *transfer)
 {
 	std::optional<ColorSpace> colorspace = ColorSpace::Raw;
 
@@ -168,6 +194,7 @@ colorspace_from_colorimetry(const GstVideoColorimetry &colorimetry)
 	case GST_VIDEO_TRANSFER_BT2020_12:
 	case GST_VIDEO_TRANSFER_BT709:
 		colorspace->transferFunction = ColorSpace::TransferFunction::Rec709;
+		*transfer = colorimetry.transfer;
 		break;
 	default:
 		GST_WARNING("Colorimetry transfer function %d not mapped in gstlibcamera",
@@ -234,20 +261,50 @@ gst_format_to_pixel_format(GstVideoFormat gst_format)
 	return PixelFormat{};
 }
 
+static const struct {
+	PixelFormat format;
+	const gchar *name;
+} bayer_map[]{
+	{ formats::SBGGR8, "bggr" },
+	{ formats::SGBRG8, "gbrg" },
+	{ formats::SGRBG8, "grbg" },
+	{ formats::SRGGB8, "rggb" },
+	{ formats::SBGGR10, "bggr10le" },
+	{ formats::SGBRG10, "gbrg10le" },
+	{ formats::SGRBG10, "grbg10le" },
+	{ formats::SRGGB10, "rggb10le" },
+	{ formats::SBGGR12, "bggr12le" },
+	{ formats::SGBRG12, "gbrg12le" },
+	{ formats::SGRBG12, "grbg12le" },
+	{ formats::SRGGB12, "rggb12le" },
+	{ formats::SBGGR14, "bggr14le" },
+	{ formats::SGBRG14, "gbrg14le" },
+	{ formats::SGRBG14, "grbg14le" },
+	{ formats::SRGGB14, "rggb14le" },
+	{ formats::SBGGR16, "bggr16le" },
+	{ formats::SGBRG16, "gbrg16le" },
+	{ formats::SGRBG16, "grbg16le" },
+	{ formats::SRGGB16, "rggb16le" },
+};
+
 static const gchar *
-bayer_format_to_string(int format)
+bayer_format_to_string(PixelFormat format)
 {
-	switch (format) {
-	case formats::SBGGR8:
-		return "bggr";
-	case formats::SGBRG8:
-		return "gbrg";
-	case formats::SGRBG8:
-		return "grbg";
-	case formats::SRGGB8:
-		return "rggb";
+	for (auto &b : bayer_map) {
+		if (b.format == format)
+			return b.name;
 	}
-	return NULL;
+	return nullptr;
+}
+
+static PixelFormat
+bayer_format_from_string(const gchar *name)
+{
+	for (auto &b : bayer_map) {
+		if (strcmp(b.name, name) == 0)
+			return b.format;
+	}
+	return PixelFormat{};
 }
 
 static GstStructure *
@@ -262,20 +319,42 @@ bare_structure_from_format(const PixelFormat &format)
 		return gst_structure_new("video/x-raw", "format", G_TYPE_STRING,
 					 gst_video_format_to_string(gst_format), nullptr);
 
-	switch (format) {
-	case formats::MJPEG:
+	if (format == formats::MJPEG)
 		return gst_structure_new_empty("image/jpeg");
 
-	case formats::SBGGR8:
-	case formats::SGBRG8:
-	case formats::SGRBG8:
-	case formats::SRGGB8:
-		return gst_structure_new("video/x-bayer", "format", G_TYPE_STRING,
-					 bayer_format_to_string(format), nullptr);
+	const gchar *s = bayer_format_to_string(format);
+	if (s)
+		return gst_structure_new("video/x-bayer", "format",
+					 G_TYPE_STRING, s, nullptr);
 
-	default:
-		return nullptr;
+	return nullptr;
+}
+
+static const struct {
+	ControlType c_type;
+	GType g_type;
+} control_type_gtype_map[] = {
+	{ ControlTypeBool, G_TYPE_BOOLEAN },
+	{ ControlTypeByte, G_TYPE_UINT },
+	{ ControlTypeUnsigned16, G_TYPE_UINT },
+	{ ControlTypeUnsigned32, G_TYPE_UINT },
+	{ ControlTypeInteger32, G_TYPE_INT },
+	{ ControlTypeInteger64, G_TYPE_INT64 },
+	{ ControlTypeFloat, G_TYPE_FLOAT },
+	{ ControlTypeString, G_TYPE_STRING },
+	{ ControlTypeRectangle, GST_TYPE_ARRAY },
+	{ ControlTypeSize, GST_TYPE_ARRAY },
+	{ ControlTypePoint, GST_TYPE_ARRAY },
+};
+
+static GType
+control_type_to_gtype(const ControlType &type)
+{
+	for (auto &a : control_type_gtype_map) {
+		if (a.c_type == type)
+			return a.g_type;
 	}
+	return G_TYPE_INVALID;
 }
 
 GstCaps *
@@ -307,13 +386,21 @@ gst_libcamera_stream_formats_to_caps(const StreamFormats &formats)
 			GValue val = G_VALUE_INIT;
 
 			g_value_init(&val, GST_TYPE_INT_RANGE);
-			gst_value_set_int_range_step(&val, range.min.width, range.max.width, range.hStep);
-			gst_structure_set_value(s, "width", &val);
-			gst_value_set_int_range_step(&val, range.min.height, range.max.height, range.vStep);
-			gst_structure_set_value(s, "height", &val);
+			if (range.min.width == range.max.width) {
+				gst_structure_set(s, "width", G_TYPE_INT, range.min.width, nullptr);
+			} else {
+				gst_value_set_int_range_step(&val, range.min.width, range.max.width, range.hStep);
+				gst_structure_set_value(s, "width", &val);
+			}
+			if (range.min.height == range.max.height) {
+				gst_structure_set(s, "height", G_TYPE_INT, range.min.height, nullptr);
+			} else {
+				gst_value_set_int_range_step(&val, range.min.height, range.max.height, range.vStep);
+				gst_structure_set_value(s, "height", &val);
+			}
 			g_value_unset(&val);
 
-			gst_caps_append_structure(caps, s);
+			caps = gst_caps_merge_structure(caps, s);
 		}
 	}
 
@@ -321,7 +408,8 @@ gst_libcamera_stream_formats_to_caps(const StreamFormats &formats)
 }
 
 GstCaps *
-gst_libcamera_stream_configuration_to_caps(const StreamConfiguration &stream_cfg)
+gst_libcamera_stream_configuration_to_caps(const StreamConfiguration &stream_cfg,
+					   GstVideoTransferFunction transfer)
 {
 	GstCaps *caps = gst_caps_new_empty();
 	GstStructure *s = bare_structure_from_format(stream_cfg.pixelFormat);
@@ -332,8 +420,8 @@ gst_libcamera_stream_configuration_to_caps(const StreamConfiguration &stream_cfg
 			  nullptr);
 
 	if (stream_cfg.colorSpace) {
-		GstVideoColorimetry colorimetry = colorimetry_from_colorspace(stream_cfg.colorSpace.value());
-		gchar *colorimetry_str = gst_video_colorimetry_to_string(&colorimetry);
+		GstVideoColorimetry colorimetry = colorimetry_from_colorspace(stream_cfg.colorSpace.value(), transfer);
+		g_autofree gchar *colorimetry_str = gst_video_colorimetry_to_string(&colorimetry);
 
 		if (colorimetry_str)
 			gst_structure_set(s, "colorimetry", G_TYPE_STRING, colorimetry_str, nullptr);
@@ -347,9 +435,8 @@ gst_libcamera_stream_configuration_to_caps(const StreamConfiguration &stream_cfg
 	return caps;
 }
 
-void
-gst_libcamera_configure_stream_from_caps(StreamConfiguration &stream_cfg,
-					 GstCaps *caps)
+void gst_libcamera_configure_stream_from_caps(StreamConfiguration &stream_cfg,
+					      GstCaps *caps, GstVideoTransferFunction *transfer)
 {
 	GstVideoFormat gst_format = pixel_format_to_gst_format(stream_cfg.pixelFormat);
 	guint i;
@@ -414,6 +501,9 @@ gst_libcamera_configure_stream_from_caps(StreamConfiguration &stream_cfg,
 		const gchar *format = gst_structure_get_string(s, "format");
 		gst_format = gst_video_format_from_string(format);
 		stream_cfg.pixelFormat = gst_format_to_pixel_format(gst_format);
+	} else if (gst_structure_has_name(s, "video/x-bayer")) {
+		const gchar *format = gst_structure_get_string(s, "format");
+		stream_cfg.pixelFormat = bayer_format_from_string(format);
 	} else if (gst_structure_has_name(s, "image/jpeg")) {
 		stream_cfg.pixelFormat = formats::MJPEG;
 	} else {
@@ -428,13 +518,16 @@ gst_libcamera_configure_stream_from_caps(StreamConfiguration &stream_cfg,
 
 	/* Configure colorimetry */
 	if (gst_structure_has_field(s, "colorimetry")) {
-		const gchar *colorimetry_str = gst_structure_get_string(s, "colorimetry");
+		const gchar *colorimetry_str;
 		GstVideoColorimetry colorimetry;
+
+		gst_structure_fixate_field(s, "colorimetry");
+		colorimetry_str = gst_structure_get_string(s, "colorimetry");
 
 		if (!gst_video_colorimetry_from_string(&colorimetry, colorimetry_str))
 			g_critical("Invalid colorimetry %s", colorimetry_str);
 
-		stream_cfg.colorSpace = colorspace_from_colorimetry(colorimetry);
+		stream_cfg.colorSpace = colorspace_from_colorimetry(colorimetry, transfer);
 	}
 }
 
@@ -515,6 +608,53 @@ void gst_libcamera_framerate_to_caps(GstCaps *caps, const GstStructure *element_
 	gst_structure_set(s, "framerate", GST_TYPE_FRACTION, fps_caps_n, fps_caps_d, nullptr);
 }
 
+void gst_libcamera_gvalue_set_point(GValue *value, const Point &point)
+{
+	GValue x = G_VALUE_INIT;
+	g_value_init(&x, G_TYPE_INT);
+	g_value_set_int(&x, point.x);
+	gst_value_array_append_and_take_value(value, &x);
+
+	GValue y = G_VALUE_INIT;
+	g_value_init(&y, G_TYPE_INT);
+	g_value_set_int(&y, point.y);
+	gst_value_array_append_and_take_value(value, &y);
+}
+
+void gst_libcamera_gvalue_set_size(GValue *value, const Size &size)
+{
+	GValue width = G_VALUE_INIT;
+	g_value_init(&width, G_TYPE_INT);
+	g_value_set_int(&width, size.width);
+	gst_value_array_append_and_take_value(value, &width);
+
+	GValue height = G_VALUE_INIT;
+	g_value_init(&height, G_TYPE_INT);
+	g_value_set_int(&height, size.height);
+	gst_value_array_append_and_take_value(value, &height);
+}
+
+void gst_libcamera_gvalue_set_rectangle(GValue *value, const Rectangle &rect)
+{
+	gst_libcamera_gvalue_set_point(value, rect.topLeft());
+	gst_libcamera_gvalue_set_size(value, rect.size());
+}
+
+Rectangle gst_libcamera_gvalue_get_rectangle(const GValue *value)
+{
+	const GValue *r;
+	r = gst_value_array_get_value(value, 0);
+	int x = g_value_get_int(r);
+	r = gst_value_array_get_value(value, 1);
+	int y = g_value_get_int(r);
+	r = gst_value_array_get_value(value, 2);
+	int w = g_value_get_int(r);
+	r = gst_value_array_get_value(value, 3);
+	int h = g_value_get_int(r);
+
+	return Rectangle(x, y, w, h);
+}
+
 #if !GST_CHECK_VERSION(1, 17, 1)
 gboolean
 gst_task_resume(GstTask *task)
@@ -527,6 +667,43 @@ gst_task_resume(GstTask *task)
 	GST_TASK_STATE(task) = GST_TASK_STARTED;
 	GST_TASK_SIGNAL(task);
 	return TRUE;
+}
+#endif
+
+#if !GST_CHECK_VERSION(1, 22, 0)
+/*
+ * Copyright (C) <1999> Erik Walthinsen <omega@cse.ogi.edu>
+ * Library       <2002> Ronald Bultje <rbultje@ronald.bitfreak.net>
+ * Copyright (C) <2007> David A. Schleef <ds@schleef.org>
+ */
+/*
+ * This function has been imported directly from the gstreamer project to
+ * support backwards compatibility and should be removed when the older version
+ * is no longer supported.
+ */
+gint gst_video_format_info_extrapolate_stride(const GstVideoFormatInfo *finfo, gint plane, gint stride)
+{
+	gint estride;
+	gint comp[GST_VIDEO_MAX_COMPONENTS];
+	gint i;
+
+	/* There is nothing to extrapolate on first plane. */
+	if (plane == 0)
+		return stride;
+
+	gst_video_format_info_component(finfo, plane, comp);
+
+	/*
+	 * For now, all planar formats have a single component on first plane, but
+	 * if there was a planar format with more, we'd have to make a ratio of the
+	 * number of component on the first plane against the number of component on
+	 * the current plane.
+	 */
+	estride = 0;
+	for (i = 0; i < GST_VIDEO_MAX_COMPONENTS && comp[i] >= 0; i++)
+		estride += GST_VIDEO_FORMAT_INFO_SCALE_WIDTH(finfo, comp[i], stride);
+
+	return estride;
 }
 #endif
 
@@ -552,4 +729,162 @@ gst_libcamera_get_camera_manager(int &ret)
 	G_UNLOCK(cm_singleton_lock);
 
 	return cm;
+}
+
+int gst_libcamera_set_structure_field(GstStructure *structure, const ControlId *id,
+				      const ControlValue &value)
+{
+	std::string prop = "api.libcamera." + id->name();
+	g_auto(GValue) v = G_VALUE_INIT;
+	g_auto(GValue) x = G_VALUE_INIT;
+	gboolean is_array = value.isArray();
+
+	GType type = control_type_to_gtype(value.type());
+	if (type == G_TYPE_INVALID)
+		return -EINVAL;
+
+	if (is_array || type == GST_TYPE_ARRAY)
+		g_value_init(&v, GST_TYPE_ARRAY);
+
+	switch (value.type()) {
+	case ControlTypeBool:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const bool>>()) {
+				g_value_init(&x, type);
+				g_value_set_boolean(&x, item);
+				gst_value_array_append_and_take_value(&v, &x);
+			}
+		} else {
+			gst_structure_set(structure, prop.c_str(), G_TYPE_BOOLEAN,
+					  value.get<const bool>(), nullptr);
+		}
+		break;
+	case ControlTypeByte:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const uint8_t>>()) {
+				g_value_init(&x, type);
+				g_value_set_uint(&x, item);
+				gst_value_array_append_and_take_value(&v, &x);
+			}
+		} else {
+			gst_structure_set(structure, prop.c_str(), G_TYPE_UINT,
+					  value.get<const uint8_t>(), nullptr);
+		}
+		break;
+	case ControlTypeUnsigned16:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const uint16_t>>()) {
+				g_value_init(&x, type);
+				g_value_set_uint(&x, item);
+				gst_value_array_append_and_take_value(&v, &x);
+			}
+		} else {
+			gst_structure_set(structure, prop.c_str(), G_TYPE_UINT,
+					  value.get<const uint16_t>(), nullptr);
+		}
+		break;
+	case ControlTypeUnsigned32:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const uint32_t>>()) {
+				g_value_init(&x, type);
+				g_value_set_uint(&x, item);
+				gst_value_array_append_and_take_value(&v, &x);
+			}
+		} else {
+			gst_structure_set(structure, prop.c_str(), G_TYPE_UINT,
+					  value.get<const uint32_t>(), nullptr);
+		}
+		break;
+	case ControlTypeInteger32:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const int32_t>>()) {
+				g_value_init(&x, type);
+				g_value_set_int(&x, item);
+				gst_value_array_append_and_take_value(&v, &x);
+			}
+		} else {
+			if (!id->enumerators().empty()) {
+				int32_t val = value.get<int32_t>();
+				const auto &iter = id->enumerators().find(val);
+				if (iter != id->enumerators().end()) {
+					gst_structure_set(structure, prop.c_str(),
+							  G_TYPE_STRING,
+							  iter->second.c_str(),
+							  nullptr);
+				} else {
+					return -EINVAL;
+				}
+			} else {
+				gst_structure_set(structure, prop.c_str(), G_TYPE_INT,
+						  value.get<const int32_t>(), nullptr);
+			}
+		}
+		break;
+	case ControlTypeInteger64:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const int64_t>>()) {
+				g_value_init(&x, type);
+				g_value_set_int64(&x, item);
+				gst_value_array_append_and_take_value(&v, &x);
+			}
+		} else {
+			gst_structure_set(structure, prop.c_str(), G_TYPE_INT64,
+					  value.get<const int64_t>(), nullptr);
+		}
+		break;
+	case ControlTypeFloat:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const float>>()) {
+				g_value_init(&x, type);
+				g_value_set_float(&x, item);
+				gst_value_array_append_and_take_value(&v, &x);
+			}
+		} else {
+			gst_structure_set(structure, prop.c_str(), G_TYPE_FLOAT,
+					  value.get<const float>(), nullptr);
+		}
+		break;
+	case ControlTypeString:
+		/*
+		 * isArray() is always true for strings hence, unset the GValue
+		 * array because we are going to the toString() helper directly.
+		 */
+		g_value_unset(&v);
+		gst_structure_set(structure, prop.c_str(), G_TYPE_STRING,
+				  value.toString().c_str(), nullptr);
+		break;
+	case ControlTypeSize:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const Size>>())
+				gst_libcamera_gvalue_set_size(&v, item);
+		} else {
+			gst_libcamera_gvalue_set_size(&v, value.get<const Size>());
+		}
+		break;
+	case ControlTypePoint:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const Point>>())
+				gst_libcamera_gvalue_set_point(&v, item);
+		} else {
+			gst_libcamera_gvalue_set_point(&v, value.get<const Point>());
+		}
+		break;
+	case ControlTypeRectangle:
+		if (is_array) {
+			for (const auto &item : value.get<Span<const Rectangle>>())
+				gst_libcamera_gvalue_set_rectangle(&v, item);
+		} else {
+			gst_libcamera_gvalue_set_rectangle(&v, value.get<const Rectangle>());
+		}
+		break;
+	case ControlTypeNone:
+		[[fallthrough]];
+	default:
+		return -EINVAL;
+	}
+
+	if (GST_VALUE_HOLDS_ARRAY(&v))
+		gst_structure_set_value(structure, prop.c_str(), &v);
+
+	return 0;
 }

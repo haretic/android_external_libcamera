@@ -3,7 +3,7 @@
  * Copyright (C) 2020, Collabora Ltd.
  *     Author: Nicolas Dufresne <nicolas.dufresne@collabora.com>
  *
- * gstlibcamerapool.h - GStreamer Buffer Pool
+ * GStreamer Buffer Pool
  *
  * This is a partial implementation of GstBufferPool intended for internal use
  * only. This pool cannot be configured or activated.
@@ -14,6 +14,7 @@
 #include "gstlibcameraallocator.h"
 
 #include <gst/gst.h>
+#include <gst/video/video.h>
 
 #include <libcamera/stream.h>
 
@@ -21,7 +22,7 @@
 G_DECLARE_FINAL_TYPE(GstLibcameraPool, gst_libcamera_pool, GST_LIBCAMERA, POOL, GstBufferPool)
 
 GstLibcameraPool *gst_libcamera_pool_new(GstLibcameraAllocator *allocator,
-					 libcamera::Stream *stream);
+					 libcamera::Stream *stream, GstVideoInfo *info);
 
 libcamera::Stream *gst_libcamera_pool_get_stream(GstLibcameraPool *self);
 

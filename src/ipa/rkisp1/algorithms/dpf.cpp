@@ -2,14 +2,17 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * dpf.cpp - RkISP1 Denoise Pre-Filter control
+ * RkISP1 Denoise Pre-Filter control
  */
 
 #include "dpf.h"
 
-#include <cmath>
+#include <algorithm>
+#include <string>
+#include <vector>
 
 #include <libcamera/base/log.h>
+#include <libcamera/base/utils.h>
 
 #include <libcamera/control_ids.h>
 
@@ -43,7 +46,7 @@ Dpf::Dpf()
  * \copydoc libcamera::ipa::Algorithm::init
  */
 int Dpf::init([[maybe_unused]] IPAContext &context,
-	      const YamlObject &tuningData)
+	      const ValueNode &tuningData)
 {
 	std::vector<uint8_t> values;
 
@@ -51,7 +54,7 @@ int Dpf::init([[maybe_unused]] IPAContext &context,
 	 * The domain kernel is configured with a 9x9 kernel for the green
 	 * pixels, and a 13x9 or 9x9 kernel for red and blue pixels.
 	 */
-	const YamlObject &dFObject = tuningData["DomainFilter"];
+	const ValueNode &dFObject = tuningData["DomainFilter"];
 
 	/*
 	 * For the green component, we have the 9x9 kernel specified
@@ -70,7 +73,7 @@ int Dpf::init([[maybe_unused]] IPAContext &context,
 	 *    +---------|--------> X
 	 *     -4....-1 0 1 2 3 4
 	 */
-	values = dFObject["g"].getList<uint8_t>().value_or(std::vector<uint8_t>{});
+	values = dFObject["g"].get<std::vector<uint8_t>>().value_or(utils::defopt);
 	if (values.size() != RKISP1_CIF_ISP_DPF_MAX_SPATIAL_COEFFS) {
 		LOG(RkISP1Dpf, Error)
 			<< "Invalid 'DomainFilter:g': expected "
@@ -106,7 +109,7 @@ int Dpf::init([[maybe_unused]] IPAContext &context,
 	 * For a 9x9 kernel, columns -6 and 6 are dropped, so coefficient
 	 * number 6 is not used.
 	 */
-	values = dFObject["rb"].getList<uint8_t>().value_or(std::vector<uint8_t>{});
+	values = dFObject["rb"].get<std::vector<uint8_t>>().value_or(utils::defopt);
 	if (values.size() != RKISP1_CIF_ISP_DPF_MAX_SPATIAL_COEFFS &&
 	    values.size() != RKISP1_CIF_ISP_DPF_MAX_SPATIAL_COEFFS - 1) {
 		LOG(RkISP1Dpf, Error)
@@ -132,10 +135,10 @@ int Dpf::init([[maybe_unused]] IPAContext &context,
 	 * which stores a piecewise linear function that characterizes the
 	 * sensor noise profile as a noise level function curve (NLF).
 	 */
-	const YamlObject &rFObject = tuningData["NoiseLevelFunction"];
+	const ValueNode &rFObject = tuningData["NoiseLevelFunction"];
 
 	std::vector<uint16_t> nllValues;
-	nllValues = rFObject["coeff"].getList<uint16_t>().value_or(std::vector<uint16_t>{});
+	nllValues = rFObject["coeff"].get<std::vector<uint16_t>>().value_or(utils::defopt);
 	if (nllValues.size() != RKISP1_CIF_ISP_DPF_MAX_NLF_COEFFS) {
 		LOG(RkISP1Dpf, Error)
 			<< "Invalid 'RangeFilter:coeff': expected "
@@ -160,7 +163,7 @@ int Dpf::init([[maybe_unused]] IPAContext &context,
 		return -EINVAL;
 	}
 
-	const YamlObject &fSObject = tuningData["FilterStrength"];
+	const ValueNode &fSObject = tuningData["FilterStrength"];
 
 	strengthConfig_.r = fSObject["r"].get<uint16_t>(64);
 	strengthConfig_.g = fSObject["g"].get<uint16_t>(64);
@@ -215,15 +218,25 @@ void Dpf::queueRequest(IPAContext &context,
  * \copydoc libcamera::ipa::Algorithm::prepare
  */
 void Dpf::prepare(IPAContext &context, const uint32_t frame,
-		  IPAFrameContext &frameContext, rkisp1_params_cfg *params)
+		  IPAFrameContext &frameContext, RkISP1Params *params)
 {
-	if (frame == 0) {
-		params->others.dpf_config = config_;
-		params->others.dpf_strength_config = strengthConfig_;
+	if (!frameContext.dpf.update && frame > 0)
+		return;
+
+	auto config = params->block<BlockType::Dpf>();
+	config.setEnabled(frameContext.dpf.denoise);
+
+	auto strengthConfig = params->block<BlockType::DpfStrength>();
+	strengthConfig.setEnabled(frameContext.dpf.denoise);
+
+	if (frameContext.dpf.denoise) {
+		*config = config_;
+		*strengthConfig = strengthConfig_;
 
 		const auto &awb = context.configuration.awb;
-		const auto &lsc = context.configuration.lsc;
-		auto &mode = params->others.dpf_config.gain.mode;
+		const auto &lsc = context.activeState.lsc;
+
+		auto &mode = config->gain.mode;
 
 		/*
 		 * The DPF needs to take into account the total amount of
@@ -241,15 +254,6 @@ void Dpf::prepare(IPAContext &context, const uint32_t frame,
 			mode = RKISP1_CIF_ISP_DPF_GAIN_USAGE_LSC_GAINS;
 		else
 			mode = RKISP1_CIF_ISP_DPF_GAIN_USAGE_DISABLED;
-
-		params->module_cfg_update |= RKISP1_CIF_ISP_MODULE_DPF |
-					     RKISP1_CIF_ISP_MODULE_DPF_STRENGTH;
-	}
-
-	if (frameContext.dpf.update) {
-		params->module_en_update |= RKISP1_CIF_ISP_MODULE_DPF;
-		if (frameContext.dpf.denoise)
-			params->module_ens |= RKISP1_CIF_ISP_MODULE_DPF;
 	}
 }
 

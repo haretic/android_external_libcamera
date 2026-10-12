@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * ipa_data_serializer.cpp - Image Processing Algorithm data serializer
+ * Image Processing Algorithm data serializer
  */
 
 #include "libcamera/internal/ipa_data_serializer.h"
@@ -10,6 +10,8 @@
 #include <unistd.h>
 
 #include <libcamera/base/log.h>
+
+#include "libcamera/internal/byte_stream_buffer.h"
 
 /**
  * \file ipa_data_serializer.h
@@ -194,7 +196,6 @@ IPADataSerializer<type>::serialize(const type &data,			\
 				  [[maybe_unused]] ControlSerializer *cs) \
 {									\
 	std::vector<uint8_t> dataVec;					\
-	dataVec.reserve(sizeof(type));					\
 	appendPOD<type>(dataVec, data);					\
 									\
 	return { dataVec, {} };						\
@@ -537,7 +538,6 @@ IPADataSerializer<SharedFD>::serialize(const SharedFD &data,
 	if (data.isValid())
 		fdVec.push_back(data);
 
-
 	return { dataVec, fdVec };
 }
 
@@ -571,7 +571,6 @@ SharedFD IPADataSerializer<SharedFD>::deserialize(const std::vector<uint8_t> &da
  * 4 byte  - SharedFD
  * 4 bytes - uint32_t Offset
  * 4 bytes - uint32_t Length
- * 4 bytes - uint32_t Stride
  */
 template<>
 std::tuple<std::vector<uint8_t>, std::vector<SharedFD>>
@@ -590,7 +589,6 @@ IPADataSerializer<FrameBuffer::Plane>::serialize(const FrameBuffer::Plane &data,
 
 	appendPOD<uint32_t>(dataVec, data.offset);
 	appendPOD<uint32_t>(dataVec, data.length);
-	appendPOD<uint32_t>(dataVec, data.stride);
 
 	return { dataVec, fdsVec };
 }
@@ -606,10 +604,9 @@ IPADataSerializer<FrameBuffer::Plane>::deserialize(std::vector<uint8_t>::const_i
 	FrameBuffer::Plane ret;
 
 	ret.fd = IPADataSerializer<SharedFD>::deserialize(dataBegin, dataBegin + 4,
-								fdsBegin, fdsBegin + 1);
+							  fdsBegin, fdsBegin + 1);
 	ret.offset = readPOD<uint32_t>(dataBegin, 4, dataEnd);
 	ret.length = readPOD<uint32_t>(dataBegin, 8, dataEnd);
-	ret.stride = readPOD<uint32_t>(dataBegin, 12, dataEnd);
 
 	return ret;
 }

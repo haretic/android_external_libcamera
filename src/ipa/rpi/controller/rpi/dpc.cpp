@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * dpc.cpp - DPC (defective pixel correction) control algorithm
+ * DPC (defective pixel correction) control algorithm
  */
 
 #include <libcamera/base/log.h>
@@ -31,7 +31,7 @@ char const *Dpc::name() const
 	return NAME;
 }
 
-int Dpc::read(const libcamera::YamlObject &params)
+int Dpc::read(const libcamera::ValueNode &params)
 {
 	config_.strength = params["strength"].get<int>(1);
 	if (config_.strength < 0 || config_.strength > 2) {

@@ -11,6 +11,8 @@ formats:
       fourcc: DRM_FORMAT_R10
   - R12:
       fourcc: DRM_FORMAT_R12
+  - R16:
+      fourcc: DRM_FORMAT_R16
 
   - RGB565:
       fourcc: DRM_FORMAT_RGB565
@@ -40,6 +42,11 @@ formats:
       fourcc: DRM_FORMAT_RGBA8888
   - BGRA8888:
       fourcc: DRM_FORMAT_BGRA8888
+
+  - RGB161616:
+      fourcc: DRM_FORMAT_RGB161616
+  - BGR161616:
+      fourcc: DRM_FORMAT_BGR161616
 
   - YUYV:
       fourcc: DRM_FORMAT_YUYV
@@ -131,6 +138,9 @@ formats:
   - R10_CSI2P:
       fourcc: DRM_FORMAT_R10
       mod: MIPI_FORMAT_MOD_CSI2_PACKED
+  - R12_CSI2P:
+      fourcc: DRM_FORMAT_R12
+      mod: MIPI_FORMAT_MOD_CSI2_PACKED
 
   - SRGGB10_CSI2P:
       fourcc: DRM_FORMAT_SRGGB10
@@ -184,41 +194,19 @@ formats:
       fourcc: DRM_FORMAT_SBGGR10
       mod: IPU3_FORMAT_MOD_PACKED
 
-  - GREY:
-      fourcc: DRM_FORMAT_GREY
-  - SBGGR10_MTISP:
-      fourcc: DRM_FORMAT_MTISP_SBGGR10
-  - SGBRG10_MTISP:
-      fourcc: DRM_FORMAT_MTISP_SGBRG10
-  - SGRBG10_MTISP:
-      fourcc: DRM_FORMAT_MTISP_SGRBG10
-  - SRGGB10_MTISP:
-      fourcc: DRM_FORMAT_MTISP_SRGGB10
-  - NV12_10P_MTISP:
-      fourcc: DRM_FORMAT_MTISP_NV12_10P
-  - NV12_12P_MTISP:
-      fourcc: DRM_FORMAT_MTISP_NV12_12P
-  - MTFP_MTISP:
-      fourcc: DRM_FORMAT_MTISP_PARAMS
-  - MTFA_MTISP:
-      fourcc: DRM_FORMAT_MTISP_3A
-  - MTFF_MTISP:
-      fourcc: DRM_FORMAT_MTISP_AF
-  - MTFD_MTISP:
-      fourcc: DRM_FORMAT_MTISP_DESC
-  - MTFS_MTISP:
-      fourcc: DRM_FORMAT_MTISP_SD
-  - MTFR_MTISP:
-      fourcc: DRM_FORMAT_MTISP_DESC_NORM
-  - MTSR_MTISP:
-      fourcc: DRM_FORMAT_MTISP_SDNORM
-  - WARP2P_MTISP:
-      fourcc: DRM_FORMAT_MTISP_WARP2P
-  - Y8_MTISP:
-      fourcc: DRM_FORMAT_MTISP_Y8
-  - Y16_MTISP:
-      fourcc: DRM_FORMAT_MTISP_Y16
-  - Y32_MTISP:
-      fourcc: DRM_FORMAT_MTISP_Y32
-
+  - RGGB_PISP_COMP1:
+      fourcc: DRM_FORMAT_SRGGB16
+      mod: PISP_FORMAT_MOD_COMPRESS_MODE1
+  - GRBG_PISP_COMP1:
+      fourcc: DRM_FORMAT_SGRBG16
+      mod: PISP_FORMAT_MOD_COMPRESS_MODE1
+  - GBRG_PISP_COMP1:
+      fourcc: DRM_FORMAT_SGBRG16
+      mod: PISP_FORMAT_MOD_COMPRESS_MODE1
+  - BGGR_PISP_COMP1:
+      fourcc: DRM_FORMAT_SBGGR16
+      mod: PISP_FORMAT_MOD_COMPRESS_MODE1
+  - MONO_PISP_COMP1:
+      fourcc: DRM_FORMAT_R16
+      mod: PISP_FORMAT_MOD_COMPRESS_MODE1
 ...

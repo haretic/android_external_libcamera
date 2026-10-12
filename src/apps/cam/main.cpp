@@ -2,14 +2,19 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * main.cpp - cam - The libcamera swiss army knife
+ * cam - The libcamera swiss army knife
  */
+
+#include "main.h"
 
 #include <atomic>
 #include <iomanip>
 #include <iostream>
+#include <pthread.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/signalfd.h>
+#include <unistd.h>
 
 #include <libcamera/libcamera.h>
 #include <libcamera/property_ids.h>
@@ -19,7 +24,6 @@
 #include "../common/stream_options.h"
 
 #include "camera_session.h"
-#include "main.h"
 
 using namespace libcamera;
 
@@ -28,13 +32,10 @@ class CamApp
 public:
 	CamApp();
 
-	static CamApp *instance();
-
 	int init(int argc, char **argv);
 	void cleanup();
 
 	int exec();
-	void quit();
 
 private:
 	void cameraAdded(std::shared_ptr<Camera> cam);
@@ -45,8 +46,9 @@ private:
 
 	static std::string cameraName(const Camera *camera);
 
-	static CamApp *app_;
 	OptionsParser::Options options_;
+
+	UniqueFD signalFd_;
 
 	std::unique_ptr<CameraManager> cm_;
 
@@ -54,22 +56,34 @@ private:
 	EventLoop loop_;
 };
 
-CamApp *CamApp::app_ = nullptr;
-
 CamApp::CamApp()
 	: loopUsers_(0)
 {
-	CamApp::app_ = this;
-}
-
-CamApp *CamApp::instance()
-{
-	return CamApp::app_;
 }
 
 int CamApp::init(int argc, char **argv)
 {
+	sigset_t ss;
 	int ret;
+
+	sigemptyset(&ss);
+	sigaddset(&ss, SIGINT);
+
+	ret = -pthread_sigmask(SIG_BLOCK, &ss, nullptr);
+	if (ret < 0)
+		return ret;
+
+	signalFd_.reset(signalfd(-1, &ss, SFD_CLOEXEC | SFD_NONBLOCK));
+	if (!signalFd_.isValid())
+		return -errno;
+
+	loop_.addFdEvent(signalFd_.get(), EventLoop::Read, [this] {
+		signalfd_siginfo si;
+		std::ignore = read(signalFd_.get(), &si, sizeof(si));
+
+		std::cout << "Exiting" << std::endl;
+		loop_.exit();
+	});
 
 	ret = parseOptions(argc, argv);
 	if (ret < 0)
@@ -102,11 +116,6 @@ int CamApp::exec()
 	return ret;
 }
 
-void CamApp::quit()
-{
-	loop_.exit();
-}
-
 int CamApp::parseOptions(int argc, char *argv[])
 {
 	StreamKeyValueParser streamKeyValue;
@@ -117,6 +126,8 @@ int CamApp::parseOptions(int argc, char *argv[])
 			 ArgumentRequired, "camera", true);
 	parser.addOption(OptHelp, OptionNone, "Display this help message",
 			 "help");
+	parser.addOption(OptVersion, OptionNone, "Display libcamera version information",
+			 "version");
 	parser.addOption(OptInfo, OptionNone,
 			 "Display information about stream(s)", "info");
 	parser.addOption(OptList, OptionNone, "List all cameras", "list");
@@ -132,6 +143,11 @@ int CamApp::parseOptions(int argc, char *argv[])
 	parser.addOption(OptCapture, OptionInteger,
 			 "Capture until interrupted by user or until <count> frames captured",
 			 "capture", ArgumentOptional, "count", false,
+			 OptCamera);
+
+	parser.addOption(OptOrientation, OptionString,
+			 "Desired image orientation (rot0, rot180, mirror, flip)",
+			 "orientation", ArgumentRequired, "orientation", false,
 			 OptCamera);
 #ifdef HAVE_KMS
 	parser.addOption(OptDisplay, OptionString,
@@ -149,6 +165,8 @@ int CamApp::parseOptions(int argc, char *argv[])
 			 "If the file name ends with '.dng', then the frame will be written to\n"
 			 "the output file(s) in DNG format.\n"
 #endif
+			 "If the file name ends with '.ppm', then the frame will be written to\n"
+			 "the output file(s) in PPM format.\n"
 			 "The default file name is 'frame-#.bin'.",
 			 "file", ArgumentOptional, "filename", false,
 			 OptCamera);
@@ -181,6 +199,12 @@ int CamApp::parseOptions(int argc, char *argv[])
 		return options_.empty() ? -EINVAL : -EINTR;
 	}
 
+	if (options_.isSet(OptVersion)) {
+		const std::string &version = CameraManager::version();
+		std::cout << "libcamera version " << version << std::endl;
+		return -EINTR;
+	}
+
 	return 0;
 }
 
@@ -197,7 +221,7 @@ void CamApp::cameraRemoved(std::shared_ptr<Camera> cam)
 void CamApp::captureDone()
 {
 	if (--loopUsers_ == 0)
-		EventLoop::instance()->exit(0);
+		loop_.exit(0);
 }
 
 int CamApp::run()
@@ -329,18 +353,12 @@ std::string CamApp::cameraName(const Camera *camera)
 		 */
 		const auto &model = props.get(properties::Model);
 		if (model)
-			name = "'" + *model + "' ";
+			name.append("'").append(*model).append("' ");
 	}
 
 	name += "(" + camera->id() + ")";
 
 	return name;
-}
-
-void signalHandler([[maybe_unused]] int signal)
-{
-	std::cout << "Exiting" << std::endl;
-	CamApp::instance()->quit();
 }
 
 int main(int argc, char **argv)
@@ -351,10 +369,6 @@ int main(int argc, char **argv)
 	ret = app.init(argc, argv);
 	if (ret)
 		return ret == -EINTR ? 0 : EXIT_FAILURE;
-
-	struct sigaction sa = {};
-	sa.sa_handler = &signalHandler;
-	sigaction(SIGINT, &sa, nullptr);
 
 	if (app.exec())
 		return EXIT_FAILURE;

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Raspberry Pi Ltd
  *
- * device_status.cpp - device (image sensor) status
+ * device (image sensor) status
  */
 #include "device_status.h"
 
@@ -10,7 +10,7 @@ using namespace libcamera; /* for the Duration operator<< overload */
 
 std::ostream &operator<<(std::ostream &out, const DeviceStatus &d)
 {
-	out << "Exposure: " << d.shutterSpeed
+	out << "Exposure time: " << d.exposureTime
 	    << " Frame length: " << d.frameLength
 	    << " Line length: " << d.lineLength
 	    << " Gain: " << d.analogueGain;

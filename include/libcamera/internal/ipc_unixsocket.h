@@ -2,11 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * ipc_unixsocket.h - IPC mechanism based on Unix sockets
+ * IPC mechanism based on Unix sockets
  */
 
 #pragma once
 
+#include <memory>
 #include <stdint.h>
 #include <sys/types.h>
 #include <vector>
@@ -30,7 +31,6 @@ public:
 	~IPCUnixSocket();
 
 	UniqueFD create();
-	bool connectRemote(const std::string &socketName);
 	int bind(UniqueFD fd);
 	void close();
 	bool isBound() const;
@@ -39,9 +39,6 @@ public:
 	int receive(Payload *payload);
 
 	Signal<> readyRead;
-	EventNotifier *notifier_;
-
-	Signal<> disconnected;
 
 private:
 	struct Header {
@@ -53,11 +50,11 @@ private:
 	int recvData(void *buffer, size_t length, int32_t *fds, unsigned int num);
 
 	void dataNotifier();
-	void EventNotifierDisconnected();
 
 	UniqueFD fd_;
 	bool headerReceived_;
 	struct Header header_;
+	std::unique_ptr<EventNotifier> notifier_;
 };
 
 } /* namespace libcamera */

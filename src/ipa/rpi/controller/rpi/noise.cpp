@@ -2,10 +2,10 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * noise.cpp - Noise control algorithm
+ * Noise control algorithm
  */
 
-#include <math.h>
+#include <cmath>
 
 #include <libcamera/base/log.h>
 
@@ -41,7 +41,7 @@ void Noise::switchMode(CameraMode const &cameraMode,
 	modeFactor_ = std::max(1.0, cameraMode.noiseFactor);
 }
 
-int Noise::read(const libcamera::YamlObject &params)
+int Noise::read(const libcamera::ValueNode &params)
 {
 	auto value = params["reference_constant"].get<double>();
 	if (!value)
@@ -69,7 +69,7 @@ void Noise::prepare(Metadata *imageMetadata)
 		 * make some adjustments based on the camera mode (such as
 		 * binning), if we knew how to discover it...
 		 */
-		double factor = sqrt(deviceStatus.analogueGain) / modeFactor_;
+		double factor = std::sqrt(deviceStatus.analogueGain) / modeFactor_;
 		struct NoiseStatus status;
 		status.noiseConstant = referenceConstant_ * factor;
 		status.noiseSlope = referenceSlope_ * factor;

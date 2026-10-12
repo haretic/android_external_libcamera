@@ -11,6 +11,10 @@
 #include <variant>
 #include <vector>
 
+#include <libcamera/base/object.h>
+#include <libcamera/base/signal.h>
+#include <libcamera/base/thread.h>
+
 #include <libcamera/geometry.h>
 #include <libcamera/stream.h>
 
@@ -25,7 +29,9 @@ namespace libcamera {
 
 using VirtualFrame = std::variant<TestPattern, ImageFrames>;
 
-class VirtualCameraData : public Camera::Private
+class VirtualCameraData : public Camera::Private,
+			  public Thread,
+			  public Object
 {
 public:
 	const static unsigned int kMaxStream = 3;
@@ -37,6 +43,7 @@ public:
 	struct StreamConfig {
 		Stream stream;
 		std::unique_ptr<FrameGenerator> frameGenerator;
+		unsigned int seq = 0;
 	};
 	/* The config file is parsed to the Configuration struct */
 	struct Configuration {
@@ -53,9 +60,12 @@ public:
 
 	~VirtualCameraData() = default;
 
+	void processRequest(Request *request);
+
 	Configuration config_;
 
 	std::vector<StreamConfig> streamConfigs_;
+	Signal<FrameBuffer *> bufferCompleted;
 };
 
 } /* namespace libcamera */

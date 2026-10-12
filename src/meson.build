@@ -27,18 +27,26 @@ else
     ipa_sign_module = false
 endif
 
-# Build platform specific libs first as a dependency to libcamera
-platform_libs = []
-subdir('platform')
-
 # libyuv, used by the Android adaptation layer and the virtual pipeline handler.
 # Fallback to a subproject if libyuv isn't found, as it's typically not provided
-# by distributions.
-libyuv_dep = dependency('libyuv', required : false)
+# by distributions. Where libyuv is provided by a distribution, it may not
+# always supply a pkg-config implementation, requiring cxx.find_library() to
+# search for it.
+if not get_option('force_fallback_for').contains('libyuv')
+    libyuv_dep = dependency('libyuv', required : false)
+    if not libyuv_dep.found()
+        libyuv_dep = cxx.find_library('yuv', has_headers : 'libyuv.h',
+                                      required : false)
+    endif
+else
+    libyuv_dep = dependency('', required : false)
+endif
 
 if (pipelines.contains('virtual') or get_option('android').allowed()) and \
    not libyuv_dep.found()
     cmake = import('cmake')
+
+    libjpeg = dependency('libjpeg', required : true)
 
     libyuv_vars = cmake.subproject_options()
     libyuv_vars.add_cmake_defines({'CMAKE_POSITION_INDEPENDENT_CODE': 'ON'})
@@ -49,7 +57,21 @@ if (pipelines.contains('virtual') or get_option('android').allowed()) and \
          '-Wno-unused-parameter')
     libyuv_vars.append_link_args('-ljpeg')
     libyuv = cmake.subproject('libyuv', options : libyuv_vars)
-    libyuv_dep = libyuv.dependency('yuv')
+
+    # Meson fails to apply the -fPIC flag to static libraries produced by CMake
+    # that wraps other static libraries without adding any source file, despite
+    # setting CMAKE_POSITION_INDEPENDENT_CODE to ON. See
+    # https://github.com/mesonbuild/meson/issues/10764.
+    #
+    # Work around the issue by wrapping the libyuv static library into another
+    # static library with 'pic' set to true.
+    libyuv_static = static_library('libyuv-static',
+                                   dependencies : [libyuv.dependency('yuv'), libjpeg],
+                                   pic : true,
+                                   install : false)
+    libyuv_include = libyuv.include_directories('yuv')
+    libyuv_dep = declare_dependency(link_with : libyuv_static,
+                                    include_directories : libyuv_include)
 endif
 
 # libcamera must be built first as a dependency to the other components.

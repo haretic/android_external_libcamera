@@ -2,10 +2,15 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * awb.h - AWB control algorithm
+ * AWB control algorithm
  */
 
 #pragma once
+
+#include "libcamera/internal/vector.h"
+
+#include "libipa/awb.h"
+#include "libipa/interpolator.h"
 
 #include "algorithm.h"
 
@@ -19,20 +24,24 @@ public:
 	Awb();
 	~Awb() = default;
 
+	int init(IPAContext &context, const ValueNode &tuningData) override;
 	int configure(IPAContext &context, const IPACameraSensorInfo &configInfo) override;
 	void queueRequest(IPAContext &context, const uint32_t frame,
 			  IPAFrameContext &frameContext,
 			  const ControlList &controls) override;
 	void prepare(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
-		     rkisp1_params_cfg *params) override;
+		     RkISP1Params *params) override;
 	void process(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
 		     const rkisp1_stat_buffer *stats,
 		     ControlList &metadata) override;
 
 private:
-	uint32_t estimateCCT(double red, double green, double blue);
+	RGB<double> calculateRgbMeans(const IPAFrameContext &frameContext,
+				      const rkisp1_cif_isp_awb_stat *awb) const;
+
+	std::unique_ptr<AwbAlgorithm> awbAlgo_;
 
 	bool rgbMode_;
 };

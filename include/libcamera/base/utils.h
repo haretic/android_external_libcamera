@@ -2,24 +2,26 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * utils.h - Miscellaneous utility functions
+ * Miscellaneous utility functions
  */
 
 #pragma once
 
 #include <algorithm>
 #include <chrono>
+#include <functional>
 #include <iterator>
-#include <memory>
 #include <ostream>
 #include <sstream>
-#include <string>
+#include <stdint.h>
 #include <string.h>
+#include <string>
 #include <sys/time.h>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include <libcamera/base/class.h>
 #include <libcamera/base/private.h>
 
 #ifndef __DOXYGEN__
@@ -34,6 +36,15 @@
 namespace libcamera {
 
 namespace utils {
+
+template<class... Ts>
+struct overloaded : Ts... {
+	using Ts::operator()...;
+};
+#ifndef __DOXYGEN__
+template<class... Ts>
+overloaded(Ts...) -> overloaded<Ts...>;
+#endif
 
 const char *basename(const char *path);
 
@@ -75,45 +86,29 @@ using time_point = std::chrono::steady_clock::time_point;
 struct timespec duration_to_timespec(const duration &value);
 std::string time_point_to_string(const time_point &time);
 
-#ifndef __DOXYGEN__
-struct _hex {
+namespace details {
+
+struct hex {
 	uint64_t v;
 	unsigned int w;
 };
 
+template<typename T>
+constexpr unsigned int hex_width()
+{
+	return sizeof(T) * 2;
+}
+
 std::basic_ostream<char, std::char_traits<char>> &
-operator<<(std::basic_ostream<char, std::char_traits<char>> &stream, const _hex &h);
-#endif
+operator<<(std::basic_ostream<char, std::char_traits<char>> &stream, const hex &h);
 
-template<typename T,
-	 std::enable_if_t<std::is_integral<T>::value> * = nullptr>
-_hex hex(T value, unsigned int width = 0);
+} /* namespace details */
 
-#ifndef __DOXYGEN__
-template<>
-inline _hex hex<int32_t>(int32_t value, unsigned int width)
+template<typename T, std::enable_if_t<std::is_integral_v<T>> * = nullptr>
+details::hex hex(T value, unsigned int width = details::hex_width<T>())
 {
-	return { static_cast<uint64_t>(value), width ? width : 8 };
+	return { static_cast<std::make_unsigned_t<T>>(value), width };
 }
-
-template<>
-inline _hex hex<uint32_t>(uint32_t value, unsigned int width)
-{
-	return { static_cast<uint64_t>(value), width ? width : 8 };
-}
-
-template<>
-inline _hex hex<int64_t>(int64_t value, unsigned int width)
-{
-	return { static_cast<uint64_t>(value), width ? width : 16 };
-}
-
-template<>
-inline _hex hex<uint64_t>(uint64_t value, unsigned int width)
-{
-	return { static_cast<uint64_t>(value), width ? width : 16 };
-}
-#endif
 
 size_t strlcpy(char *dst, const char *src, size_t size);
 
@@ -124,14 +119,13 @@ std::string join(const Container &items, const std::string &sep, UnaryOp op)
 	std::ostringstream ss;
 	bool first = true;
 
-	for (typename Container::const_iterator it = std::begin(items);
-	     it != std::end(items); ++it) {
+	for (const auto &item : items) {
 		if (!first)
 			ss << sep;
 		else
 			first = false;
 
-		ss << op(*it);
+		ss << op(item);
 	}
 
 	return ss.str();
@@ -143,14 +137,13 @@ std::string join(const Container &items, const std::string &sep)
 	std::ostringstream ss;
 	bool first = true;
 
-	for (typename Container::const_iterator it = std::begin(items);
-	     it != std::end(items); ++it) {
+	for (const auto &item : items) {
 		if (!first)
 			ss << sep;
 		else
 			first = false;
 
-		ss << *it;
+		ss << item;
 	}
 
 	return ss.str();
@@ -180,7 +173,16 @@ public:
 
 		iterator &operator++();
 		std::string operator*() const;
-		bool operator!=(const iterator &other) const;
+
+		bool operator==(const iterator &other) const
+		{
+			return pos_ == other.pos_;
+		}
+
+		bool operator!=(const iterator &other) const
+		{
+			return !(*this == other);
+		}
 
 	private:
 		const StringSplitter *ss_;
@@ -188,8 +190,15 @@ public:
 		std::string::size_type next_;
 	};
 
-	iterator begin() const;
-	iterator end() const;
+	iterator begin() const
+	{
+		return { this, 0 };
+	}
+
+	iterator end() const
+	{
+		return { this, std::string::npos };
+	}
 
 private:
 	std::string str_;
@@ -313,18 +322,10 @@ private:
 } /* namespace details */
 
 template<typename T>
-auto enumerate(T &iterable) -> details::enumerate_adapter<decltype(iterable.begin())>
+auto enumerate(T &iterable)
 {
-	return { std::begin(iterable), std::end(iterable) };
+	return details::enumerate_adapter{ std::begin(iterable), std::end(iterable) };
 }
-
-#ifndef __DOXYGEN__
-template<typename T, size_t N>
-auto enumerate(T (&iterable)[N]) -> details::enumerate_adapter<T *>
-{
-	return { std::begin(iterable), std::end(iterable) };
-}
-#endif
 
 class Duration : public std::chrono::duration<double, std::nano>
 {
@@ -348,8 +349,13 @@ public:
 	template<typename Period>
 	double get() const
 	{
-		auto const c = std::chrono::duration_cast<std::chrono::duration<double, Period>>(*this);
+		const auto c = std::chrono::duration_cast<std::chrono::duration<double, Period>>(*this);
 		return c.count();
+	}
+
+	constexpr Duration operator-() const
+	{
+		return BaseDuration::operator-();
 	}
 
 	explicit constexpr operator bool() const
@@ -369,12 +375,80 @@ decltype(auto) abs_diff(const T &a, const T &b)
 
 double strtod(const char *__restrict nptr, char **__restrict endptr);
 
-} /* namespace utils */
+template<class Enum>
+constexpr std::underlying_type_t<Enum> to_underlying(Enum e) noexcept
+{
+	return static_cast<std::underlying_type_t<Enum>>(e);
+}
+
+class ScopeExitActions
+{
+public:
+	~ScopeExitActions();
+
+	void operator+=(std::function<void()> &&action);
+	void release();
+
+private:
+	std::vector<std::function<void()>> actions_;
+};
 
 #ifndef __DOXYGEN__
-template<class CharT, class Traits>
-std::basic_ostream<CharT, Traits> &operator<<(std::basic_ostream<CharT, Traits> &os,
-					      const utils::Duration &d);
+template<typename EF>
+class scope_exit
+{
+public:
+	template<typename Fn,
+		 std::enable_if_t<!std::is_same_v<std::remove_cv_t<std::remove_reference_t<Fn>>, scope_exit> &&
+				  std::is_constructible_v<EF, Fn>> * = nullptr>
+	explicit scope_exit(Fn &&fn)
+		: exitFunction_(std::forward<Fn>(fn))
+	{
+		static_assert(std::is_nothrow_constructible_v<EF, Fn>);
+	}
+
+	~scope_exit()
+	{
+		if (active_)
+			exitFunction_();
+	}
+
+	void release()
+	{
+		active_ = false;
+	}
+
+private:
+	LIBCAMERA_DISABLE_COPY_AND_MOVE(scope_exit)
+
+	EF exitFunction_;
+	bool active_ = true;
+};
+
+template<typename EF>
+scope_exit(EF) -> scope_exit<EF>;
+
+#endif /* __DOXYGEN__ */
+
+namespace details {
+
+struct defopt_t {
+	template<typename T>
+	constexpr operator T() const
+	{
+		static_assert(std::is_default_constructible_v<T>);
+		return T{};
+	}
+};
+
+} /* namespace details */
+
+constexpr details::defopt_t defopt;
+
+#ifndef __DOXYGEN__
+std::ostream &operator<<(std::ostream &os, const Duration &d);
 #endif
+
+} /* namespace utils */
 
 } /* namespace libcamera */

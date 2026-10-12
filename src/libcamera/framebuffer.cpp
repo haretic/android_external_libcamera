@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * framebuffer.cpp - Frame buffer handling
+ * Frame buffer handling
  */
 
 #include <libcamera/framebuffer.h>
@@ -16,7 +16,10 @@
 /**
  * \file libcamera/framebuffer.h
  * \brief Frame buffer handling
- *
+ */
+
+/**
+ * \internal
  * \file libcamera/internal/framebuffer.h
  * \brief Internal frame buffer handling support
  */
@@ -40,12 +43,19 @@ LOG_DEFINE_CATEGORY(Buffer)
  * The frame has been captured with success and contains valid data. All fields
  * of the FrameMetadata structure are valid.
  * \var FrameMetadata::FrameError
- * An error occurred during capture of the frame. The frame data may be partly
- * or fully invalid. The sequence and timestamp fields of the FrameMetadata
- * structure is valid, the other fields may be invalid.
+ * The frame data is partly or fully corrupted, missing or otherwise invalid.
+ * This can for instance indicate a hardware transmission error, or invalid data
+ * produced by the sensor during its startup phase. The sequence and timestamp
+ * fields of the FrameMetadata structure is valid, all the other fields may be
+ * invalid.
  * \var FrameMetadata::FrameCancelled
  * Capture stopped before the frame completed. The frame data is not valid. All
  * fields of the FrameMetadata structure but the status field are invalid.
+ * \var FrameMetadata::FrameStartup
+ * The frame has been successfully captured. However, the IPA is in a
+ * cold-start or reset phase and will result in image quality parameters
+ * producing unusable images. Applications are recommended to not consume these
+ * frames. All other fields of the FrameMetadata structure are valid.
  */
 
 /**
@@ -104,6 +114,7 @@ LOG_DEFINE_CATEGORY(Buffer)
  * \return The array of per-plane metadata
  */
 
+#ifndef __DOXYGEN_PUBLIC__
 /**
  * \class FrameBuffer::Private
  * \brief Base class for FrameBuffer private data
@@ -119,9 +130,9 @@ LOG_DEFINE_CATEGORY(Buffer)
  * \param[in] planes The frame memory planes
  * \param[in] cookie Cookie
  */
-FrameBuffer::Private::Private(const std::vector<Plane> &planes, uint64_t cookie)
-	: planes_(planes), cookie_(cookie), request_(nullptr),
-	  isContiguous_(true)
+FrameBuffer::Private::Private(Span<const Plane> planes, uint64_t cookie)
+	: planes_(planes.begin(), planes.end()), cookie_(cookie),
+	  request_(nullptr), isContiguous_(true)
 {
 	metadata_.planes_.resize(planes_.size());
 }
@@ -206,6 +217,7 @@ FrameBuffer::Private::~Private()
  * \brief Retrieve the dynamic metadata
  * \return Dynamic metadata for the frame contained in the buffer
  */
+#endif /* __DOXYGEN_PUBLIC__ */
 
 /**
  * \class FrameBuffer
@@ -224,12 +236,6 @@ FrameBuffer::Private::~Private()
  * during the processing of a queued capture request, and is valid from the
  * completion of the buffer as signaled by Camera::bufferComplete() until the
  * FrameBuffer is either reused in a new request or deleted.
- *
- * The creator of a FrameBuffer (application, IPA or pipeline handler) may
- * associate to it an integer cookie for any private purpose. The cookie may be
- * set when creating the FrameBuffer, and updated at any time with setCookie().
- * The cookie is transparent to the libcamera core and shall only be set by the
- * creator of the FrameBuffer. This mechanism supplements the Request cookie.
  */
 
 /**
@@ -303,7 +309,7 @@ ino_t fileDescriptorInode(const SharedFD &fd)
  * \param[in] planes The frame memory planes
  * \param[in] cookie Cookie
  */
-FrameBuffer::FrameBuffer(const std::vector<Plane> &planes, unsigned int cookie)
+FrameBuffer::FrameBuffer(Span<const Plane> planes, unsigned int cookie)
 	: FrameBuffer(std::make_unique<Private>(planes, cookie))
 {
 }
@@ -353,7 +359,7 @@ FrameBuffer::FrameBuffer(std::unique_ptr<Private> d)
  * \brief Retrieve the static plane descriptors
  * \return Array of plane descriptors
  */
-const std::vector<FrameBuffer::Plane> &FrameBuffer::planes() const
+Span<const FrameBuffer::Plane> FrameBuffer::planes() const
 {
 	return _d()->planes_;
 }
@@ -387,12 +393,7 @@ const FrameMetadata &FrameBuffer::metadata() const
 
 /**
  * \brief Retrieve the cookie
- *
- * The cookie belongs to the creator of the FrameBuffer, which controls its
- * lifetime and value.
- *
  * \sa setCookie()
- *
  * \return The cookie
  */
 uint64_t FrameBuffer::cookie() const
@@ -404,10 +405,24 @@ uint64_t FrameBuffer::cookie() const
  * \brief Set the cookie
  * \param[in] cookie Cookie to set
  *
- * The cookie belongs to the creator of the FrameBuffer. Its value may be
- * modified at any time with this function. Applications and IPAs shall not
- * modify the cookie value of buffers they haven't created themselves. The
- * libcamera core never modifies the buffer cookie.
+ * The creator (and only the creator) of the FrameBuffer may store an arbitrary
+ * 64-bit integer value in the FrameBuffer, this value is called the cookie.
+ * It may be retrieved or set at any time, and is guaranteed not to be modified
+ * by the libcamera core. This mechanism is similar to the \ref Request cookie.
+ *
+ * An application using a \ref FrameBufferAllocator is considered to be the creator
+ * of the allocated FrameBuffer objects, and thus it may manage the cookie as it
+ * sees fit.
+ *
+ * \internal
+ * Similar rules apply to pipeline handlers and IPA modules, that is, they can
+ * only manage the cookies of FrameBuffer objects that they have created, with
+ * the exception that any FrameBuffer returned by
+ * \ref PipelineHandler::exportFrameBuffers() is considered to have been created
+ * by the application, and thus its cookie shall not be modified.
+ * \endinternal
+ *
+ * \sa cookie()
  */
 void FrameBuffer::setCookie(uint64_t cookie)
 {

@@ -2,13 +2,15 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * agc_status.h - AGC/AEC control algorithm status
+ * AGC/AEC control algorithm status
  */
 #pragma once
 
 #include <string>
 
 #include <libcamera/base/utils.h>
+
+#include "hdr_status.h"
 
 /*
  * The AGC algorithm process method should post an AgcStatus into the image
@@ -26,20 +28,21 @@
 struct AgcStatus {
 	libcamera::utils::Duration totalExposureValue; /* value for all exposure and gain for this image */
 	libcamera::utils::Duration targetExposureValue; /* (unfiltered) target total exposure AGC is aiming for */
-	libcamera::utils::Duration shutterTime;
+	libcamera::utils::Duration exposureTime;
 	double analogueGain;
+	double digitalGain;
 	std::string exposureMode;
 	std::string constraintMode;
 	std::string meteringMode;
 	double ev;
 	libcamera::utils::Duration flickerPeriod;
 	int floatingRegionEnable;
-	libcamera::utils::Duration fixedShutter;
-	double fixedAnalogueGain;
+	libcamera::utils::Duration fixedExposureTime;
+	double fixedGain;
 	unsigned int channel;
+	HdrStatus hdr;
 };
 
 struct AgcPrepareStatus {
-	double digitalGain;
 	int locked;
 };

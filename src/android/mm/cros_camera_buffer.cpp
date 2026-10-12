@@ -2,14 +2,14 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * cros_camera_buffer.cpp - Chromium OS buffer backend using CameraBufferManager
+ * Chromium OS buffer backend using CameraBufferManager
  */
 
 #include "../camera_buffer.h"
 
 #include <libcamera/base/log.h>
 
-#include "camera_buffer_manager.h"
+#include "cros-camera/camera_buffer_manager.h"
 
 using namespace libcamera;
 
@@ -40,7 +40,7 @@ public:
 private:
 	void map();
 
-	crosLibcamera::CameraBufferManager *bufferManager_;
+	cros::CameraBufferManager *bufferManager_;
 	buffer_handle_t handle_;
 	unsigned int numPlanes_;
 	bool mapped_;
@@ -59,7 +59,7 @@ CameraBuffer::Private::Private([[maybe_unused]] CameraBuffer *cameraBuffer,
 	: handle_(camera3Buffer), numPlanes_(0), mapped_(false),
 	  registered_(false)
 {
-	bufferManager_ = crosLibcamera::CameraBufferManager::GetInstance();
+	bufferManager_ = cros::CameraBufferManager::GetInstance();
 	if (!bufferManager_) {
 		LOG(HAL, Fatal)
 			<< "Failed to get cros CameraBufferManager instance";
@@ -132,17 +132,17 @@ Span<uint8_t> CameraBuffer::Private::plane(unsigned int plane)
 
 unsigned int CameraBuffer::Private::stride(unsigned int plane) const
 {
-	return crosLibcamera::CameraBufferManager::GetPlaneStride(handle_, plane);
+	return cros::CameraBufferManager::GetPlaneStride(handle_, plane);
 }
 
 unsigned int CameraBuffer::Private::offset(unsigned int plane) const
 {
-	return crosLibcamera::CameraBufferManager::GetPlaneOffset(handle_, plane);
+	return cros::CameraBufferManager::GetPlaneOffset(handle_, plane);
 }
 
 unsigned int CameraBuffer::Private::size(unsigned int plane) const
 {
-	return crosLibcamera::CameraBufferManager::GetPlaneSize(handle_, plane);
+	return cros::CameraBufferManager::GetPlaneSize(handle_, plane);
 }
 
 size_t CameraBuffer::Private::jpegBufferSize([[maybe_unused]] size_t maxJpegBufferSize) const

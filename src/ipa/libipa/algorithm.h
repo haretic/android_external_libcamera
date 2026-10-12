@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Ideas On Board
  *
- * algorithm.h - ISP control algorithm interface
+ * ISP control algorithm interface
  */
 #pragma once
 
@@ -14,7 +14,7 @@
 
 namespace libcamera {
 
-class YamlObject;
+class ValueNode;
 
 namespace ipa {
 
@@ -27,7 +27,7 @@ public:
 	virtual ~Algorithm() {}
 
 	virtual int init([[maybe_unused]] typename Module::Context &context,
-			 [[maybe_unused]] const YamlObject &tuningData)
+			 [[maybe_unused]] const ValueNode &tuningData)
 	{
 		return 0;
 	}

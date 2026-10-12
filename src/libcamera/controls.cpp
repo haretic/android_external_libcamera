@@ -2,16 +2,14 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * controls.cpp - Control handling
+ * Control handling
  */
 
 #include <libcamera/controls.h>
 
-#include <cstdint>
-#include <iomanip>
 #include <sstream>
-#include <string>
 #include <string.h>
+#include <string>
 
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
@@ -56,7 +54,7 @@ static constexpr size_t ControlValueSize[] = {
 	[ControlTypeNone]		= 0,
 	[ControlTypeBool]		= sizeof(bool),
 	[ControlTypeByte]		= sizeof(uint8_t),
-	[ControlTypeUnsigned16]         = sizeof(uint16_t),
+	[ControlTypeUnsigned16]		= sizeof(uint16_t),
 	[ControlTypeUnsigned32]		= sizeof(uint32_t),
 	[ControlTypeInteger32]		= sizeof(int32_t),
 	[ControlTypeInteger64]		= sizeof(int64_t),
@@ -412,8 +410,22 @@ void ControlValue::reserve(ControlType type, bool isArray, std::size_t numElemen
  * \brief Construct a ControlId instance
  * \param[in] id The control numerical ID
  * \param[in] name The control name
+ * \param[in] vendor The vendor name
  * \param[in] type The control data type
+ * \param[in] direction The direction of the control, if it can be used in Controls or Metadata
+ * \param[in] size The size of the array control, or 0 if scalar control
+ * \param[in] enumStrMap The map from enum names to values (optional)
  */
+ControlId::ControlId(unsigned int id, const std::string &name,
+		     const std::string &vendor, ControlType type,
+		     DirectionFlags direction, std::size_t size,
+		     const std::map<std::string, int32_t> &enumStrMap)
+	: id_(id), name_(name), vendor_(vendor), type_(type),
+	  direction_(direction), size_(size), enumStrMap_(enumStrMap)
+{
+	for (const auto &pair : enumStrMap_)
+		reverseMap_[pair.second] = pair.first;
+}
 
 /**
  * \fn unsigned int ControlId::id() const
@@ -428,9 +440,65 @@ void ControlValue::reserve(ControlType type, bool isArray, std::size_t numElemen
  */
 
 /**
+ * \fn const std::string &ControlId::vendor() const
+ * \brief Retrieve the vendor name
+ * \return The vendor name, as a string
+ */
+
+/**
  * \fn ControlType ControlId::type() const
  * \brief Retrieve the control data type
  * \return The control data type
+ */
+
+/**
+ * \fn DirectionFlags ControlId::direction() const
+ * \brief Return the direction that the control can be used in
+ *
+ * This is similar to \sa isInput() and \sa isOutput(), but returns the flags
+ * direction instead of booleans for each direction.
+ *
+ * \return The direction flags corresponding to if the control can be used as
+ * an input control or as output metadata
+ */
+
+/**
+ * \fn bool ControlId::isInput() const
+ * \brief Determine if the control is available to be used as an input control
+ *
+ * Controls can be used either as input in controls, or as output in metadata.
+ * This function checks if the control is allowed to be used as the former.
+ *
+ * \return True if the control can be used as an input control, false otherwise
+ */
+
+/**
+ * \fn bool ControlId::isOutput() const
+ * \brief Determine if the control is available to be used in output metadata
+ *
+ * Controls can be used either as input in controls, or as output in metadata.
+ * This function checks if the control is allowed to be used as the latter.
+ *
+ * \return True if the control can be returned in output metadata, false otherwise
+ */
+
+/**
+ * \fn bool ControlId::isArray() const
+ * \brief Determine if the control is an array control
+ * \return True if the control is an array control, false otherwise
+ */
+
+/**
+ * \fn std::size_t ControlId::size() const
+ * \brief Retrieve the size of the control if it is an array control
+ * \return The size of the array control, size_t::max for dynamic extent, or 0
+ * for non-array
+ */
+
+/**
+ * \fn const std::map<int32_t, std::string> &ControlId::enumerators() const
+ * \brief Retrieve the map of enum values to enum names
+ * \return The map of enum values to enum names
  */
 
 /**
@@ -449,6 +517,22 @@ void ControlValue::reserve(ControlType type, bool isArray, std::size_t numElemen
  * \param[in] rhs Right-hand side numerical ID
  *
  * \return True if \a lhs.id() is equal to \a rhs, false otherwise
+ */
+
+/**
+ * \enum ControlId::Direction
+ * \brief The direction the control is capable of being passed from/to
+ *
+ * \var ControlId::Direction::In
+ * \brief The control can be passed as input in controls
+ *
+ * \var ControlId::Direction::Out
+ * \brief The control can be returned as output in metadata
+ */
+
+/**
+ * \typedef ControlId::DirectionFlags
+ * \brief A wrapper for ControlId::Direction so that it can be used as flags
  */
 
 /**
@@ -479,10 +563,14 @@ void ControlValue::reserve(ControlType type, bool isArray, std::size_t numElemen
  */
 
 /**
- * \fn Control::Control(unsigned int id, const char *name)
+ * \fn Control::Control(unsigned int id, const char *name, const char *vendor)
  * \brief Construct a Control instance
  * \param[in] id The control numerical ID
  * \param[in] name The control name
+ * \param[in] vendor The vendor name
+ * \param[in] direction The direction of the control, if it can be used in
+ * Controls or Metadata
+ * \param[in] enumStrMap The map from enum names to values (optional)
  *
  * The control data type is automatically deduced from the template type T.
  */
@@ -535,35 +623,6 @@ ControlInfo::ControlInfo(Span<const ControlValue> values,
 	values_.reserve(values.size());
 	for (const ControlValue &value : values)
 		values_.push_back(value);
-}
-
-/**
- * \brief Construct a boolean ControlInfo with both boolean values
- * \param[in] values The control valid boolean values (both true and false)
- * \param[in] def The control default boolean value
- *
- * Construct a ControlInfo for a boolean control, where both true and false are
- * valid values. \a values must be { false, true } (the order is irrelevant).
- * The minimum value will always be false, and the maximum always true. The
- * default value is \a def.
- */
-ControlInfo::ControlInfo(std::set<bool> values, bool def)
-	: min_(false), max_(true), def_(def), values_({ false, true })
-{
-	ASSERT(values.count(def) && values.size() == 2);
-}
-
-/**
- * \brief Construct a boolean ControlInfo with only one valid value
- * \param[in] value The control valid boolean value
- *
- * Construct a ControlInfo for a boolean control, where there is only valid
- * value. The minimum, maximum, and default values will all be \a value.
- */
-ControlInfo::ControlInfo(bool value)
-	: min_(value), max_(value), def_(value)
-{
-	values_ = { value };
 }
 
 /**
@@ -769,15 +828,7 @@ const ControlInfoMap::mapped_type &ControlInfoMap::at(unsigned int id) const
  */
 ControlInfoMap::size_type ControlInfoMap::count(unsigned int id) const
 {
-	if (!idmap_)
-		return 0;
-
-	/*
-	 * The ControlInfoMap and its idmap have a 1:1 mapping between their
-	 * entries, we can thus just count the matching entries in idmap to
-	 * avoid an additional lookup.
-	 */
-	return idmap_->count(id);
+	return find(id) != end();
 }
 
 /**

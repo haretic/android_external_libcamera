@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * event_notifier.h - File descriptor event notifier
+ * File descriptor event notifier
  */
 
 #pragma once
@@ -35,7 +35,6 @@ public:
 	void setEnabled(bool enable);
 
 	Signal<> activated;
-	Signal<> disconnected;
 
 protected:
 	void message(Message *msg) override;

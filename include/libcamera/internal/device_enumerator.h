@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * device_enumerator.h - API to enumerate and find media devices
+ * API to enumerate and find media devices
  */
 
 #pragma once
@@ -11,9 +11,8 @@
 #include <string>
 #include <vector>
 
+#include <libcamera/base/regex.h>
 #include <libcamera/base/signal.h>
-
-#include "libcamera/internal/media_device.h"
 
 namespace libcamera {
 
@@ -25,12 +24,14 @@ public:
 	DeviceMatch(const std::string &driver);
 
 	void add(const std::string &entity);
+	void add(std::regex entity);
 
 	bool match(const MediaDevice *device) const;
 
 private:
 	std::string driver_;
 	std::vector<std::string> entities_;
+	std::vector<std::regex> entityRegexs_;
 };
 
 class DeviceEnumerator

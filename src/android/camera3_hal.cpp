@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * camera3_hal.cpp - Android Camera HALv3 module
+ * Android Camera HALv3 module
  */
 
 #include <hardware/camera_common.h>
@@ -11,7 +11,6 @@
 
 #include "camera_device.h"
 #include "camera_hal_manager.h"
-#include "vendor_tag.h"
 
 using namespace libcamera;
 
@@ -89,11 +88,6 @@ static int hal_dev_open(const hw_module_t *module, const char *name,
 	return 0;
 }
 
-static void get_vendor_tag_ops([[maybe_unused]] vendor_tag_ops_t* ops)
-{
-	*ops = hal_vendor_tag_ops;
-}
-
 static struct hw_module_methods_t hal_module_methods = {
 	.open = hal_dev_open,
 };
@@ -114,7 +108,7 @@ camera_module_t HAL_MODULE_INFO_SYM = {
 	.get_number_of_cameras = hal_get_number_of_cameras,
 	.get_camera_info = hal_get_camera_info,
 	.set_callbacks = hal_set_callbacks,
-	.get_vendor_tag_ops = get_vendor_tag_ops,
+	.get_vendor_tag_ops = nullptr,
 	.open_legacy = hal_open_legacy,
 	.set_torch_mode = hal_set_torch_mode,
 	.init = hal_init,

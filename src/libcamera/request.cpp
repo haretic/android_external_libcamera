@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * request.cpp - Capture request handling
+ * Capture request handling
  */
 
 #include "libcamera/internal/request.h"
@@ -28,10 +28,17 @@
  * \brief Describes a frame capture request to be processed by a camera
  */
 
+/**
+ * \internal
+ * \file libcamera/internal/request.h
+ * \brief Internal support for request handling
+ */
+
 namespace libcamera {
 
 LOG_DEFINE_CATEGORY(Request)
 
+#ifndef __DOXYGEN_PUBLIC__
 /**
  * \class Request::Private
  * \brief Request private data
@@ -46,9 +53,11 @@ LOG_DEFINE_CATEGORY(Request)
 /**
  * \brief Create a Request::Private
  * \param camera The Camera that creates the request
+ *
+ * \todo Add a validator for metadata controls.
  */
 Request::Private::Private(Camera *camera)
-	: camera_(camera), cancelled_(false)
+	: camera_(camera), cancelled_(false), metadata_(controls::controls)
 {
 }
 
@@ -65,15 +74,18 @@ Request::Private::~Private()
  */
 
 /**
+ * \fn Request::Private::hasPendingBuffers()
  * \brief Check if a request has buffers yet to be completed
  *
  * \return True if the request has buffers pending for completion, false
  * otherwise
  */
-bool Request::Private::hasPendingBuffers() const
-{
-	return !pending_.empty();
-}
+
+/**
+ * \fn Request::Private::metadata()
+ * \brief Retrieve the request's metadata
+ * \return The metadata associated with the request
+ */
 
 /**
  * \brief Complete a buffer for the request
@@ -126,10 +138,15 @@ void Request::Private::complete()
 
 void Request::Private::doCancelRequest()
 {
-	for (FrameBuffer *buffer : pending_)
+	Request *request = _o<Request>();
+
+	for (FrameBuffer *buffer : pending_) {
 		buffer->_d()->cancel();
+		camera_->bufferCompleted.emit(request, buffer);
+	}
 
 	cancelled_ = true;
+	pending_.clear();
 	notifiers_.clear();
 	timer_.reset();
 }
@@ -139,8 +156,8 @@ void Request::Private::doCancelRequest()
  *
  * Mark the request and its associated buffers as cancelled and complete it.
  *
- * Set each pending buffer in error state. The pipeline handler shall complete
- * the cancelled buffers to notice the application.
+ * Set each pending buffer in error state and emit the buffer completion signal
+ * before completing the Request.
  */
 void Request::Private::cancel()
 {
@@ -166,7 +183,6 @@ void Request::Private::reset()
 	pending_.clear();
 	notifiers_.clear();
 	timer_.reset();
-	notifiedMetadata_.clear();
 }
 
 /*
@@ -217,15 +233,12 @@ void Request::Private::prepare(std::chrono::milliseconds timeout)
 		if (!fence)
 			continue;
 
-		std::unique_ptr<EventNotifier> notifier =
-			std::make_unique<EventNotifier>(fence->fd().get(),
-							EventNotifier::Read);
+		auto [it, inserted] = notifiers_.try_emplace(buffer, fence->fd().get(), EventNotifier::Type::Read);
+		ASSERT(inserted);
 
-		notifier->activated.connect(this, [this, buffer] {
-							notifierActivated(buffer);
-					    });
-
-		notifiers_[buffer] = std::move(notifier);
+		it->second.activated.connect(this, [this, buffer] {
+			notifierActivated(buffer);
+		});
 	}
 
 	if (notifiers_.empty()) {
@@ -258,33 +271,6 @@ void Request::Private::prepare(std::chrono::milliseconds timeout)
  * function which queues Request after they have been prepared or cancel them
  * if they have failed preparing.
  */
-
-/**
- * \brief Accumulate metadata keys and compute a list of not yet notified metadata
- * \param[in] metadata The completed metadata list
- *
- * Accumulate the metadata keys from \a metadata in an internal list of completed
- * metadata and compute a list of metadata that has not yet been notified to the
- * application.
- *
- * A metadata can only be notified once and gets ignored if completed multiple
- * times.
- *
- * \return A ControlList of metadata that hasn't been notified to the
- * application yet
- */
-ControlList Request::Private::recordAndGetUnnotifiedMetadata(const ControlList &metadata)
-{
-	ControlList resultMetadata;
-	for (auto &[id, value] : metadata) {
-		if (!notifiedMetadata_.count(id)) {
-			resultMetadata.set(id, value);
-			notifiedMetadata_.emplace(id);
-		}
-	}
-
-	return resultMetadata;
-}
 
 void Request::Private::notifierActivated(FrameBuffer *buffer)
 {
@@ -323,6 +309,7 @@ void Request::Private::timeout()
 
 	emitPrepareCompleted();
 }
+#endif /* __DOXYGEN_PUBLIC__ */
 
 /**
  * \enum Request::Status
@@ -342,16 +329,14 @@ void Request::Private::timeout()
  * Don't reuse buffers
  * \var Request::ReuseBuffers
  * Reuse the buffers that were previously added by addBuffer()
+ *
+ * \note Fences associated with the buffers are not reused.
+ *  This flag should not be used if fences are used.
  */
 
 /**
  * \typedef Request::BufferMap
  * \brief A map of Stream to FrameBuffer pointers
- */
-
-/**
- * \typedef Request::ResultList
- * \brief A list of partial results associated with a request
  */
 
 /**
@@ -374,16 +359,9 @@ void Request::Private::timeout()
  */
 Request::Request(Camera *camera, uint64_t cookie)
 	: Extensible(std::make_unique<Private>(camera)),
+	  controls_(camera->controls(), camera->_d()->validator()),
 	  cookie_(cookie), status_(RequestPending)
 {
-	controls_ = new ControlList(controls::controls,
-				    camera->_d()->validator());
-
-	/**
-	 * \todo Add a validator for metadata controls.
-	 */
-	metadata_ = new ControlList(controls::controls);
-
 	LIBCAMERA_TRACEPOINT(request_construct, this);
 
 	LOG(Request, Debug) << "Created request - cookie: " << cookie_;
@@ -392,9 +370,6 @@ Request::Request(Camera *camera, uint64_t cookie)
 Request::~Request()
 {
 	LIBCAMERA_TRACEPOINT(request_destroy, this);
-
-	delete metadata_;
-	delete controls_;
 }
 
 /**
@@ -414,8 +389,7 @@ void Request::reuse(ReuseFlag flags)
 	_d()->reset();
 
 	if (flags & ReuseBuffers) {
-		for (auto pair : bufferMap_) {
-			FrameBuffer *buffer = pair.second;
+		for (const auto &[stream, buffer] : bufferMap_) {
 			buffer->_d()->setRequest(this);
 			_d()->pending_.insert(buffer);
 		}
@@ -425,9 +399,8 @@ void Request::reuse(ReuseFlag flags)
 
 	status_ = RequestPending;
 
-	results_.clear();
-	controls_->clear();
-	metadata_->clear();
+	controls_.clear();
+	_d()->metadata_.clear();
 }
 
 /**
@@ -447,6 +420,15 @@ void Request::reuse(ReuseFlag flags)
  */
 
 /**
+ * \brief Retrieve the request's metadata
+ * \return The a const reference to the metadata associated with the request
+ */
+const ControlList &Request::metadata() const
+{
+	return _d()->metadata_;
+}
+
+/**
  * \fn Request::buffers()
  * \brief Retrieve the request's streams to buffers map
  *
@@ -454,12 +436,6 @@ void Request::reuse(ReuseFlag flags)
  * request to the FrameBuffer the Stream output should be directed to.
  *
  * \return The map of Stream to FrameBuffer
- */
-
-/**
- * \fn Request::resultList()
- * \brief Retrieve the request's partial results
- * \return A reference to the list of results that associates with the request
  */
 
 /**
@@ -479,7 +455,9 @@ void Request::reuse(ReuseFlag flags)
  *
  * When a valid Fence is provided to this function, \a fence is moved to \a
  * buffer and this Request will only be queued to the device once the
- * fences of all its buffers have been correctly signalled.
+ * fences of all its buffers have been correctly signalled. Ownership of the
+ * fence will only be taken in case of success, otherwise the fence will
+ * be left unmodified.
  *
  * If the \a fence associated with \a buffer isn't signalled, the request will
  * fail after a timeout. The buffer will still contain the fence, which
@@ -495,22 +473,12 @@ void Request::reuse(ReuseFlag flags)
  * \retval -EINVAL The buffer does not reference a valid Stream
  */
 int Request::addBuffer(const Stream *stream, FrameBuffer *buffer,
-		       std::unique_ptr<Fence> fence)
+		       std::unique_ptr<Fence> &&fence)
 {
 	if (!stream) {
 		LOG(Request, Error) << "Invalid stream reference";
 		return -EINVAL;
 	}
-
-	auto it = bufferMap_.find(stream);
-	if (it != bufferMap_.end()) {
-		LOG(Request, Error) << "FrameBuffer already set for stream";
-		return -EEXIST;
-	}
-
-	buffer->_d()->setRequest(this);
-	_d()->pending_.insert(buffer);
-	bufferMap_[stream] = buffer;
 
 	/*
 	 * Make sure the fence has been extracted from the buffer
@@ -521,24 +489,19 @@ int Request::addBuffer(const Stream *stream, FrameBuffer *buffer,
 		return -EEXIST;
 	}
 
+	auto [it, inserted] = bufferMap_.try_emplace(stream, buffer);
+	if (!inserted) {
+		LOG(Request, Error) << "FrameBuffer already set for stream";
+		return -EEXIST;
+	}
+
+	buffer->_d()->setRequest(this);
+	_d()->pending_.insert(buffer);
+
 	if (fence && fence->isValid())
 		buffer->_d()->setFence(std::move(fence));
 
 	return 0;
-}
-
-/**
- * \brief Add result into the internal result list
- * \param[in] result The result to add into the request
- *
- * The function only accepts rvalue and moves its content into the request
- *
- * \return The result moved into the request
- */
-Result *Request::addResult(Result &&result)
-{
-	results_.emplace_back(std::move(result));
-	return &results_.back();
 }
 
 /**
@@ -548,11 +511,6 @@ Result *Request::addResult(Result &&result)
  * The bufferMap_ tracks the buffers associated with each stream. If a stream is
  * not utilised in this request there will be no buffer for that stream in the
  * map.
- */
-
-/**
- * \var Request::results_
- * \brief The list of partial results associated with the request
  */
 
 /**
@@ -569,29 +527,6 @@ FrameBuffer *Request::findBuffer(const Stream *stream) const
 
 	return it->second;
 }
-
-/**
- * \brief Return the stream associated with a buffer
- * \param[in] buffer The buffer the stream is associated to
- * \return The stream associated with the buffer, or nullptr if the buffer is
- * not part of this request
- */
-const Stream *Request::findStream(const FrameBuffer *buffer) const
-{
-	for (auto &[key, value] : bufferMap_)
-		if (buffer == value)
-			return key;
-
-	return nullptr;
-}
-
-/**
- * \fn Request::metadata()
- * \brief Retrieve the request's metadata
- * \todo Offer a read-only API towards applications while keeping a read/write
- * API internally.
- * \return The metadata associated with the request
- */
 
 /**
  * \brief Retrieve the sequence number for the request
@@ -640,7 +575,7 @@ uint32_t Request::sequence() const
  */
 bool Request::hasPendingBuffers() const
 {
-	return !_d()->pending_.empty();
+	return _d()->hasPendingBuffers();
 }
 
 /**
@@ -674,124 +609,6 @@ std::ostream &operator<<(std::ostream &out, const Request &r)
 	out << "Request(" << r.sequence() << ":" << statuses[r.status()] << ":"
 	    << r._d()->pending_.size() << "/" << r.buffers().size() << ":"
 	    << r.cookie() << ")";
-
-	return out;
-}
-
-/**
- * \class Result
- * \brief A partial result of a frame capture request
- *
- * A Result allows pipeline handler to report partial results to the application
- */
-
-/**
- * \brief Create a partial result for a capture request
- * \param[in] request The request the result associated to
- */
-Result::Result(Request *request)
-	: request_(request)
-{
-}
-
-/**
- * \brief Move constructor of a Result
- * \param[in] result The other result
- */
-Result::Result(Result &&result) = default;
-
-Result::~Result() = default;
-
-/**
- * \fn Result::request()
- * \brief Retrieve the result's associated request
- * \return The Request pointer associated with the result
- */
-
-/**
- * \fn Result::metadata()
- * \brief Retrieve the result's metadata
- * \return The metadata contained in the result
- */
-
-/**
- * \fn Result::buffers()
- * \brief Retrieve the result's buffers
- * \return The buffers contained in the result
- */
-
-/**
- * \fn Result::set(const Control<T> &ctrl, const V &value)
- * \brief Set the control \a ctrl value to \a value into metadata
- * \param[in] ctrl The control
- * \param[in] value The control value
- */
-
-/**
- * \brief Add a FrameBuffer with its associated Stream to the Result
- * \param[in] buffer The FrameBuffer to add to the result
- *
- * \return 0 on success or a negative error code otherwise
- * \retval -EINVAL The buffer does not reference a valid Stream in the request
- */
-int Result::addBuffer(FrameBuffer *buffer)
-{
-	if (!buffer || !request_->findStream(buffer)) {
-		LOG(Request, Error) << "Invalid buffer reference";
-		return -EINVAL;
-	}
-
-	buffers_.emplace_back(buffer);
-	return 0;
-}
-
-/**
- * \brief Set the control \a id to \a value into the metadata
- * \param[in] id The control id
- * \param[in] value The control value
- */
-void Result::set(unsigned int id, const ControlValue &value)
-{
-	metadata_.set(id, value);
-}
-
-/**
- * \brief Merge the \a source into the metadata of the result
- * \param[in] source The ControlList to merge into this metadata
- */
-void Result::merge(const ControlList &source)
-{
-	metadata_.merge(source);
-}
-
-/**
- * \brief Generate a string representation of the Result internals
- *
- * This function facilitates debugging of Result state while it is used
- * internally within libcamera.
- *
- * \return A string representing the current state of the result
- */
-std::string Result::toString() const
-{
-	std::stringstream ss;
-	ss << *this;
-
-	return ss.str();
-}
-
-/**
- * \brief Insert a text representation of a Result into an output stream
- * \param[in] out The output stream
- * \param[in] r The Result
- * \return The output stream \a out
- */
-std::ostream &operator<<(std::ostream &out, const Result &r)
-{
-	/* Example Output: Result(55:1/2) */
-	out << "Result(" << r.request()->sequence() << ":"
-	    << r.buffers().size() << "/"
-	    << const_cast<Result &>(r).metadata().size() << ")";
 
 	return out;
 }

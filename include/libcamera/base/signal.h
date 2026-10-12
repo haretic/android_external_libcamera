@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * signal.h - Signal & slot implementation
+ * Signal & slot implementation
  */
 
 #pragma once
@@ -10,12 +10,12 @@
 #include <functional>
 #include <list>
 #include <type_traits>
-#include <vector>
 
 #include <libcamera/base/bound_method.h>
-#include <libcamera/base/object.h>
 
 namespace libcamera {
+
+class Object;
 
 class SignalBase
 {
@@ -37,6 +37,8 @@ private:
 template<typename... Args>
 class Signal : public SignalBase
 {
+	static_assert((!std::is_rvalue_reference_v<Args> && ...));
+
 public:
 	~Signal()
 	{
@@ -63,11 +65,8 @@ public:
 
 #ifndef __DOXYGEN__
 	template<typename T, typename Func,
-		 std::enable_if_t<std::is_base_of<Object, T>::value
-#if __cplusplus >= 201703L
-				  && std::is_invocable_v<Func, Args...>
-#endif
-				  > * = nullptr>
+		 std::enable_if_t<std::is_base_of<Object, T>::value &&
+				  std::is_invocable_v<Func, Args...>> * = nullptr>
 	void connect(T *obj, Func func, ConnectionType type = ConnectionTypeAuto)
 	{
 		Object *object = static_cast<Object *>(obj);
@@ -75,11 +74,8 @@ public:
 	}
 
 	template<typename T, typename Func,
-		 std::enable_if_t<!std::is_base_of<Object, T>::value
-#if __cplusplus >= 201703L
-				  && std::is_invocable_v<Func, Args...>
-#endif
-				  > * = nullptr>
+		 std::enable_if_t<!std::is_base_of<Object, T>::value &&
+				  std::is_invocable_v<Func, Args...>> * = nullptr>
 #else
 	template<typename T, typename Func>
 #endif

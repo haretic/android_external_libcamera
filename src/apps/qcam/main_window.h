@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * main_window.h - qcam - Main application window
+ * qcam - Main application window
  */
 
 #pragma once
@@ -73,7 +73,7 @@ private Q_SLOTS:
 private:
 	int createToolbars();
 
-	std::string chooseCamera();
+	std::shared_ptr<libcamera::Camera> chooseCamera();
 	int openCamera();
 
 	int startCapture();
@@ -109,7 +109,7 @@ private:
 	/* Camera manager, camera, configuration and buffers */
 	libcamera::CameraManager *cm_;
 	std::shared_ptr<libcamera::Camera> camera_;
-	libcamera::FrameBufferAllocator *allocator_;
+	std::unique_ptr<libcamera::FrameBufferAllocator> allocator_;
 
 	std::unique_ptr<libcamera::CameraConfiguration> config_;
 	std::map<libcamera::FrameBuffer *, std::unique_ptr<Image>> mappedBuffers_;

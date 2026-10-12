@@ -2,9 +2,11 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * geq.h - GEQ (green equalisation) control algorithm
+ * GEQ (green equalisation) control algorithm
  */
 #pragma once
+
+#include <libipa/pwl.h>
 
 #include "../algorithm.h"
 #include "../geq_status.h"
@@ -16,7 +18,7 @@ namespace RPiController {
 struct GeqConfig {
 	uint16_t offset;
 	double slope;
-	Pwl strength; /* lux to strength factor */
+	libcamera::ipa::Pwl strength; /* lux to strength factor */
 };
 
 class Geq : public Algorithm
@@ -24,7 +26,7 @@ class Geq : public Algorithm
 public:
 	Geq(Controller *controller);
 	char const *name() const override;
-	int read(const libcamera::YamlObject &params) override;
+	int read(const libcamera::ValueNode &params) override;
 	void prepare(Metadata *imageMetadata) override;
 
 private:

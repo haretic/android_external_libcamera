@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * ipc_pipe_unixsocket.cpp - Image Processing Algorithm IPC module using unix socket
+ * Image Processing Algorithm IPC module using unix socket
  */
 
 #include "libcamera/internal/ipc_pipe_unixsocket.h"
@@ -26,12 +26,8 @@ LOG_DECLARE_CATEGORY(IPCPipe)
 
 IPCPipeUnixSocket::IPCPipeUnixSocket(const char *ipaModulePath,
 				     const char *ipaProxyWorkerPath)
-	: IPCPipe(), inCall_(false)
+	: IPCPipe()
 {
-	std::vector<int> fds;
-	std::vector<std::string> args;
-	args.push_back(ipaModulePath);
-
 	socket_ = std::make_unique<IPCUnixSocket>();
 	UniqueFD fd = socket_->create();
 	if (!fd.isValid()) {
@@ -39,8 +35,9 @@ IPCPipeUnixSocket::IPCPipeUnixSocket(const char *ipaModulePath,
 		return;
 	}
 	socket_->readyRead.connect(this, &IPCPipeUnixSocket::readyRead);
-	args.push_back(std::to_string(fd.get()));
-	fds.push_back(fd.get());
+
+	std::array args{ std::string(ipaModulePath), std::to_string(fd.get()) };
+	std::array fds{ fd.get() };
 
 	proc_ = std::make_unique<Process>();
 	int ret = proc_->start(ipaProxyWorkerPath, args, fds);
@@ -49,26 +46,6 @@ IPCPipeUnixSocket::IPCPipeUnixSocket(const char *ipaModulePath,
 			<< "Failed to start proxy worker process";
 		return;
 	}
-
-	connected_ = true;
-}
-
-IPCPipeUnixSocket::IPCPipeUnixSocket(std::string path)
-	: IPCPipe(), inCall_(false)
-{
-	std::vector<int> fds;
-
-	socket_ = std::make_unique<IPCUnixSocket>();
-
-	// TODO(chenghaoyang): Design a more general API to allow other use
-	// cases than CrOS.
-	int success = socket_->connectRemote(path);
-	if (!success) {
-		LOG(IPCPipe, Error) << "Failed to create socket";
-		return;
-	}
-
-	socket_->readyRead.connect(this, &IPCPipeUnixSocket::readyRead);
 
 	connected_ = true;
 }
@@ -104,14 +81,6 @@ int IPCPipeUnixSocket::sendAsync(const IPCMessage &data)
 	return 0;
 }
 
-Signal<> *IPCPipeUnixSocket::disconnected()
-{
-	if (socket_)
-		return &socket_->disconnected;
-
-	return nullptr;
-}
-
 void IPCPipeUnixSocket::readyRead()
 {
 	IPCUnixSocket::Payload payload;
@@ -127,26 +96,17 @@ void IPCPipeUnixSocket::readyRead()
 		return;
 	}
 
-	std::shared_ptr<IPCMessage> ipcMessage = std::make_shared<IPCMessage>(payload);
-	auto callData = callData_.find(ipcMessage->header().cookie);
+	IPCMessage ipcMessage(payload);
+
+	auto callData = callData_.find(ipcMessage.header().cookie);
 	if (callData != callData_.end()) {
 		*callData->second.response = std::move(payload);
 		callData->second.done = true;
 		return;
 	}
 
-	if (!inCall_) {
-		emitRecv(ipcMessage);
-		return;
-	}
-
-	/* During synchronous call, queue other tasks to process later. */
-	Object::invokeMethod(&IPCPipeUnixSocket::emitRecv, ConnectionTypeQueued, ipcMessage);
-}
-
-void IPCPipeUnixSocket::emitRecv(std::shared_ptr<IPCMessage> &msg)
-{
-	recv.emit(msg);
+	/* Received unexpected data, this means it's a call from the IPA. */
+	recv.emit(ipcMessage);
 }
 
 int IPCPipeUnixSocket::call(const IPCUnixSocket::Payload &message,
@@ -164,13 +124,17 @@ int IPCPipeUnixSocket::call(const IPCUnixSocket::Payload &message,
 		return ret;
 	}
 
-	inCall_ = true;
-
+	/* \todo Make this less dangerous, see IPCPipe::sendSync() */
+	timeout.start(2000ms);
 	while (!iter->second.done) {
-		Thread::current()->eventDispatcher()->processEventsOnNotifier(socket_->notifier_);
-	}
+		if (!timeout.isRunning()) {
+			LOG(IPCPipe, Error) << "Call timeout!";
+			callData_.erase(iter);
+			return -ETIMEDOUT;
+		}
 
-	inCall_ = false;
+		Thread::current()->eventDispatcher()->processEvents();
+	}
 
 	callData_.erase(iter);
 

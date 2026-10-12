@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * algorithm.h - ISP control algorithm interface
+ * ISP control algorithm interface
  */
 #pragma once
 
@@ -15,7 +15,7 @@
 #include <memory>
 #include <map>
 
-#include "libcamera/internal/yaml_parser.h"
+#include "libcamera/internal/value_node.h"
 
 #include "controller.h"
 
@@ -32,7 +32,7 @@ public:
 	}
 	virtual ~Algorithm() = default;
 	virtual char const *name() const = 0;
-	virtual int read(const libcamera::YamlObject &params);
+	virtual int read(const libcamera::ValueNode &params);
 	virtual void initialise();
 	virtual void switchMode(CameraMode const &cameraMode, Metadata *metadata);
 	virtual void prepare(Metadata *imageMetadata);

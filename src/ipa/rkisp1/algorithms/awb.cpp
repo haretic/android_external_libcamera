@@ -2,19 +2,23 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * awb.cpp - AWB control algorithm
+ * AWB control algorithm
  */
 
 #include "awb.h"
 
 #include <algorithm>
-#include <cmath>
-#include <iomanip>
+#include <ios>
 
 #include <libcamera/base/log.h>
 
 #include <libcamera/control_ids.h>
+
 #include <libcamera/ipa/core_ipa_interface.h>
+
+#include "libipa/awb_bayes.h"
+#include "libipa/awb_grey.h"
+#include "libipa/colours.h"
 
 /**
  * \file awb.h
@@ -26,17 +30,96 @@ namespace ipa::rkisp1::algorithms {
 
 /**
  * \class Awb
- * \brief A Grey world white balance correction algorithm
+ * \brief Manage the white balance with automatic and manual controls
  */
 
 LOG_DEFINE_CATEGORY(RkISP1Awb)
 
+constexpr int32_t kMinColourTemperature = 2500;
+constexpr int32_t kMaxColourTemperature = 10000;
+constexpr int32_t kDefaultColourTemperature = 5000;
+
 /* Minimum mean value below which AWB can't operate. */
 constexpr double kMeanMinThreshold = 2.0;
+
+class RkISP1AwbStats final : public AwbStats
+{
+public:
+	RkISP1AwbStats(const RGB<double> &rgbMeans)
+		: rgbMeans_(rgbMeans)
+	{
+		rg_ = rgbMeans_.r() / rgbMeans_.g();
+		bg_ = rgbMeans_.b() / rgbMeans_.g();
+	}
+
+	double computeColourError(const RGB<double> &gains) const override
+	{
+		/*
+		 * Compute the sum of the squared colour error (non-greyness) as
+		 * it appears in the log likelihood equation.
+		 */
+		double deltaR = gains.r() * rg_ - 1.0;
+		double deltaB = gains.b() * bg_ - 1.0;
+		double delta2 = deltaR * deltaR + deltaB * deltaB;
+
+		return delta2;
+	}
+
+	RGB<double> rgbMeans() const override
+	{
+		return rgbMeans_;
+	}
+
+private:
+	RGB<double> rgbMeans_;
+	double rg_;
+	double bg_;
+};
 
 Awb::Awb()
 	: rgbMode_(false)
 {
+}
+
+/**
+ * \copydoc libcamera::ipa::Algorithm::init
+ */
+int Awb::init(IPAContext &context, const ValueNode &tuningData)
+{
+	auto &cmap = context.ctrlMap;
+	cmap[&controls::ColourTemperature] = ControlInfo(kMinColourTemperature,
+							 kMaxColourTemperature,
+							 kDefaultColourTemperature);
+	cmap[&controls::AwbEnable] = ControlInfo(false, true);
+
+	cmap[&controls::ColourGains] = ControlInfo(0.0f, 3.996f,
+						   Span<const float, 2>{ { 1.0f, 1.0f } });
+
+	if (!tuningData.contains("algorithm"))
+		LOG(RkISP1Awb, Info) << "No AWB algorithm specified."
+				     << " Default to grey world";
+
+	auto mode = tuningData["algorithm"].get<std::string>("grey");
+	if (mode == "grey") {
+		awbAlgo_ = std::make_unique<AwbGrey>();
+	} else if (mode == "bayes") {
+		awbAlgo_ = std::make_unique<AwbBayes>();
+	} else {
+		LOG(RkISP1Awb, Error) << "Unknown AWB algorithm: " << mode;
+		return -EINVAL;
+	}
+	LOG(RkISP1Awb, Debug) << "Using AWB algorithm: " << mode;
+
+	int ret = awbAlgo_->init(tuningData);
+	if (ret) {
+		LOG(RkISP1Awb, Error) << "Failed to init AWB algorithm";
+		return ret;
+	}
+
+	const auto &src = awbAlgo_->controls();
+	cmap.insert(src.begin(), src.end());
+
+	return 0;
 }
 
 /**
@@ -45,13 +128,16 @@ Awb::Awb()
 int Awb::configure(IPAContext &context,
 		   const IPACameraSensorInfo &configInfo)
 {
-	context.activeState.awb.gains.manual.red = 1.0;
-	context.activeState.awb.gains.manual.blue = 1.0;
-	context.activeState.awb.gains.manual.green = 1.0;
-	context.activeState.awb.gains.automatic.red = 1.0;
-	context.activeState.awb.gains.automatic.blue = 1.0;
-	context.activeState.awb.gains.automatic.green = 1.0;
+	context.activeState.awb.manual.gains = RGB<double>{ 1.0 };
+	auto gains = awbAlgo_->gainsFromColourTemperature(kDefaultColourTemperature);
+	if (gains)
+		context.activeState.awb.automatic.gains = *gains;
+	else
+		context.activeState.awb.automatic.gains = RGB<double>{ 1.0 };
+
 	context.activeState.awb.autoEnabled = true;
+	context.activeState.awb.manual.temperatureK = kDefaultColourTemperature;
+	context.activeState.awb.automatic.temperatureK = kDefaultColourTemperature;
 
 	/*
 	 * Define the measurement window for AWB as a centered rectangle
@@ -85,64 +171,83 @@ void Awb::queueRequest(IPAContext &context,
 			<< (*awbEnable ? "Enabling" : "Disabling") << " AWB";
 	}
 
-	const auto &colourGains = controls.get(controls::ColourGains);
-	if (colourGains && !awb.autoEnabled) {
-		awb.gains.manual.red = (*colourGains)[0];
-		awb.gains.manual.blue = (*colourGains)[1];
-
-		LOG(RkISP1Awb, Debug)
-			<< "Set colour gains to red: " << awb.gains.manual.red
-			<< ", blue: " << awb.gains.manual.blue;
-	}
+	awbAlgo_->handleControls(controls);
 
 	frameContext.awb.autoEnabled = awb.autoEnabled;
 
-	if (!awb.autoEnabled) {
-		frameContext.awb.gains.red = awb.gains.manual.red;
-		frameContext.awb.gains.green = 1.0;
-		frameContext.awb.gains.blue = awb.gains.manual.blue;
+	if (awb.autoEnabled)
+		return;
+
+	const auto &colourGains = controls.get(controls::ColourGains);
+	const auto &colourTemperature = controls.get(controls::ColourTemperature);
+	bool update = false;
+	if (colourGains) {
+		awb.manual.gains.r() = (*colourGains)[0];
+		awb.manual.gains.b() = (*colourGains)[1];
+		/*
+		 * \todo Colour temperature reported in metadata is now
+		 * incorrect, as we can't deduce the temperature from the gains.
+		 * This will be fixed with the bayes AWB algorithm.
+		 */
+		update = true;
+	} else if (colourTemperature) {
+		awb.manual.temperatureK = *colourTemperature;
+		const auto &gains = awbAlgo_->gainsFromColourTemperature(*colourTemperature);
+		if (gains) {
+			awb.manual.gains.r() = gains->r();
+			awb.manual.gains.b() = gains->b();
+			update = true;
+		}
 	}
+
+	if (update)
+		LOG(RkISP1Awb, Debug)
+			<< "Set colour gains to " << awb.manual.gains;
+
+	frameContext.awb.gains = awb.manual.gains;
+	frameContext.awb.temperatureK = awb.manual.temperatureK;
 }
 
 /**
  * \copydoc libcamera::ipa::Algorithm::prepare
  */
 void Awb::prepare(IPAContext &context, const uint32_t frame,
-		  IPAFrameContext &frameContext, rkisp1_params_cfg *params)
+		  IPAFrameContext &frameContext, RkISP1Params *params)
 {
 	/*
 	 * This is the latest time we can read the active state. This is the
 	 * most up-to-date automatic values we can read.
 	 */
 	if (frameContext.awb.autoEnabled) {
-		frameContext.awb.gains.red = context.activeState.awb.gains.automatic.red;
-		frameContext.awb.gains.green = context.activeState.awb.gains.automatic.green;
-		frameContext.awb.gains.blue = context.activeState.awb.gains.automatic.blue;
+		const auto &awb = context.activeState.awb;
+		frameContext.awb.gains = awb.automatic.gains;
+		frameContext.awb.temperatureK = awb.automatic.temperatureK;
 	}
 
-	params->others.awb_gain_config.gain_green_b = 256 * frameContext.awb.gains.green;
-	params->others.awb_gain_config.gain_blue = 256 * frameContext.awb.gains.blue;
-	params->others.awb_gain_config.gain_red = 256 * frameContext.awb.gains.red;
-	params->others.awb_gain_config.gain_green_r = 256 * frameContext.awb.gains.green;
+	auto gainConfig = params->block<BlockType::AwbGain>();
+	gainConfig.setEnabled(true);
 
-	/* Update the gains. */
-	params->module_cfg_update |= RKISP1_CIF_ISP_MODULE_AWB_GAIN;
+	gainConfig->gain_green_b = std::clamp<int>(256 * frameContext.awb.gains.g(), 0, 0x3ff);
+	gainConfig->gain_blue = std::clamp<int>(256 * frameContext.awb.gains.b(), 0, 0x3ff);
+	gainConfig->gain_red = std::clamp<int>(256 * frameContext.awb.gains.r(), 0, 0x3ff);
+	gainConfig->gain_green_r = std::clamp<int>(256 * frameContext.awb.gains.g(), 0, 0x3ff);
 
 	/* If we have already set the AWB measurement parameters, return. */
 	if (frame > 0)
 		return;
 
-	rkisp1_cif_isp_awb_meas_config &awb_config = params->meas.awb_meas_config;
+	auto awbConfig = params->block<BlockType::Awb>();
+	awbConfig.setEnabled(true);
 
 	/* Configure the measure window for AWB. */
-	awb_config.awb_wnd = context.configuration.awb.measureWindow;
+	awbConfig->awb_wnd = context.configuration.awb.measureWindow;
 
 	/* Number of frames to use to estimate the means (0 means 1 frame). */
-	awb_config.frames = 0;
+	awbConfig->frames = 0;
 
 	/* Select RGB or YCbCr means measurement. */
 	if (rgbMode_) {
-		awb_config.awb_mode = RKISP1_CIF_ISP_AWB_MODE_RGB;
+		awbConfig->awb_mode = RKISP1_CIF_ISP_AWB_MODE_RGB;
 
 		/*
 		 * For RGB-based measurements, pixels are selected with maximum
@@ -150,19 +255,19 @@ void Awb::prepare(IPAContext &context, const uint32_t frame,
 		 * awb_ref_cr, awb_min_y and awb_ref_cb respectively. The other
 		 * values are not used, set them to 0.
 		 */
-		awb_config.awb_ref_cr = 250;
-		awb_config.min_y = 250;
-		awb_config.awb_ref_cb = 250;
+		awbConfig->awb_ref_cr = 250;
+		awbConfig->min_y = 250;
+		awbConfig->awb_ref_cb = 250;
 
-		awb_config.max_y = 0;
-		awb_config.min_c = 0;
-		awb_config.max_csum = 0;
+		awbConfig->max_y = 0;
+		awbConfig->min_c = 0;
+		awbConfig->max_csum = 0;
 	} else {
-		awb_config.awb_mode = RKISP1_CIF_ISP_AWB_MODE_YCBCR;
+		awbConfig->awb_mode = RKISP1_CIF_ISP_AWB_MODE_YCBCR;
 
 		/* Set the reference Cr and Cb (AWB target) to white. */
-		awb_config.awb_ref_cb = 128;
-		awb_config.awb_ref_cr = 128;
+		awbConfig->awb_ref_cb = 128;
+		awbConfig->awb_ref_cr = 128;
 
 		/*
 		 * Filter out pixels based on luminance and chrominance values.
@@ -170,36 +275,11 @@ void Awb::prepare(IPAContext &context, const uint32_t frame,
 		 * range, while the acceptable chroma values are specified with
 		 * a minimum of 16 and a maximum Cb+Cr sum of 250.
 		 */
-		awb_config.min_y = 16;
-		awb_config.max_y = 250;
-		awb_config.min_c = 16;
-		awb_config.max_csum = 250;
+		awbConfig->min_y = 16;
+		awbConfig->max_y = 250;
+		awbConfig->min_c = 16;
+		awbConfig->max_csum = 250;
 	}
-
-	/* Enable the AWB gains. */
-	params->module_en_update |= RKISP1_CIF_ISP_MODULE_AWB_GAIN;
-	params->module_ens |= RKISP1_CIF_ISP_MODULE_AWB_GAIN;
-
-	/* Update the AWB measurement parameters and enable the AWB module. */
-	params->module_cfg_update |= RKISP1_CIF_ISP_MODULE_AWB;
-	params->module_en_update |= RKISP1_CIF_ISP_MODULE_AWB;
-	params->module_ens |= RKISP1_CIF_ISP_MODULE_AWB;
-}
-
-uint32_t Awb::estimateCCT(double red, double green, double blue)
-{
-	/* Convert the RGB values to CIE tristimulus values (XYZ) */
-	double X = (-0.14282) * (red) + (1.54924) * (green) + (-0.95641) * (blue);
-	double Y = (-0.32466) * (red) + (1.57837) * (green) + (-0.73191) * (blue);
-	double Z = (-0.68202) * (red) + (0.77073) * (green) + (0.56332) * (blue);
-
-	/* Calculate the normalized chromaticity values */
-	double x = X / (X + Y + Z);
-	double y = Y / (X + Y + Z);
-
-	/* Calculate CCT */
-	double n = (x - 0.3320) / (0.1858 - y);
-	return 449 * n * n * n + 3525 * n * n + 6823.3 * n + 5520.33;
 }
 
 /**
@@ -211,81 +291,40 @@ void Awb::process(IPAContext &context,
 		  const rkisp1_stat_buffer *stats,
 		  ControlList &metadata)
 {
-	const rkisp1_cif_isp_stat *params = &stats->params;
-	const rkisp1_cif_isp_awb_stat *awb = &params->awb;
 	IPAActiveState &activeState = context.activeState;
-	double greenMean;
-	double redMean;
-	double blueMean;
 
-	if (rgbMode_) {
-		greenMean = awb->awb_mean[0].mean_y_or_g;
-		redMean = awb->awb_mean[0].mean_cr_or_r;
-		blueMean = awb->awb_mean[0].mean_cb_or_b;
-	} else {
-		/* Get the YCbCr mean values */
-		double yMean = awb->awb_mean[0].mean_y_or_g;
-		double cbMean = awb->awb_mean[0].mean_cb_or_b;
-		double crMean = awb->awb_mean[0].mean_cr_or_r;
+	metadata.set(controls::AwbEnable, frameContext.awb.autoEnabled);
+	metadata.set(controls::ColourGains, {
+			static_cast<float>(frameContext.awb.gains.r()),
+			static_cast<float>(frameContext.awb.gains.b())
+		});
+	metadata.set(controls::ColourTemperature, frameContext.awb.temperatureK);
 
-		/*
-		 * Convert from YCbCr to RGB.
-		 * The hardware uses the following formulas:
-		 * Y = 16 + 0.2500 R + 0.5000 G + 0.1094 B
-		 * Cb = 128 - 0.1406 R - 0.2969 G + 0.4375 B
-		 * Cr = 128 + 0.4375 R - 0.3750 G - 0.0625 B
-		 *
-		 * The inverse matrix is thus:
-		 * [[1,1636, -0,0623,  1,6008]
-		 *  [1,1636, -0,4045, -0,7949]
-		 *  [1,1636,  1,9912, -0,0250]]
-		 */
-		yMean -= 16;
-		cbMean -= 128;
-		crMean -= 128;
-		redMean = 1.1636 * yMean - 0.0623 * cbMean + 1.6008 * crMean;
-		greenMean = 1.1636 * yMean - 0.4045 * cbMean - 0.7949 * crMean;
-		blueMean = 1.1636 * yMean + 1.9912 * cbMean - 0.0250 * crMean;
-
-		/*
-		 * Due to hardware rounding errors in the YCbCr means, the
-		 * calculated RGB means may be negative. This would lead to
-		 * negative gains, messing up calculation. Prevent this by
-		 * clamping the means to positive values.
-		 */
-		redMean = std::max(redMean, 0.0);
-		greenMean = std::max(greenMean, 0.0);
-		blueMean = std::max(blueMean, 0.0);
+	if (!stats || !(stats->meas_type & RKISP1_CIF_ISP_STAT_AWB)) {
+		LOG(RkISP1Awb, Error) << "AWB data is missing in statistics";
+		return;
 	}
 
-	/*
-	 * The ISP computes the AWB means after applying the colour gains,
-	 * divide by the gains that were used to get the raw means from the
-	 * sensor.
-	 */
-	redMean /= frameContext.awb.gains.red;
-	greenMean /= frameContext.awb.gains.green;
-	blueMean /= frameContext.awb.gains.blue;
+	const rkisp1_cif_isp_stat *params = &stats->params;
+	const rkisp1_cif_isp_awb_stat *awb = &params->awb;
+
+	if (awb->awb_mean[0].cnt == 0) {
+		LOG(RkISP1Awb, Debug) << "AWB statistics are empty";
+		return;
+	}
+
+	RGB<double> rgbMeans = calculateRgbMeans(frameContext, awb);
 
 	/*
 	 * If the means are too small we don't have enough information to
 	 * meaningfully calculate gains. Freeze the algorithm in that case.
 	 */
-	if (redMean < kMeanMinThreshold && greenMean < kMeanMinThreshold &&
-	    blueMean < kMeanMinThreshold) {
-		frameContext.awb.temperatureK = activeState.awb.temperatureK;
+	if (rgbMeans.r() < kMeanMinThreshold && rgbMeans.g() < kMeanMinThreshold &&
+	    rgbMeans.b() < kMeanMinThreshold)
 		return;
-	}
 
-	activeState.awb.temperatureK = estimateCCT(redMean, greenMean, blueMean);
-
-	/*
-	 * Estimate the red and blue gains to apply in a grey world. The green
-	 * gain is hardcoded to 1.0. Avoid divisions by zero by clamping the
-	 * divisor to a minimum value of 1.0.
-	 */
-	double redGain = greenMean / std::max(redMean, 1.0);
-	double blueGain = greenMean / std::max(blueMean, 1.0);
+	RkISP1AwbStats awbStats{ rgbMeans };
+	AwbResult awbResult = awbAlgo_->calculateAwb(awbStats, frameContext.lux.lux);
 
 	/*
 	 * Clamp the gain values to the hardware, which expresses gains as Q2.8
@@ -293,33 +332,94 @@ void Awb::process(IPAContext &context,
 	 * divisions by zero when computing the raw means in subsequent
 	 * iterations.
 	 */
-	redGain = std::clamp(redGain, 1.0 / 256, 1023.0 / 256);
-	blueGain = std::clamp(blueGain, 1.0 / 256, 1023.0 / 256);
+	awbResult.gains = awbResult.gains.clamp(1.0 / 256, 1023.0 / 256);
 
 	/* Filter the values to avoid oscillations. */
 	double speed = 0.2;
-	redGain = speed * redGain + (1 - speed) * activeState.awb.gains.automatic.red;
-	blueGain = speed * blueGain + (1 - speed) * activeState.awb.gains.automatic.blue;
+	double ct = awbResult.colourTemperature;
+	ct = ct * speed + activeState.awb.automatic.temperatureK * (1 - speed);
+	awbResult.gains = awbResult.gains * speed +
+			  activeState.awb.automatic.gains * (1 - speed);
 
-	activeState.awb.gains.automatic.red = redGain;
-	activeState.awb.gains.automatic.blue = blueGain;
-	activeState.awb.gains.automatic.green = 1.0;
+	activeState.awb.automatic.temperatureK = static_cast<unsigned int>(ct);
+	activeState.awb.automatic.gains = awbResult.gains;
 
-	frameContext.awb.temperatureK = activeState.awb.temperatureK;
+	LOG(RkISP1Awb, Debug)
+		<< std::showpoint
+		<< "Means " << rgbMeans << ", gains "
+		<< activeState.awb.automatic.gains << ", temp "
+		<< activeState.awb.automatic.temperatureK << "K";
+}
 
-	metadata.set(controls::AwbEnable, frameContext.awb.autoEnabled);
-	metadata.set(controls::ColourGains, {
-			static_cast<float>(frameContext.awb.gains.red),
-			static_cast<float>(frameContext.awb.gains.blue)
+RGB<double> Awb::calculateRgbMeans(const IPAFrameContext &frameContext, const rkisp1_cif_isp_awb_stat *awb) const
+{
+	Vector<double, 3> rgbMeans;
+
+	if (rgbMode_) {
+		rgbMeans = {{
+			static_cast<double>(awb->awb_mean[0].mean_cr_or_r),
+			static_cast<double>(awb->awb_mean[0].mean_y_or_g),
+			static_cast<double>(awb->awb_mean[0].mean_cb_or_b)
+		}};
+	} else {
+		/* Get the YCbCr mean values */
+		Vector<double, 3> yuvMeans({
+			static_cast<double>(awb->awb_mean[0].mean_y_or_g),
+			static_cast<double>(awb->awb_mean[0].mean_cb_or_b),
+			static_cast<double>(awb->awb_mean[0].mean_cr_or_r)
 		});
-	metadata.set(controls::ColourTemperature, frameContext.awb.temperatureK);
 
-	LOG(RkISP1Awb, Debug) << std::showpoint
-		<< "Means [" << redMean << ", " << greenMean << ", " << blueMean
-		<< "], gains [" << activeState.awb.gains.automatic.red << ", "
-		<< activeState.awb.gains.automatic.green << ", "
-		<< activeState.awb.gains.automatic.blue << "], temp "
-		<< frameContext.awb.temperatureK << "K";
+		/*
+		 * Convert from YCbCr to RGB. The hardware uses the following
+		 * formulas:
+		 *
+		 * Y  =  16 + 0.2500 R + 0.5000 G + 0.1094 B
+		 * Cb = 128 - 0.1406 R - 0.2969 G + 0.4375 B
+		 * Cr = 128 + 0.4375 R - 0.3750 G - 0.0625 B
+		 *
+		 * This seems to be based on limited range BT.601 with Q1.6
+		 * precision.
+		 *
+		 * The inverse matrix is:
+		 *
+		 * [[1,1636, -0,0623,  1,6008]
+		 *  [1,1636, -0,4045, -0,7949]
+		 *  [1,1636,  1,9912, -0,0250]]
+		 */
+		static const Matrix<double, 3, 3> yuv2rgbMatrix({
+			1.1636, -0.0623,  1.6008,
+			1.1636, -0.4045, -0.7949,
+			1.1636,  1.9912, -0.0250
+		});
+		static const Vector<double, 3> yuv2rgbOffset({
+			16, 128, 128
+		});
+
+		rgbMeans = yuv2rgbMatrix * (yuvMeans - yuv2rgbOffset);
+
+		/*
+		 * Due to hardware rounding errors in the YCbCr means, the
+		 * calculated RGB means may be negative. This would lead to
+		 * negative gains, messing up calculation. Prevent this by
+		 * clamping the means to positive values.
+		 */
+		rgbMeans = rgbMeans.max(0.0);
+	}
+
+	/*
+	 * The ISP computes the AWB means after applying the CCM. Apply the
+	 * inverse as we want to get the raw means before the colour gains.
+	 */
+	rgbMeans = frameContext.ccm.ccm.inverse() * rgbMeans;
+
+	/*
+	 * The ISP computes the AWB means after applying the colour gains,
+	 * divide by the gains that were used to get the raw means from the
+	 * sensor. Apply a minimum value to avoid divisions by near-zero.
+	 */
+	rgbMeans /= frameContext.awb.gains.max(0.01);
+
+	return rgbMeans;
 }
 
 REGISTER_IPA_ALGORITHM(Awb, "Awb")

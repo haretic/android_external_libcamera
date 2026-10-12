@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * camera.h - Camera object interface
+ * Camera object interface
  */
 
 #pragma once
@@ -18,12 +18,13 @@
 #include <libcamera/base/flags.h>
 #include <libcamera/base/object.h>
 #include <libcamera/base/signal.h>
+#include <libcamera/base/span.h>
 
 #include <libcamera/controls.h>
 #include <libcamera/geometry.h>
+#include <libcamera/orientation.h>
 #include <libcamera/request.h>
 #include <libcamera/stream.h>
-#include <libcamera/transform.h>
 
 namespace libcamera {
 
@@ -65,12 +66,6 @@ public:
 		Invalid,
 	};
 
-	enum CaptureIntent {
-		Unknown,
-		Video,
-		StillCapture,
-	};
-
 	using iterator = std::vector<StreamConfiguration>::iterator;
 	using const_iterator = std::vector<StreamConfiguration>::const_iterator;
 
@@ -99,9 +94,7 @@ public:
 	std::size_t size() const;
 
 	std::optional<SensorConfiguration> sensorConfig;
-	Transform transform;
-
-	CaptureIntent captureIntent = Unknown;
+	Orientation orientation;
 
 protected:
 	CameraConfiguration();
@@ -124,27 +117,18 @@ class Camera final : public Object, public std::enable_shared_from_this<Camera>,
 	LIBCAMERA_DECLARE_PRIVATE()
 
 public:
-	enum RequestCompletionMode {
-		InSubmissionOrder,
-		Immediately,
-	};
-
 	static std::shared_ptr<Camera> create(std::unique_ptr<Private> d,
 					      const std::string &id,
 					      const std::set<Stream *> &streams);
 
 	const std::string &id() const;
 
-	Signal<Request *, const ControlList &> metadataAvailable;
 	Signal<Request *, FrameBuffer *> bufferCompleted;
 	Signal<Request *> requestCompleted;
 	Signal<> disconnected;
 
 	int acquire();
 	int release();
-
-	int setRequestCompletionMode(RequestCompletionMode order);
-	RequestCompletionMode requestCompletionMode() const;
 
 	const ControlInfoMap &controls() const;
 	const ControlList &properties() const;
@@ -182,6 +166,8 @@ private:
 	friend class FrameBufferAllocator;
 	int exportFrameBuffers(Stream *stream,
 			       std::vector<std::unique_ptr<FrameBuffer>> *buffers);
+
+	void patchControlList(ControlList &controls);
 };
 
 } /* namespace libcamera */

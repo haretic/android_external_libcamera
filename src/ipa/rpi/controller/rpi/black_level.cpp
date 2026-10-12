@@ -2,10 +2,9 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * black_level.cpp - black level control algorithm
+ * black level control algorithm
  */
 
-#include <math.h>
 #include <stdint.h>
 
 #include <libcamera/base/log.h>
@@ -22,7 +21,7 @@ LOG_DEFINE_CATEGORY(RPiBlackLevel)
 #define NAME "rpi.black_level"
 
 BlackLevel::BlackLevel(Controller *controller)
-	: Algorithm(controller)
+	: BlackLevelAlgorithm(controller)
 {
 }
 
@@ -31,7 +30,7 @@ char const *BlackLevel::name() const
 	return NAME;
 }
 
-int BlackLevel::read(const libcamera::YamlObject &params)
+int BlackLevel::read(const libcamera::ValueNode &params)
 {
 	/* 64 in 10 bits scaled to 16 bits */
 	uint16_t blackLevel = params["black_level"].get<uint16_t>(4096);
@@ -43,6 +42,14 @@ int BlackLevel::read(const libcamera::YamlObject &params)
 		<< " green " << blackLevelG_
 		<< " blue " << blackLevelB_;
 	return 0;
+}
+
+void BlackLevel::initialValues(uint16_t &blackLevelR, uint16_t &blackLevelG,
+			       uint16_t &blackLevelB)
+{
+	blackLevelR = blackLevelR_;
+	blackLevelG = blackLevelG_;
+	blackLevelB = blackLevelB_;
 }
 
 void BlackLevel::prepare(Metadata *imageMetadata)

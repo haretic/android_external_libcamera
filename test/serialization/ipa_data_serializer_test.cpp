@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * ipa_data_serializer_test.cpp - Test serializing/deserializing with IPADataSerializer
+ * Test serializing/deserializing with IPADataSerializer
  */
 
 #include <algorithm>
@@ -29,7 +29,7 @@ using namespace std;
 using namespace libcamera;
 
 static const ControlInfoMap Controls = ControlInfoMap({
-		{ &controls::AeEnable, ControlInfo(false, true) },
+		{ &controls::DebugMetadataEnable, ControlInfo(false, true) },
 		{ &controls::ExposureTime, ControlInfo(0, 999999) },
 		{ &controls::AnalogueGain, ControlInfo(1.0f, 32.0f) },
 		{ &controls::ColourGains, ControlInfo(0.0f, 32.0f) },

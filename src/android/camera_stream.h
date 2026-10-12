@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * camera_stream.h - Camera HAL stream
+ * Camera HAL stream
  */
 
 #pragma once
@@ -125,13 +125,9 @@ public:
 	const libcamera::StreamConfiguration &configuration() const;
 	libcamera::Stream *stream() const;
 	CameraStream *sourceStream() const { return sourceStream_; }
-	bool isJpegStream() const
-	{
-		return camera3Stream_->format == HAL_PIXEL_FORMAT_BLOB;
-	}
 
 	int configure();
-	int process(StreamBuffer *streamBuffer);
+	int process(Camera3RequestDescriptor::StreamBuffer *streamBuffer);
 	libcamera::FrameBuffer *getBuffer();
 	void putBuffer(libcamera::FrameBuffer *buffer);
 	void flush();
@@ -150,7 +146,7 @@ private:
 		~PostProcessorWorker();
 
 		void start();
-		void queueRequest(StreamBuffer *request);
+		void queueRequest(Camera3RequestDescriptor::StreamBuffer *request);
 		void flush();
 
 	protected:
@@ -162,7 +158,7 @@ private:
 		libcamera::Mutex mutex_;
 		libcamera::ConditionVariable cv_;
 
-		std::queue<StreamBuffer *> requests_
+		std::queue<Camera3RequestDescriptor::StreamBuffer *> requests_
 			LIBCAMERA_TSA_GUARDED_BY(mutex_);
 
 		State state_ LIBCAMERA_TSA_GUARDED_BY(mutex_) = State::Stopped;

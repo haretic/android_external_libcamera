@@ -2,11 +2,12 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * rkisp1path.h - Rockchip ISP1 path helper
+ * Rockchip ISP1 path helper
  */
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <set>
 #include <vector>
@@ -25,6 +26,7 @@ namespace libcamera {
 
 class CameraSensor;
 class MediaDevice;
+class SensorConfiguration;
 class V4L2Subdevice;
 struct StreamConfiguration;
 struct V4L2SubdeviceFormat;
@@ -35,7 +37,7 @@ public:
 	RkISP1Path(const char *name, const Span<const PixelFormat> &formats,
 		   const Size &minResolution, const Size &maxResolution);
 
-	bool init(MediaDevice *media);
+	bool init(std::shared_ptr<MediaDevice> media);
 
 	int setEnabled(bool enable) { return link_->setEnabled(enable); }
 	bool isEnabled() const { return link_->flags() & MEDIA_LNK_FL_ENABLED; }
@@ -44,6 +46,7 @@ public:
 						  const Size &resolution,
 						  StreamRole role);
 	CameraConfiguration::Status validate(const CameraSensor *sensor,
+					     const std::optional<SensorConfiguration> &sensorConfig,
 					     StreamConfiguration *cfg);
 
 	int configure(const StreamConfiguration &config,
@@ -55,16 +58,16 @@ public:
 		return video_->exportBuffers(bufferCount, buffers);
 	}
 
-	int start();
+	int start(unsigned int bufferCount);
 	void stop();
 
 	int queueBuffer(FrameBuffer *buffer) { return video_->queueBuffer(buffer); }
 	Signal<FrameBuffer *> &bufferReady() { return video_->bufferReady; }
+	const Size &maxResolution() const { return maxResolution_; }
 
 private:
 	void populateFormats();
-
-	static constexpr unsigned int RKISP1_BUFFER_COUNT = 4;
+	Size filterSensorResolution(const CameraSensor *sensor);
 
 	const char *name_;
 	bool running_;
@@ -77,6 +80,12 @@ private:
 	std::unique_ptr<V4L2Subdevice> resizer_;
 	std::unique_ptr<V4L2VideoDevice> video_;
 	MediaLink *link_;
+
+	/*
+	 * Map from camera sensors to the sizes (in increasing order),
+	 * which are guaranteed to be supported by the pipeline.
+	 */
+	std::map<const CameraSensor *, std::vector<Size>> sensorSizesMap_;
 };
 
 class RkISP1MainPath : public RkISP1Path

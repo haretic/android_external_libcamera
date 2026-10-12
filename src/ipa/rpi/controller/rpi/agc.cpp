@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * agc.cpp - AGC/AEC control algorithm
+ * AGC/AEC control algorithm
  */
 
 #include "agc.h"
@@ -31,7 +31,7 @@ char const *Agc::name() const
 	return NAME;
 }
 
-int Agc::read(const libcamera::YamlObject &params)
+int Agc::read(const libcamera::ValueNode &params)
 {
 	/*
 	 * When there is only a single channel we can read the old style syntax.
@@ -45,10 +45,10 @@ int Agc::read(const libcamera::YamlObject &params)
 	}
 
 	const auto &channels = params["channels"].asList();
-	for (auto ch = channels.begin(); ch != channels.end(); ch++) {
+	for (const auto &ch : channels) {
 		LOG(RPiAgc, Debug) << "Read AGC channel";
 		channelData_.emplace_back();
-		int ret = channelData_.back().channel.read(*ch, getHardwareConfig());
+		int ret = channelData_.back().channel.read(ch, getHardwareConfig());
 		if (ret)
 			return ret;
 	}
@@ -74,22 +74,62 @@ int Agc::checkChannel(unsigned int channelIndex) const
 	return 0;
 }
 
-void Agc::disableAuto(unsigned int channelIndex)
+void Agc::disableAutoExposure()
 {
-	if (checkChannel(channelIndex))
-		return;
+	LOG(RPiAgc, Debug) << "disableAutoExposure";
 
-	LOG(RPiAgc, Debug) << "disableAuto for channel " << channelIndex;
-	channelData_[channelIndex].channel.disableAuto();
+	/* All channels are enabled/disabled together. */
+	for (auto &data : channelData_)
+		data.channel.disableAutoExposure();
 }
 
-void Agc::enableAuto(unsigned int channelIndex)
+void Agc::enableAutoExposure()
 {
-	if (checkChannel(channelIndex))
-		return;
+	LOG(RPiAgc, Debug) << "enableAutoExposure";
 
-	LOG(RPiAgc, Debug) << "enableAuto for channel " << channelIndex;
-	channelData_[channelIndex].channel.enableAuto();
+	/* All channels are enabled/disabled together. */
+	for (auto &data : channelData_)
+		data.channel.enableAutoExposure();
+}
+
+bool Agc::autoExposureEnabled() const
+{
+	LOG(RPiAgc, Debug) << "autoExposureEnabled";
+
+	/*
+	 * We always have at least one channel, and since all channels are
+	 * enabled and disabled together we can simply check the first one.
+	 */
+	return channelData_[0].channel.autoExposureEnabled();
+}
+
+void Agc::disableAutoGain()
+{
+	LOG(RPiAgc, Debug) << "disableAutoGain";
+
+	/* All channels are enabled/disabled together. */
+	for (auto &data : channelData_)
+		data.channel.disableAutoGain();
+}
+
+void Agc::enableAutoGain()
+{
+	LOG(RPiAgc, Debug) << "enableAutoGain";
+
+	/* All channels are enabled/disabled together. */
+	for (auto &data : channelData_)
+		data.channel.enableAutoGain();
+}
+
+bool Agc::autoGainEnabled() const
+{
+	LOG(RPiAgc, Debug) << "autoGainEnabled";
+
+	/*
+	 * We always have at least one channel, and since all channels are
+	 * enabled and disabled together we can simply check the first one.
+	 */
+	return channelData_[0].channel.autoGainEnabled();
 }
 
 unsigned int Agc::getConvergenceFrames() const
@@ -118,41 +158,40 @@ void Agc::setEv(unsigned int channelIndex, double ev)
 	channelData_[channelIndex].channel.setEv(ev);
 }
 
-void Agc::setFlickerPeriod(unsigned int channelIndex, Duration flickerPeriod)
+void Agc::setFlickerPeriod(Duration flickerPeriod)
 {
-	if (checkChannel(channelIndex))
-		return;
+	LOG(RPiAgc, Debug) << "setFlickerPeriod " << flickerPeriod;
 
-	LOG(RPiAgc, Debug) << "setFlickerPeriod " << flickerPeriod
-			   << " for channel " << channelIndex;
-	channelData_[channelIndex].channel.setFlickerPeriod(flickerPeriod);
+	/* Flicker period will be the same across all channels. */
+	for (auto &data : channelData_)
+		data.channel.setFlickerPeriod(flickerPeriod);
 }
 
-void Agc::setMaxShutter(Duration maxShutter)
+void Agc::setMaxExposureTime(Duration maxExposureTime)
 {
 	/* Frame durations will be the same across all channels too. */
 	for (auto &data : channelData_)
-		data.channel.setMaxShutter(maxShutter);
+		data.channel.setMaxExposureTime(maxExposureTime);
 }
 
-void Agc::setFixedShutter(unsigned int channelIndex, Duration fixedShutter)
+void Agc::setFixedExposureTime(unsigned int channelIndex, Duration fixedExposureTime)
 {
 	if (checkChannel(channelIndex))
 		return;
 
-	LOG(RPiAgc, Debug) << "setFixedShutter " << fixedShutter
+	LOG(RPiAgc, Debug) << "setFixedExposureTime " << fixedExposureTime
 			   << " for channel " << channelIndex;
-	channelData_[channelIndex].channel.setFixedShutter(fixedShutter);
+	channelData_[channelIndex].channel.setFixedExposureTime(fixedExposureTime);
 }
 
-void Agc::setFixedAnalogueGain(unsigned int channelIndex, double fixedAnalogueGain)
+void Agc::setFixedGain(unsigned int channelIndex, double fixedGain)
 {
 	if (checkChannel(channelIndex))
 		return;
 
-	LOG(RPiAgc, Debug) << "setFixedAnalogueGain " << fixedAnalogueGain
+	LOG(RPiAgc, Debug) << "setFixedGain " << fixedGain
 			   << " for channel " << channelIndex;
-	channelData_[channelIndex].channel.setFixedAnalogueGain(fixedAnalogueGain);
+	channelData_[channelIndex].channel.setFixedGain(fixedGain);
 }
 
 void Agc::setMeteringMode(std::string const &meteringModeName)
@@ -162,22 +201,22 @@ void Agc::setMeteringMode(std::string const &meteringModeName)
 		data.channel.setMeteringMode(meteringModeName);
 }
 
-void Agc::setExposureMode(unsigned int channelIndex, std::string const &exposureModeName)
+void Agc::setExposureMode(std::string const &exposureModeName)
 {
-	if (checkChannel(channelIndex))
-		return;
+	LOG(RPiAgc, Debug) << "setExposureMode " << exposureModeName;
 
-	LOG(RPiAgc, Debug) << "setExposureMode " << exposureModeName
-			   << " for channel " << channelIndex;
-	channelData_[channelIndex].channel.setExposureMode(exposureModeName);
+	/* Exposure mode will be the same across all channels. */
+	for (auto &data : channelData_)
+		data.channel.setExposureMode(exposureModeName);
 }
 
-void Agc::setConstraintMode(unsigned int channelIndex, std::string const &constraintModeName)
+void Agc::setConstraintMode(std::string const &constraintModeName)
 {
-	if (checkChannel(channelIndex))
-		return;
+	LOG(RPiAgc, Debug) << "setConstraintMode " << constraintModeName;
 
-	channelData_[channelIndex].channel.setConstraintMode(constraintModeName);
+	/* Constraint mode will be the same across all channels. */
+	for (auto &data : channelData_)
+		data.channel.setConstraintMode(constraintModeName);
 }
 
 template<typename T>
@@ -203,6 +242,7 @@ void Agc::setActiveChannels(const std::vector<unsigned int> &activeChannels)
 
 	LOG(RPiAgc, Debug) << "setActiveChannels " << activeChannels;
 	activeChannels_ = activeChannels;
+	index_ = 0;
 }
 
 void Agc::switchMode(CameraMode const &cameraMode,
@@ -311,15 +351,16 @@ void Agc::process(StatisticsPtr &stats, Metadata *imageMetadata)
 	 * exist, and call process(). We must make the agc.status metadata record correctly
 	 * which channel this is.
 	 */
+	StatisticsPtr *statsPtr = &stats;
 	if (channelData.statistics && channelData.deviceStatus) {
 		deviceStatus = *channelData.deviceStatus;
-		stats = channelData.statistics;
+		statsPtr = &channelData.statistics;
 	} else {
 		/* Can also happen when new channels start. */
 		LOG(RPiAgc, Debug) << "process: channel " << channelIndex << " not seen yet";
 	}
 
-	channelData.channel.process(stats, deviceStatus, imageMetadata, channelTotalExposures_);
+	channelData.channel.process(*statsPtr, deviceStatus, imageMetadata, channelTotalExposures_);
 	auto dur = setCurrentChannelIndexGetExposure(imageMetadata, "process: no AGC status found",
 						     channelIndex);
 	if (dur)

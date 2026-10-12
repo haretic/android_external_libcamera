@@ -2,13 +2,14 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * alsc.cpp - ALSC (auto lens shading correction) control algorithm
+ * ALSC (auto lens shading correction) control algorithm
  */
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
-#include <math.h>
 #include <numeric>
+#include <vector>
 
 #include <libcamera/base/log.h>
 #include <libcamera/base/span.h>
@@ -49,7 +50,7 @@ char const *Alsc::name() const
 	return NAME;
 }
 
-static int generateLut(Array2D<double> &lut, const libcamera::YamlObject &params)
+static int generateLut(Array2D<double> &lut, const libcamera::ValueNode &params)
 {
 	/* These must be signed ints for the co-ordinate calculations below. */
 	int X = lut.dimensions().width, Y = lut.dimensions().height;
@@ -81,7 +82,7 @@ static int generateLut(Array2D<double> &lut, const libcamera::YamlObject &params
 	return 0;
 }
 
-static int readLut(Array2D<double> &lut, const libcamera::YamlObject &params)
+static int readLut(Array2D<double> &lut, const libcamera::ValueNode &params)
 {
 	if (params.size() != lut.size()) {
 		LOG(RPiAlsc, Error) << "Invalid number of entries in LSC table";
@@ -100,7 +101,7 @@ static int readLut(Array2D<double> &lut, const libcamera::YamlObject &params)
 }
 
 static int readCalibrations(std::vector<AlscCalibration> &calibrations,
-			    const libcamera::YamlObject &params,
+			    const libcamera::ValueNode &params,
 			    std::string const &name, const Size &size)
 {
 	if (params.contains(name)) {
@@ -118,7 +119,7 @@ static int readCalibrations(std::vector<AlscCalibration> &calibrations,
 			AlscCalibration calibration;
 			calibration.ct = lastCt = ct;
 
-			const libcamera::YamlObject &table = p["table"];
+			const libcamera::ValueNode &table = p["table"];
 			if (table.size() != size.width * size.height) {
 				LOG(RPiAlsc, Error)
 					<< "Incorrect number of values for ct "
@@ -143,7 +144,7 @@ static int readCalibrations(std::vector<AlscCalibration> &calibrations,
 	return 0;
 }
 
-int Alsc::read(const libcamera::YamlObject &params)
+int Alsc::read(const libcamera::ValueNode &params)
 {
 	config_.tableSize = getHardwareConfig().awbRegions;
 	config_.framePeriod = params["frame_period"].get<uint16_t>(12);
@@ -251,12 +252,12 @@ static bool compareModes(CameraMode const &cm0, CameraMode const &cm1)
 	 */
 	if (cm0.transform != cm1.transform)
 		return true;
-	int leftDiff = abs(cm0.cropX - cm1.cropX);
-	int topDiff = abs(cm0.cropY - cm1.cropY);
-	int rightDiff = fabs(cm0.cropX + cm0.scaleX * cm0.width -
-			     cm1.cropX - cm1.scaleX * cm1.width);
-	int bottomDiff = fabs(cm0.cropY + cm0.scaleY * cm0.height -
-			      cm1.cropY - cm1.scaleY * cm1.height);
+	int leftDiff = std::abs(cm0.cropX - cm1.cropX);
+	int topDiff = std::abs(cm0.cropY - cm1.cropY);
+	int rightDiff = std::abs(cm0.cropX + cm0.scaleX * cm0.width -
+				 cm1.cropX - cm1.scaleX * cm1.width);
+	int bottomDiff = std::abs(cm0.cropY + cm0.scaleY * cm0.height -
+				  cm1.cropY - cm1.scaleY * cm1.height);
 	/*
 	 * These thresholds are a rather arbitrary amount chosen to trigger
 	 * when carrying on with the previously calculated tables might be
@@ -338,19 +339,21 @@ double getCt(Metadata *metadata, double defaultCt)
 }
 
 static void copyStats(RgbyRegions &regions, StatisticsPtr &stats,
-		      AlscStatus const &status)
+		      std::array<Array2D<double>, 3> &prevSyncResults)
 {
 	if (!regions.numRegions())
 		regions.init(stats->awbRegions.size());
 
-	const std::vector<double> &rTable = status.r;
-	const std::vector<double> &gTable = status.g;
-	const std::vector<double> &bTable = status.b;
+	const std::vector<double> &rTable = prevSyncResults[0].data(); //status.r;
+	const std::vector<double> &gTable = prevSyncResults[1].data(); //status.g;
+	const std::vector<double> &bTable = prevSyncResults[2].data(); //status.b;
 	for (unsigned int i = 0; i < stats->awbRegions.numRegions(); i++) {
 		auto r = stats->awbRegions.get(i);
-		r.val.rSum = static_cast<uint64_t>(r.val.rSum / rTable[i]);
-		r.val.gSum = static_cast<uint64_t>(r.val.gSum / gTable[i]);
-		r.val.bSum = static_cast<uint64_t>(r.val.bSum / bTable[i]);
+		if (stats->colourStatsPos == Statistics::ColourStatsPos::PostLsc) {
+			r.val.rSum = static_cast<uint64_t>(r.val.rSum / rTable[i]);
+			r.val.gSum = static_cast<uint64_t>(r.val.gSum / gTable[i]);
+			r.val.bSum = static_cast<uint64_t>(r.val.bSum / bTable[i]);
+		}
 		regions.set(i, r);
 	}
 }
@@ -365,17 +368,10 @@ void Alsc::restartAsync(StatisticsPtr &stats, Metadata *imageMetadata)
 	ct_ = getCt(imageMetadata, ct_);
 	/*
 	 * We have to copy the statistics here, dividing out our best guess of
-	 * the LSC table that the pipeline applied to them.
+	 * the LSC table that the pipeline applied to them which we get from
+	 * prevSyncResults_.
 	 */
-	AlscStatus alscStatus;
-	if (imageMetadata->get("alsc.status", alscStatus) != 0) {
-		LOG(RPiAlsc, Warning)
-			<< "No ALSC status found for applied gains!";
-		alscStatus.r.resize(config_.tableSize.width * config_.tableSize.height, 1.0);
-		alscStatus.g.resize(config_.tableSize.width * config_.tableSize.height, 1.0);
-		alscStatus.b.resize(config_.tableSize.width * config_.tableSize.height, 1.0);
-	}
-	copyStats(statistics_, stats, alscStatus);
+	copyStats(statistics_, stats, prevSyncResults_);
 	framePhase_ = 0;
 	asyncStarted_ = true;
 	{
@@ -414,6 +410,11 @@ void Alsc::prepare(Metadata *imageMetadata)
 	status.g = prevSyncResults_[1].data();
 	status.b = prevSyncResults_[2].data();
 	imageMetadata->set("alsc.status", status);
+	/*
+	 * Put the results in the global metadata as well. This will be used by
+	 * AWB to factor in the colour shading correction.
+	 */
+	getGlobalMetadata().set("alsc.status", status);
 }
 
 void Alsc::process(StatisticsPtr &stats, Metadata *imageMetadata)
@@ -496,8 +497,9 @@ void resampleCalTable(const Array2D<double> &calTableIn,
 	 * Precalculate and cache the x sampling locations and phases to save
 	 * recomputing them on every row.
 	 */
-	int xLo[X], xHi[X];
-	double xf[X];
+	std::vector<int> xLo(X);
+	std::vector<int> xHi(X);
+	std::vector<double> xf(X);
 	double scaleX = cameraMode.sensorWidth /
 			(cameraMode.width * cameraMode.scaleX);
 	double xOff = cameraMode.cropX / (double)cameraMode.sensorWidth;
@@ -548,7 +550,9 @@ static void calculateCrCb(const RgbyRegions &awbRegion, Array2D<double> &cr,
 	for (unsigned int i = 0; i < cr.size(); i++) {
 		auto s = awbRegion.get(i);
 
-		if (s.counted <= minCount || s.val.gSum / s.counted <= minG) {
+		/* Do not return unreliable, or zero, colour ratio statistics. */
+		if (s.counted <= minCount || s.val.gSum / s.counted <= minG ||
+		    s.val.rSum / s.counted <= minG || s.val.bSum / s.counted <= minG) {
 			cr[i] = cb[i] = InsufficientData;
 			continue;
 		}
@@ -728,7 +732,7 @@ static double gaussSeidel2Sor(const SparseArray<double> &M, double omega,
 	double maxDiff = 0;
 	for (i = 0; i < XY; i++) {
 		lambda[i] = oldLambda[i] + (lambda[i] - oldLambda[i]) * omega;
-		if (fabs(lambda[i] - oldLambda[i]) > fabs(maxDiff))
+		if (std::abs(lambda[i] - oldLambda[i]) > std::abs(maxDiff))
 			maxDiff = lambda[i] - oldLambda[i];
 	}
 	return maxDiff;
@@ -760,7 +764,7 @@ static void runMatrixIterations(const Array2D<double> &C,
 	constructM(C, W, M);
 	double lastMaxDiff = std::numeric_limits<double>::max();
 	for (unsigned int i = 0; i < nIter; i++) {
-		double maxDiff = fabs(gaussSeidel2Sor(M, omega, lambda, lambdaBound));
+		double maxDiff = std::abs(gaussSeidel2Sor(M, omega, lambda, lambdaBound));
 		if (maxDiff < threshold) {
 			LOG(RPiAlsc, Debug)
 				<< "Stop after " << i + 1 << " iterations";

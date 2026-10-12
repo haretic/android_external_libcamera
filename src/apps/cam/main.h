@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * main.h - Cam application
+ * Cam application
  */
 
 #pragma once
@@ -17,8 +17,10 @@ enum {
 	OptList = 'l',
 	OptListProperties = 'p',
 	OptMonitor = 'm',
+	OptOrientation = 'o',
 	OptSDL = 'S',
 	OptStream = 's',
+	OptVersion = 'v',
 	OptListControls = 256,
 	OptStrictFormats = 257,
 	OptMetadata = 258,

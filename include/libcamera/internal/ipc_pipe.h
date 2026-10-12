@@ -2,11 +2,12 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * ipc_pipe.h - Image Processing Algorithm IPC module for IPA proxies
+ * Image Processing Algorithm IPC module for IPA proxies
  */
 
 #pragma once
 
+#include <stdint.h>
 #include <vector>
 
 #include <libcamera/base/shared_fd.h>
@@ -59,10 +60,9 @@ public:
 
 	virtual int sendAsync(const IPCMessage &data) = 0;
 
-	Signal<std::shared_ptr<IPCMessage> &> recv;
+	Signal<const IPCMessage &> recv;
 
 protected:
-
 	bool connected_;
 };
 

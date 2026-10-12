@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * fence.cpp - Synchronization fence
+ * Synchronization fence
  */
 
 #include "libcamera/fence.h"
@@ -11,7 +11,7 @@ namespace libcamera {
 
 /**
  *
- * \file libcamera/fence.h
+ * \file fence.h
  * \brief Definition of the Fence class
  */
 

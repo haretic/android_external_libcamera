@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * options.cpp - cam - Options parsing
+ * cam - Options parsing
  */
 
 #include <assert.h>
@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <iostream>
 #include <string.h>
+#include <vector>
 
 #include "options.h"
 
@@ -145,7 +146,7 @@ std::string Option::optionName() const
 	if (name)
 		return "--" + std::string(name);
 	else
-		return "-" + std::string(1, opt);
+		return '-' + std::string(1, opt);
 }
 
 /* -----------------------------------------------------------------------------
@@ -422,8 +423,7 @@ unsigned int KeyValueParser::maxOptionLength() const
 {
 	unsigned int maxLength = 0;
 
-	for (auto const &iter : optionsMap_) {
-		const Option &option = iter.second;
+	for (const auto &[name, option] : optionsMap_) {
 		unsigned int length = 10 + strlen(option.name);
 		if (option.argument != ArgumentNone)
 			length += 1 + strlen(option.typeName());
@@ -439,8 +439,7 @@ unsigned int KeyValueParser::maxOptionLength() const
 
 void KeyValueParser::usage(int indent)
 {
-	for (auto const &iter : optionsMap_) {
-		const Option &option = iter.second;
+	for (const auto &[name, option] : optionsMap_) {
 		std::string argument = std::string("          ") + option.name;
 
 		if (option.argument != ArgumentNone) {
@@ -879,14 +878,14 @@ OptionsParser::Options OptionsParser::parse(int argc, char **argv)
 	 * Allocate short and long options arrays large enough to contain all
 	 * options.
 	 */
-	char shortOptions[optionsMap_.size() * 3 + 2];
-	struct option longOptions[optionsMap_.size() + 1];
+	std::vector<char> shortOptions(optionsMap_.size() * 3 + 2);
+	std::vector<struct option> longOptions(optionsMap_.size() + 1);
 	unsigned int ids = 0;
 	unsigned int idl = 0;
 
 	shortOptions[ids++] = ':';
 
-	for (const auto [opt, option] : optionsMap_) {
+	for (const auto &[opt, option] : optionsMap_) {
 		if (option->hasShortOption()) {
 			shortOptions[ids++] = opt;
 			if (option->argument != ArgumentNone)
@@ -922,7 +921,8 @@ OptionsParser::Options OptionsParser::parse(int argc, char **argv)
 	opterr = 0;
 
 	while (true) {
-		int c = getopt_long(argc, argv, shortOptions, longOptions, nullptr);
+		int c = getopt_long(argc, argv, shortOptions.data(),
+				    longOptions.data(), nullptr);
 
 		if (c == -1)
 			break;
@@ -1038,7 +1038,7 @@ void OptionsParser::usageOptions(const std::list<Option> &options,
 
 		std::cerr << std::setw(indent) << argument;
 
-		for (const char *help = option.help, *end = help; end; ) {
+		for (const char *help = option.help, *end = help; end;) {
 			end = strchr(help, '\n');
 			if (end) {
 				std::cerr << std::string(help, end - help + 1);

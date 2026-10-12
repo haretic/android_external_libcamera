@@ -2,16 +2,18 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * threads.cpp - Threads test
+ * Threads test
  */
 
 #include <chrono>
 #include <iostream>
 #include <memory>
 #include <pthread.h>
+#include <sched.h>
 #include <thread>
 #include <time.h>
 
+#include <libcamera/base/object.h>
 #include <libcamera/base/thread.h>
 
 #include "test.h"
@@ -50,20 +52,35 @@ protected:
 	{
 		cancelled_ = true;
 
-		/*
-		 * Cancel the thread and call a guaranteed cancellation point
-		 * (nanosleep).
-		 */
 		pthread_cancel(pthread_self());
-
-		struct timespec req{ 0, 100*000*000 };
-		nanosleep(&req, nullptr);
+		pthread_testcancel();
 
 		cancelled_ = false;
 	}
 
 private:
 	bool &cancelled_;
+};
+
+class CpuSetTester : public Object
+{
+public:
+	CpuSetTester(unsigned int cpuset)
+		: cpuset_(cpuset) {}
+
+	bool testCpuSet()
+	{
+		int ret = sched_getcpu();
+		if (static_cast<int>(cpuset_) != ret) {
+			cout << "Invalid cpuset: " << ret << ", expecting: " << cpuset_ << endl;
+			return false;
+		}
+
+		return true;
+	}
+
+private:
+	const unsigned int cpuset_;
 };
 
 class ThreadTest : public Test
@@ -163,6 +180,23 @@ protected:
 		if (!cancelled || !finished) {
 			cout << "Cleanup failed upon abnormal termination" << endl;
 			return TestFail;
+		}
+
+		const unsigned int numCpus = std::thread::hardware_concurrency();
+		for (unsigned int i = 0; i < numCpus; ++i) {
+			thread = std::make_unique<Thread>();
+			const std::array<const unsigned int, 1> cpus{ i };
+			thread->setThreadAffinity(cpus);
+			thread->start();
+
+			CpuSetTester tester(i);
+			tester.moveToThread(thread.get());
+
+			if (!tester.invokeMethod(&CpuSetTester::testCpuSet, ConnectionTypeBlocking))
+				return TestFail;
+
+			thread->exit(0);
+			thread->wait();
 		}
 
 		return TestPass;

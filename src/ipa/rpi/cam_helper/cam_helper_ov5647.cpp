@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * cam_helper_ov5647.cpp - camera information for ov5647 sensor
+ * camera information for ov5647 sensor
  */
 
 #include <assert.h>
@@ -17,8 +17,6 @@ public:
 	CamHelperOv5647();
 	uint32_t gainCode(double gain) const override;
 	double gain(uint32_t gainCode) const override;
-	void getDelays(int &exposureDelay, int &gainDelay,
-		       int &vblankDelay, int &hblankDelay) const override;
 	unsigned int hideFramesStartup() const override;
 	unsigned int hideFramesModeSwitch() const override;
 	unsigned int mistrustFramesStartup() const override;
@@ -50,19 +48,6 @@ uint32_t CamHelperOv5647::gainCode(double gain) const
 double CamHelperOv5647::gain(uint32_t gainCode) const
 {
 	return static_cast<double>(gainCode) / 16.0;
-}
-
-void CamHelperOv5647::getDelays(int &exposureDelay, int &gainDelay,
-				int &vblankDelay, int &hblankDelay) const
-{
-	/*
-	 * We run this sensor in a mode where the gain delay is bumped up to
-	 * 2. It seems to be the only way to make the delays "predictable".
-	 */
-	exposureDelay = 2;
-	gainDelay = 2;
-	vblankDelay = 2;
-	hblankDelay = 2;
 }
 
 unsigned int CamHelperOv5647::hideFramesStartup() const

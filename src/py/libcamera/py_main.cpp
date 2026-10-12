@@ -5,8 +5,16 @@
  * Python bindings
  */
 
+#include <pybind11/functional.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+#include <pybind11/stl_bind.h>
+
+#include "py_camera_manager.h"
+#include "py_helpers.h"
 #include "py_main.h"
 
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -15,14 +23,6 @@
 #include <libcamera/base/log.h>
 
 #include <libcamera/libcamera.h>
-
-#include <pybind11/functional.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <pybind11/stl_bind.h>
-
-#include "py_camera_manager.h"
-#include "py_helpers.h"
 
 namespace py = pybind11;
 
@@ -34,6 +34,7 @@ LOG_DEFINE_CATEGORY(Python)
 
 }
 
+#if PYBIND11_VERSION_MAJOR < 3
 /*
  * This is a holder class used only for the Camera class, for the sole purpose
  * of avoiding the compilation issue with Camera's private destructor.
@@ -79,19 +80,18 @@ private:
 
 PYBIND11_DECLARE_HOLDER_TYPE(T, PyCameraSmartPtr<T>)
 
+using PyCameraHolder = PyCameraSmartPtr<Camera>;
+using PyCameraArg = PyCameraSmartPtr<Camera>;
+#else
+using PyCameraHolder = py::smart_holder;
+using PyCameraArg = std::shared_ptr<Camera>;
+#endif
+
 /*
  * Note: global C++ destructors can be ran on this before the py module is
  * destructed.
  */
 static std::weak_ptr<PyCameraManager> gCameraManager;
-
-void init_py_color_space(py::module &m);
-void init_py_controls_generated(py::module &m);
-void init_py_enums(py::module &m);
-void init_py_formats_generated(py::module &m);
-void init_py_geometry(py::module &m);
-void init_py_properties_generated(py::module &m);
-void init_py_transform(py::module &m);
 
 PYBIND11_MODULE(_libcamera, m)
 {
@@ -111,7 +111,8 @@ PYBIND11_MODULE(_libcamera, m)
 	 */
 
 	auto pyCameraManager = py::class_<PyCameraManager, std::shared_ptr<PyCameraManager>>(m, "CameraManager");
-	auto pyCamera = py::class_<Camera, PyCameraSmartPtr<Camera>>(m, "Camera");
+	auto pyCamera = py::class_<Camera, PyCameraHolder>(m, "Camera");
+	auto pySensorConfiguration = py::class_<SensorConfiguration>(m, "SensorConfiguration");
 	auto pyCameraConfiguration = py::class_<CameraConfiguration>(m, "CameraConfiguration");
 	auto pyCameraConfigurationStatus = py::enum_<CameraConfiguration::Status>(pyCameraConfiguration, "Status");
 	auto pyStreamConfiguration = py::class_<StreamConfiguration>(m, "StreamConfiguration");
@@ -281,6 +282,40 @@ PYBIND11_MODULE(_libcamera, m)
 			return ret;
 		});
 
+	pySensorConfiguration
+		.def(py::init<>())
+		.def_readwrite("bit_depth", &SensorConfiguration::bitDepth)
+		.def_readwrite("analog_crop", &SensorConfiguration::analogCrop)
+		.def_property(
+			"binning",
+			[](SensorConfiguration &self) {
+				return py::make_tuple(self.binning.binX, self.binning.binY);
+			},
+			[](SensorConfiguration &self, py::object value) {
+				auto vec = value.cast<std::vector<unsigned int>>();
+				if (vec.size() != 2)
+					throw std::runtime_error("binning requires iterable of 2 values");
+				self.binning.binX = vec[0];
+				self.binning.binY = vec[1];
+			})
+		.def_property(
+			"skipping",
+			[](SensorConfiguration &self) {
+				return py::make_tuple(self.skipping.xOddInc, self.skipping.xEvenInc,
+						      self.skipping.yOddInc, self.skipping.yEvenInc);
+			},
+			[](SensorConfiguration &self, py::object value) {
+				auto vec = value.cast<std::vector<unsigned int>>();
+				if (vec.size() != 4)
+					throw std::runtime_error("skipping requires iterable of 4 values");
+				self.skipping.xOddInc = vec[0];
+				self.skipping.xEvenInc = vec[1];
+				self.skipping.yOddInc = vec[2];
+				self.skipping.yEvenInc = vec[3];
+			})
+		.def_readwrite("output_size", &SensorConfiguration::outputSize)
+		.def("is_valid", &SensorConfiguration::isValid);
+
 	pyCameraConfiguration
 		.def("__iter__", [](CameraConfiguration &self) {
 			return py::make_iterator<py::return_value_policy::reference_internal>(self);
@@ -293,7 +328,8 @@ PYBIND11_MODULE(_libcamera, m)
 		     py::return_value_policy::reference_internal)
 		.def_property_readonly("size", &CameraConfiguration::size)
 		.def_property_readonly("empty", &CameraConfiguration::empty)
-		.def_readwrite("transform", &CameraConfiguration::transform);
+		.def_readwrite("sensor_config", &CameraConfiguration::sensorConfig)
+		.def_readwrite("orientation", &CameraConfiguration::orientation);
 
 	pyCameraConfigurationStatus
 		.value("Valid", CameraConfiguration::Valid)
@@ -319,7 +355,7 @@ PYBIND11_MODULE(_libcamera, m)
 		.def("range", &StreamFormats::range);
 
 	pyFrameBufferAllocator
-		.def(py::init<PyCameraSmartPtr<Camera>>(), py::keep_alive<1, 2>())
+		.def(py::init<PyCameraArg>(), py::keep_alive<1, 2>())
 		.def("allocate", [](FrameBufferAllocator &self, Stream *stream) {
 			int ret = self.allocate(stream);
 			if (ret < 0)
@@ -343,7 +379,13 @@ PYBIND11_MODULE(_libcamera, m)
 		.def(py::init<std::vector<FrameBuffer::Plane>, unsigned int>(),
 		     py::arg("planes"), py::arg("cookie") = 0)
 		.def_property_readonly("metadata", &FrameBuffer::metadata, py::return_value_policy::reference_internal)
-		.def_property_readonly("planes", &FrameBuffer::planes)
+		.def_property_readonly("planes", [](const FrameBuffer &self) {
+			/* Convert from Span<> to std::vector<> */
+			/* Note: this creates copies */
+			auto planes = self.planes();
+			std::vector<FrameBuffer::Plane> v(planes.begin(), planes.end());
+			return v;
+		})
 		.def_property("cookie", &FrameBuffer::cookie, &FrameBuffer::setCookie);
 
 	pyFrameBufferPlane
@@ -371,12 +413,26 @@ PYBIND11_MODULE(_libcamera, m)
 	pyControlId
 		.def_property_readonly("id", &ControlId::id)
 		.def_property_readonly("name", &ControlId::name)
+		.def_property_readonly("vendor", &ControlId::vendor)
 		.def_property_readonly("type", &ControlId::type)
+		.def_property_readonly("isArray", &ControlId::isArray)
+		.def_property_readonly("size", &ControlId::size)
 		.def("__str__", [](const ControlId &self) { return self.name(); })
 		.def("__repr__", [](const ControlId &self) {
-			return py::str("libcamera.ControlId({}, {}, {})")
-				.format(self.id(), self.name(), self.type());
-		});
+			std::string sizeStr = "";
+			if (self.isArray()) {
+				sizeStr = "[";
+				size_t size = self.size();
+				if (size == std::numeric_limits<size_t>::max())
+					sizeStr += "n";
+				else
+					sizeStr += std::to_string(size);
+				sizeStr += "]";
+			}
+			return py::str("libcamera.ControlId({}, {}.{}{}, {})")
+				.format(self.id(), self.vendor(), self.name(), sizeStr, self.type());
+		})
+		.def("enumerators", &ControlId::enumerators);
 
 	pyControlInfo
 		.def_property_readonly("min", [](const ControlInfo &self) {
@@ -452,7 +508,8 @@ PYBIND11_MODULE(_libcamera, m)
 		.def_property_readonly("planes", [](const FrameMetadata &self) {
 			/* Convert from Span<> to std::vector<> */
 			/* Note: this creates a copy */
-			std::vector<FrameMetadata::Plane> v(self.planes().begin(), self.planes().end());
+			auto planes = self.planes();
+			std::vector<FrameMetadata::Plane> v(planes.begin(), planes.end());
 			return v;
 		});
 

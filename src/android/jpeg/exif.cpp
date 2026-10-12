@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * exif.cpp - EXIF tag creation using libexif
+ * EXIF tag creation using libexif
  */
 
 #include "exif.h"
@@ -72,8 +72,6 @@ Exif::Exif()
 
 	setString(EXIF_IFD_EXIF, EXIF_TAG_EXIF_VERSION,
 		  EXIF_FORMAT_UNDEFINED, "0231");
-	setShort(EXIF_IFD_EXIF, EXIF_TAG_METERING_MODE, 1);
-	setShort(EXIF_IFD_EXIF, EXIF_TAG_SCENE_CAPTURE_TYPE, 0);
 
 	/* Create the mandatory EXIF fields with default data. */
 	exif_data_fix(data_);
@@ -290,27 +288,23 @@ void Exif::setSize(const Size &size)
 {
 	setLong(EXIF_IFD_EXIF, EXIF_TAG_PIXEL_Y_DIMENSION, size.height);
 	setLong(EXIF_IFD_EXIF, EXIF_TAG_PIXEL_X_DIMENSION, size.width);
-	setLong(EXIF_IFD_0, EXIF_TAG_IMAGE_LENGTH, size.height);
-	setLong(EXIF_IFD_0, EXIF_TAG_IMAGE_WIDTH, size.width);
 }
 
 void Exif::setTimestamp(time_t timestamp, std::chrono::milliseconds msec)
 {
-	time(&timestamp);
-	auto tm = localtime(&timestamp);
+	struct tm tm;
+	localtime_r(&timestamp, &tm);
 
 	char str[20];
-	strftime(str, sizeof(str), "%Y:%m:%d %H:%M:%S", tm);
+	strftime(str, sizeof(str), "%Y:%m:%d %H:%M:%S", &tm);
 	std::string ts(str);
-
-	LOG(EXIF, Debug) << "Jpeg Date: " << str;
 
 	setString(EXIF_IFD_0, EXIF_TAG_DATE_TIME, EXIF_FORMAT_ASCII, ts);
 	setString(EXIF_IFD_EXIF, EXIF_TAG_DATE_TIME_ORIGINAL, EXIF_FORMAT_ASCII, ts);
 	setString(EXIF_IFD_EXIF, EXIF_TAG_DATE_TIME_DIGITIZED, EXIF_FORMAT_ASCII, ts);
 
 	/* Query and set timezone information if available. */
-	int r = strftime(str, sizeof(str), "%z", tm);
+	int r = strftime(str, sizeof(str), "%z", &tm);
 	if (r <= 0)
 		return;
 
@@ -463,7 +457,6 @@ void Exif::setAperture(float size)
 {
 	ExifRational rational = { static_cast<ExifLong>(size * 10000), 10000 };
 	setRational(EXIF_IFD_EXIF, EXIF_TAG_FNUMBER, rational);
-	setRational(EXIF_IFD_EXIF, EXIF_TAG_APERTURE_VALUE, rational);
 }
 
 void Exif::setISO(uint16_t iso)

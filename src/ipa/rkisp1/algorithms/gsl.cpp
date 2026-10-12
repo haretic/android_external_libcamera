@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * gsl.cpp - RkISP1 Gamma Sensor Linearization control
+ * RkISP1 Gamma Sensor Linearization control
  */
 
 #include "gsl.h"
@@ -10,7 +10,7 @@
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
 
-#include "libcamera/internal/yaml_parser.h"
+#include "libcamera/internal/value_node.h"
 
 #include "linux/rkisp1-config.h"
 
@@ -56,10 +56,10 @@ GammaSensorLinearization::GammaSensorLinearization()
  * \copydoc libcamera::ipa::Algorithm::init
  */
 int GammaSensorLinearization::init([[maybe_unused]] IPAContext &context,
-				   const YamlObject &tuningData)
+				   const ValueNode &tuningData)
 {
 	std::vector<uint16_t> xIntervals =
-		tuningData["x-intervals"].getList<uint16_t>().value_or(std::vector<uint16_t>{});
+		tuningData["x-intervals"].get<std::vector<uint16_t>>().value_or(utils::defopt);
 	if (xIntervals.size() != kDegammaXIntervals) {
 		LOG(RkISP1Gsl, Error)
 			<< "Invalid 'x' coordinates: expected "
@@ -75,7 +75,7 @@ int GammaSensorLinearization::init([[maybe_unused]] IPAContext &context,
 	for (unsigned int i = 0; i < kDegammaXIntervals; ++i)
 		gammaDx_[i / 8] |= (xIntervals[i] & 0x07) << ((i % 8) * 4);
 
-	const YamlObject &yObject = tuningData["y"];
+	const ValueNode &yObject = tuningData["y"];
 	if (!yObject.isDictionary()) {
 		LOG(RkISP1Gsl, Error)
 			<< "Issue while parsing 'y' in tuning file: "
@@ -83,7 +83,7 @@ int GammaSensorLinearization::init([[maybe_unused]] IPAContext &context,
 		return -EINVAL;
 	}
 
-	curveYr_ = yObject["red"].getList<uint16_t>().value_or(std::vector<uint16_t>{});
+	curveYr_ = yObject["red"].get<std::vector<uint16_t>>().value_or(utils::defopt);
 	if (curveYr_.size() != RKISP1_CIF_ISP_DEGAMMA_CURVE_SIZE) {
 		LOG(RkISP1Gsl, Error)
 			<< "Invalid 'y:red' coordinates: expected "
@@ -92,7 +92,7 @@ int GammaSensorLinearization::init([[maybe_unused]] IPAContext &context,
 		return -EINVAL;
 	}
 
-	curveYg_ = yObject["green"].getList<uint16_t>().value_or(std::vector<uint16_t>{});
+	curveYg_ = yObject["green"].get<std::vector<uint16_t>>().value_or(utils::defopt);
 	if (curveYg_.size() != RKISP1_CIF_ISP_DEGAMMA_CURVE_SIZE) {
 		LOG(RkISP1Gsl, Error)
 			<< "Invalid 'y:green' coordinates: expected "
@@ -101,7 +101,7 @@ int GammaSensorLinearization::init([[maybe_unused]] IPAContext &context,
 		return -EINVAL;
 	}
 
-	curveYb_ = yObject["blue"].getList<uint16_t>().value_or(std::vector<uint16_t>{});
+	curveYb_ = yObject["blue"].get<std::vector<uint16_t>>().value_or(utils::defopt);
 	if (curveYb_.size() != RKISP1_CIF_ISP_DEGAMMA_CURVE_SIZE) {
 		LOG(RkISP1Gsl, Error)
 			<< "Invalid 'y:blue' coordinates: expected "
@@ -119,24 +119,20 @@ int GammaSensorLinearization::init([[maybe_unused]] IPAContext &context,
 void GammaSensorLinearization::prepare([[maybe_unused]] IPAContext &context,
 				       const uint32_t frame,
 				       [[maybe_unused]] IPAFrameContext &frameContext,
-				       rkisp1_params_cfg *params)
+				       RkISP1Params *params)
 {
 	if (frame > 0)
 		return;
 
-	params->others.sdg_config.xa_pnts.gamma_dx0 = gammaDx_[0];
-	params->others.sdg_config.xa_pnts.gamma_dx1 = gammaDx_[1];
+	auto config = params->block<BlockType::Sdg>();
+	config.setEnabled(true);
 
-	std::copy(curveYr_.begin(), curveYr_.end(),
-		  params->others.sdg_config.curve_r.gamma_y);
-	std::copy(curveYg_.begin(), curveYg_.end(),
-		  params->others.sdg_config.curve_g.gamma_y);
-	std::copy(curveYb_.begin(), curveYb_.end(),
-		  params->others.sdg_config.curve_b.gamma_y);
+	config->xa_pnts.gamma_dx0 = gammaDx_[0];
+	config->xa_pnts.gamma_dx1 = gammaDx_[1];
 
-	params->module_en_update |= RKISP1_CIF_ISP_MODULE_SDG;
-	params->module_ens |= RKISP1_CIF_ISP_MODULE_SDG;
-	params->module_cfg_update |= RKISP1_CIF_ISP_MODULE_SDG;
+	std::copy(curveYr_.begin(), curveYr_.end(), config->curve_r.gamma_y);
+	std::copy(curveYg_.begin(), curveYg_.end(), config->curve_g.gamma_y);
+	std::copy(curveYb_.begin(), curveYb_.end(), config->curve_b.gamma_y);
 }
 
 REGISTER_IPA_ALGORITHM(GammaSensorLinearization, "GammaSensorLinearization")

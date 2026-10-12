@@ -24,8 +24,8 @@
         {
             "rpi.noise":
             {
-                "reference_constant": 16.0,
-                "reference_slope": 4.0
+                "reference_constant": 0.0,
+                "reference_slope": 2.5
             }
         },
         {
@@ -41,6 +41,7 @@
         {
             "rpi.awb":
             {
+                "enabled": true,
                 "priors": [
                     {
                         "lux": 0,
@@ -127,87 +128,345 @@
             }
         },
         {
+            "rpi.nn.awb":
+            {
+                "enabled": false,
+                "modes":
+                {
+                    "auto":
+                    {
+                        "lo": 2500,
+                        "hi": 8000
+                    },
+                    "incandescent":
+                    {
+                        "lo": 2500,
+                        "hi": 3000
+                    },
+                    "tungsten":
+                    {
+                        "lo": 3000,
+                        "hi": 3500
+                    },
+                    "fluorescent":
+                    {
+                        "lo": 4000,
+                        "hi": 4700
+                    },
+                    "indoor":
+                    {
+                        "lo": 3000,
+                        "hi": 5000
+                    },
+                    "daylight":
+                    {
+                        "lo": 5500,
+                        "hi": 6500
+                    },
+                    "cloudy":
+                    {
+                        "lo": 7000,
+                        "hi": 8600
+                    }
+                },
+                "ct_curve":
+                [
+                    2750.0, 0.7881, 0.2849,
+                    2940.0, 0.7559, 0.3103,
+                    3650.0, 0.6291, 0.4206,
+                    4625.0, 0.5336, 0.5161,
+                    5715.0, 0.4668, 0.5898
+                ],
+                "sensitivity_r": 1.05,
+                "sensitivity_b": 1.05,
+                "transverse_pos": 0.01165,
+                "transverse_neg": 0.01601,
+                "ccm":
+                [
+                    1.5820866588602653, -0.39406808743169397, -0.1880145042935207,
+                    -0.3101711553473849, 1.756938087431694, -0.44677099921935987,
+                    -0.018062732240437158, -0.5139293442622951, 1.5319991100702577
+                ],
+                "enable_nn": 1
+            }
+        },
+        {
             "rpi.agc":
             {
-                "metering_modes":
-                {
-                    "centre-weighted":
+                "channels": [
                     {
-                        "weights": [ 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0 ]
-                    },
-                    "spot":
-                    {
-                        "weights": [ 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ]
-                    },
-                    "matrix":
-                    {
-                        "weights": [ 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ]
-                    }
-                },
-                "exposure_modes":
-                {
-                    "normal":
-                    {
-                        "shutter": [ 100, 15000, 30000, 60000, 120000 ],
-                        "gain": [ 1.0, 1.0, 2.0, 4.0, 6.0 ]
-                    },
-                    "short":
-                    {
-                        "shutter": [ 100, 5000, 10000, 20000, 120000 ],
-                        "gain": [ 1.0, 2.0, 4.0, 6.0, 6.0 ]
-                    },
-                    "long":
-                    {
-                        "shutter": [ 1000, 30000, 60000, 90000, 120000 ],
-                        "gain": [ 1.0, 2.0, 4.0, 6.0, 12.0 ]
-                    }
-                },
-                "constraint_modes":
-                {
-                    "normal": [
+                        "metering_modes":
                         {
-                            "bound": "LOWER",
-                            "q_lo": 0.98,
-                            "q_hi": 1.0,
-                            "y_target":
-                            [
-                                0, 0.2,
-                                1000, 0.2
-                            ]
-                        }
-                    ],
-                    "highlight": [
+                            "centre-weighted":
+                            {
+                                "weights":
+                                [
+                                    3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0
+                                ]
+                            },
+                            "spot":
+                            {
+                                "weights":
+                                [
+                                    2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                                ]
+                            },
+                            "matrix":
+                            {
+                                "weights":
+                                [
+                                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+                                ]
+                            }
+                        },
+                        "exposure_modes":
                         {
-                            "bound": "LOWER",
-                            "q_lo": 0.98,
-                            "q_hi": 1.0,
-                            "y_target":
-                            [
-                                0, 0.2,
-                                1000, 0.2
+                            "normal":
+                            {
+                                "shutter": [ 100, 15000, 30000, 60000, 66666 ],
+                                "gain": [ 1.0, 1.0, 2.0, 4.0, 16.0 ]
+                            },
+                            "short":
+                            {
+                                "shutter": [ 100, 5000, 10000, 20000, 66666 ],
+                                "gain": [ 1.0, 2.0, 4.0, 6.0, 16.0 ]
+                            },
+                            "long":
+                            {
+                                "shutter": [ 1000, 30000, 60000, 90000, 120000 ],
+                                "gain": [ 1.0, 2.0, 4.0, 6.0, 16.0 ]
+                            }
+                        },
+                        "constraint_modes":
+                        {
+                            "normal": [
+                                {
+                                    "bound": "LOWER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.2,
+                                        1000, 0.2
+                                    ]
+                                }
+                            ],
+                            "highlight": [
+                                {
+                                    "bound": "LOWER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.2,
+                                        1000, 0.2
+                                    ]
+                                },
+                                {
+                                    "bound": "UPPER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.8,
+                                        1000, 0.8
+                                    ]
+                                }
                             ]
                         },
+                        "y_target":
+                        [
+                            0, 0.16,
+                            1000, 0.165,
+                            10000, 0.17
+                        ],
+                        "startup_frames": 5,
+                        "convergence_frames": 6,
+                        "speed": 0.15
+                    },
+                    {
+                        "base_ev": 0.125,
+                        "metering_modes":
                         {
-                            "bound": "UPPER",
-                            "q_lo": 0.98,
-                            "q_hi": 1.0,
-                            "y_target":
-                            [
-                                0, 0.8,
-                                1000, 0.8
+                            "centre-weighted":
+                            {
+                                "weights":
+                                [
+                                    3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0
+                                ]
+                            },
+                            "spot":
+                            {
+                                "weights":
+                                [
+                                    2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                                ]
+                            },
+                            "matrix":
+                            {
+                                "weights":
+                                [
+                                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+                                ]
+                            }
+                        },
+                        "exposure_modes":
+                        {
+                            "normal":
+                            {
+                                "shutter": [ 100, 15000, 30000, 60000, 120000 ],
+                                "gain": [ 1.0, 1.0, 2.0, 4.0, 6.0 ]
+                            },
+                            "short":
+                            {
+                                "shutter": [ 100, 5000, 10000, 20000, 120000 ],
+                                "gain": [ 1.0, 2.0, 4.0, 6.0, 6.0 ]
+                            },
+                            "long":
+                            {
+                                "shutter": [ 1000, 30000, 60000, 90000, 120000 ],
+                                "gain": [ 1.0, 2.0, 4.0, 6.0, 12.0 ]
+                            }
+                        },
+                        "constraint_modes":
+                        {
+                            "normal": [
+                                {
+                                    "bound": "LOWER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.2,
+                                        1000, 0.2
+                                    ]
+                                }
+                            ],
+                            "highlight": [
+                                {
+                                    "bound": "LOWER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.2,
+                                        1000, 0.2
+                                    ]
+                                },
+                                {
+                                    "bound": "UPPER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.8,
+                                        1000, 0.8
+                                    ]
+                                }
                             ]
-                        }
-                    ]
-                },
-                "y_target":
-                [
-                    0, 0.16,
-                    1000, 0.165,
-                    10000, 0.17
-                ],
-                "startup_frames": 5,
-                "convergence_frames": 6,
-                "speed": 0.15
+                        },
+                        "y_target":
+                        [
+                            0, 0.16,
+                            1000, 0.165,
+                            10000, 0.17
+                        ],
+                        "startup_frames": 5,
+                        "convergence_frames": 6,
+                        "speed": 0.15
+                    },
+                    {
+                        "base_ev": 1.5,
+                        "metering_modes":
+                        {
+                            "centre-weighted":
+                            {
+                                "weights":
+                                [
+                                    3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0
+                                ]
+                            },
+                            "spot":
+                            {
+                                "weights":
+                                [
+                                    2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                                ]
+                            },
+                            "matrix":
+                            {
+                                "weights":
+                                [
+                                    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+                                ]
+                            }
+                        },
+                        "exposure_modes":
+                        {
+                            "normal":
+                            {
+                                "shutter": [ 100, 15000, 30000, 60000, 120000 ],
+                                "gain": [ 1.0, 1.0, 2.0, 4.0, 6.0 ]
+                            },
+                            "short":
+                            {
+                                "shutter": [ 100, 5000, 10000, 20000, 120000 ],
+                                "gain": [ 1.0, 2.0, 4.0, 6.0, 6.0 ]
+                            },
+                            "long":
+                            {
+                                "shutter": [ 1000, 30000, 60000, 90000, 120000 ],
+                                "gain": [ 1.0, 2.0, 4.0, 6.0, 12.0 ]
+                            }
+                        },
+                        "constraint_modes":
+                        {
+                            "normal": [
+                                {
+                                    "bound": "LOWER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.2,
+                                        1000, 0.2
+                                    ]
+                                }
+                            ],
+                            "highlight": [
+                                {
+                                    "bound": "LOWER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.2,
+                                        1000, 0.2
+                                    ]
+                                },
+                                {
+                                    "bound": "UPPER",
+                                    "q_lo": 0.98,
+                                    "q_hi": 1.0,
+                                    "y_target":
+                                    [
+                                        0, 0.8,
+                                        1000, 0.8
+                                    ]
+                                }
+                            ]
+                        },
+                        "y_target":
+                        [
+                            0, 0.16,
+                            1000, 0.165,
+                            10000, 0.17
+                        ],
+                        "startup_frames": 5,
+                        "convergence_frames": 6,
+                        "speed": 0.15
+                    }
+                ]
             }
         },
         {
@@ -415,7 +674,12 @@
             }
         },
         {
-            "rpi.sharpen": { }
+            "rpi.sharpen":
+            {
+                "threshold": 0.75,
+                "limit": 0.5,
+                "strength": 1.0
+            }
         },
         {
             "rpi.af":
@@ -442,23 +706,27 @@
                         "step_coarse": 2.0,
                         "step_fine": 0.5,
                         "contrast_ratio": 0.75,
+                        "retrigger_ratio": 0.8,
+                        "retrigger_delay": 10,
                         "pdaf_gain": -0.03,
                         "pdaf_squelch": 0.2,
-                        "max_slew": 4.0,
+                        "max_slew": 3.0,
                         "pdaf_frames": 20,
                         "dropout_frames": 6,
-                        "step_frames": 4
+                        "step_frames": 5
                     },
                     "fast":
                     {
-                        "step_coarse": 2.0,
-                        "step_fine": 0.5,
+                        "step_coarse": 2.5,
+                        "step_fine": 0.0,
                         "contrast_ratio": 0.75,
+                        "retrigger_ratio": 0.8,
+                        "retrigger_delay": 8,
                         "pdaf_gain": -0.05,
                         "pdaf_squelch": 0.2,
-                        "max_slew": 5.0,
+                        "max_slew": 4.0,
                         "pdaf_frames": 16,
-                        "dropout_frames": 6,
+                        "dropout_frames": 4,
                         "step_frames": 4
                     }
                 },
@@ -466,7 +734,22 @@
                 "conf_thresh": 12,
                 "conf_clip": 512,
                 "skip_frames": 5,
+                "check_for_ir": false,
                 "map": [ 0.0, 420, 35.0, 920 ]
+            }
+        },
+        {
+            "rpi.hdr":
+            {
+                "MultiExposureUnmerged":
+                {
+                    "cadence": [ 1, 2 ],
+                    "channel_map":
+                    {
+                        "short": 1,
+                        "long": 2
+                    }
+                }
             }
         }
     ]

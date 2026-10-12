@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2020, Raspberry Pi Ltd
  *
- * dng_writer.h - DNG writer
+ * DNG writer
  */
 
 #pragma once
 
 #ifdef HAVE_TIFF
-#define HAVE_DNG
 
 #include <libcamera/camera.h>
 #include <libcamera/controls.h>

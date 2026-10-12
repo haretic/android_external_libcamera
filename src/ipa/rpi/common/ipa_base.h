@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2023, Raspberry Pi Ltd
  *
- * ipa_base.h - Raspberry Pi IPA base class
+ * Raspberry Pi IPA base class
  */
 #pragma once
 
@@ -22,6 +22,7 @@
 #include "controller/agc_status.h"
 #include "controller/camera_mode.h"
 #include "controller/controller.h"
+#include "controller/hdr_status.h"
 #include "controller/metadata.h"
 
 namespace libcamera {
@@ -48,6 +49,11 @@ public:
 	void processStats(const ProcessParams &params) override;
 
 protected:
+	bool monoSensor() const
+	{
+		return monoSensor_;
+	}
+
 	/* Raspberry Pi controller specific defines. */
 	std::unique_ptr<RPiController::CamHelper> helper_;
 	RPiController::Controller controller_;
@@ -64,15 +70,26 @@ protected:
 	ControlList libcameraMetadata_;
 	bool statsMetadataOutput_;
 
+	/* Remember the HDR status after a mode switch. */
+	HdrStatus hdrStatus_;
+
+	/* Remember the AGC status after a mode switch. */
+	AgcStatus agcStatus_;
+
+	/* Whether the stitch block (if available) needs to swap buffers. */
+	bool stitchSwapBuffers_;
+
 private:
 	/* Number of metadata objects available in the context list. */
 	static constexpr unsigned int numMetadataContexts = 16;
 
 	virtual int32_t platformInit(const InitParams &params, InitResult *result) = 0;
+	virtual int32_t platformStart(const ControlList &controls, StartResult *result) = 0;
 	virtual int32_t platformConfigure(const ConfigParams &params, ConfigResult *result) = 0;
 
 	virtual void platformPrepareIsp(const PrepareParams &params,
 					RPiController::Metadata &rpiMetadata) = 0;
+	virtual void platformPrepareAgc(RPiController::Metadata &rpiMetadata) = 0;
 	virtual RPiController::StatisticsPtr platformProcessStats(Span<uint8_t> mem) = 0;
 
 	void setMode(const IPACameraSensorInfo &sensorInfo);
@@ -84,7 +101,7 @@ private:
 	void fillDeviceStatus(const ControlList &sensorControls, unsigned int ipaContext);
 	void reportMetadata(unsigned int ipaContext);
 	void applyFrameDurations(utils::Duration minFrameDuration, utils::Duration maxFrameDuration);
-	void applyAGC(const struct AgcStatus *agcStatus, ControlList &ctrls);
+	void applyAGC(struct AgcStatus *agcStatus, ControlList &ctrls);
 
 	std::map<unsigned int, MappedFrameBuffer> buffers_;
 
@@ -102,8 +119,8 @@ private:
 	/* How many frames we should avoid running control algos on. */
 	unsigned int mistrustCount_;
 
-	/* Number of frames that need to be dropped on startup. */
-	unsigned int dropFrameCount_;
+	/* Number of frames that need to be marked as dropped on startup. */
+	unsigned int invalidCount_;
 
 	/* Frame timestamp for the last run of the controller. */
 	uint64_t lastRunTimestamp_;
@@ -123,6 +140,10 @@ private:
 		int32_t mode;
 		utils::Duration manualPeriod;
 	} flickerState_;
+
+	bool awbEnabled_;
+
+	utils::Duration controllerMinFrameDuration_;
 };
 
 } /* namespace ipa::RPi */

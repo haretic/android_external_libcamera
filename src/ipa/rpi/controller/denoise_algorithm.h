@@ -2,9 +2,11 @@
 /*
  * Copyright (C) 2021, Raspberry Pi Ltd
  *
- * denoise.h - Denoise control algorithm interface
+ * Denoise control algorithm interface
  */
 #pragma once
+
+#include <string>
 
 #include "algorithm.h"
 
@@ -18,6 +20,8 @@ public:
 	DenoiseAlgorithm(Controller *controller) : Algorithm(controller) {}
 	/* A Denoise algorithm must provide the following: */
 	virtual void setMode(DenoiseMode mode) = 0;
+	/* Some platforms may not be able to define this, so supply a default. */
+	virtual void setConfig([[maybe_unused]] std::string const &name) {}
 };
 
 } /* namespace RPiController */

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * contrast.cpp - contrast (gamma) control algorithm
+ * contrast (gamma) control algorithm
  */
 #include <stdint.h>
 
@@ -38,10 +38,11 @@ char const *Contrast::name() const
 	return NAME;
 }
 
-int Contrast::read(const libcamera::YamlObject &params)
+int Contrast::read(const libcamera::ValueNode &params)
 {
 	// enable adaptive enhancement by default
 	config_.ceEnable = params["ce_enable"].get<int>(1);
+	ceEnable_ = config_.ceEnable;
 	// the point near the bottom of the histogram to move
 	config_.loHistogram = params["lo_histogram"].get<double>(0.01);
 	// where in the range to try and move it to
@@ -52,7 +53,9 @@ int Contrast::read(const libcamera::YamlObject &params)
 	config_.hiHistogram = params["hi_histogram"].get<double>(0.95);
 	config_.hiLevel = params["hi_level"].get<double>(0.95);
 	config_.hiMax = params["hi_max"].get<double>(2000);
-	return config_.gammaCurve.read(params["gamma_curve"]);
+
+	config_.gammaCurve = params["gamma_curve"].get<ipa::Pwl>(ipa::Pwl{});
+	return config_.gammaCurve.empty() ? -EINVAL : 0;
 }
 
 void Contrast::setBrightness(double brightness)
@@ -63,6 +66,16 @@ void Contrast::setBrightness(double brightness)
 void Contrast::setContrast(double contrast)
 {
 	contrast_ = contrast;
+}
+
+void Contrast::enableCe(bool enable)
+{
+	ceEnable_ = enable;
+}
+
+void Contrast::restoreCe()
+{
+	ceEnable_ = config_.ceEnable;
 }
 
 void Contrast::initialise()
@@ -81,10 +94,12 @@ void Contrast::prepare(Metadata *imageMetadata)
 	imageMetadata->set("contrast.status", status_);
 }
 
-Pwl computeStretchCurve(Histogram const &histogram,
+namespace {
+
+ipa::Pwl computeStretchCurve(Histogram const &histogram,
 			ContrastConfig const &config)
 {
-	Pwl enhance;
+	ipa::Pwl enhance;
 	enhance.append(0, 0);
 	/*
 	 * If the start of the histogram is rather empty, try to pull it down a
@@ -125,10 +140,10 @@ Pwl computeStretchCurve(Histogram const &histogram,
 	return enhance;
 }
 
-Pwl applyManualContrast(Pwl const &gammaCurve, double brightness,
-			double contrast)
+ipa::Pwl applyManualContrast(ipa::Pwl const &gammaCurve, double brightness,
+			     double contrast)
 {
-	Pwl newGammaCurve;
+	ipa::Pwl newGammaCurve;
 	LOG(RPiContrast, Debug)
 		<< "Manual brightness " << brightness << " contrast " << contrast;
 	gammaCurve.map([&](double x, double y) {
@@ -140,6 +155,8 @@ Pwl applyManualContrast(Pwl const &gammaCurve, double brightness,
 	return newGammaCurve;
 }
 
+} /* namespace */
+
 void Contrast::process(StatisticsPtr &stats,
 		       [[maybe_unused]] Metadata *imageMetadata)
 {
@@ -149,8 +166,8 @@ void Contrast::process(StatisticsPtr &stats,
 	 * ways: 1. Adjust the gamma curve so as to pull the start of the
 	 * histogram down, and possibly push the end up.
 	 */
-	Pwl gammaCurve = config_.gammaCurve;
-	if (config_.ceEnable) {
+	ipa::Pwl gammaCurve = config_.gammaCurve;
+	if (ceEnable_) {
 		if (config_.loMax != 0 || config_.hiMax != 0)
 			gammaCurve = computeStretchCurve(histogram, config_).compose(gammaCurve);
 		/*

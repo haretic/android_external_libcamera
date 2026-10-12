@@ -2,24 +2,25 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * media_device.cpp - Media device handler
+ * Media device handler
  */
 
 #include "libcamera/internal/media_device.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <stdint.h>
 #include <string>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 
 #include <linux/media.h>
 
 #include <libcamera/base/log.h>
+#include "libcamera/internal/v4l2_request.h"
 
 /**
  * \file media_device.h
@@ -165,7 +166,7 @@ void MediaDevice::unlock()
 	if (!fd_.isValid())
 		return;
 
-	lockf(fd_.get(), F_ULOCK, 0);
+	std::ignore = lockf(fd_.get(), F_ULOCK, 0);
 }
 
 /**
@@ -339,6 +340,32 @@ MediaEntity *MediaDevice::getEntityByName(const std::string &name) const
 			return e;
 
 	return nullptr;
+}
+
+/**
+ * \brief Return the MediaEntity with name matching the regex \a name
+ * \param[in] name A regex to match the entity name
+ * \return The entity matching the regex \a name, or nullptr if no such entity
+ * is found or multiple entities match on \a name
+ */
+MediaEntity *MediaDevice::getEntityByName(const std::regex &name) const
+{
+	MediaEntity *entity = nullptr;
+
+	for (MediaEntity *e : entities_) {
+		if (!std::regex_search(e->name(), name))
+			continue;
+
+		if (entity) {
+			LOG(MediaDevice, Error)
+				<< "Multiple entities match given regex";
+			return nullptr;
+		}
+
+		entity = e;
+	}
+
+	return entity;
 }
 
 /**
@@ -562,7 +589,7 @@ bool MediaDevice::addObject(MediaObject *object)
  */
 void MediaDevice::clear()
 {
-	for (auto const &o : objects_)
+	for (const auto &o : objects_)
 		delete o.second;
 
 	objects_.clear();
@@ -794,7 +821,7 @@ void MediaDevice::fixupEntityFlags(struct media_v2_entity *entity)
  * low-level link setup as it performs no checks on the validity of the \a
  * flags, and assumes that the supplied \a flags are valid for the link (e.g.
  * immutable links cannot be disabled).
-*
+ *
  * \sa MediaLink::setEnabled(bool enable)
  *
  * \return 0 on success or a negative error code otherwise
@@ -819,70 +846,82 @@ int MediaDevice::setupLink(const MediaLink *link, unsigned int flags)
 	if (ret) {
 		ret = -errno;
 		LOG(MediaDevice, Error)
-			<< "Failed to setup link "
-			<< source->entity()->name() << "["
-			<< source->index() << "] -> "
-			<< sink->entity()->name() << "["
-			<< sink->index() << "]: "
+			<< "Failed to setup link " << *link << ": "
 			<< strerror(-ret);
 		return ret;
 	}
 
-	LOG(MediaDevice, Debug)
-		<< source->entity()->name() << "["
-		<< source->index() << "] -> "
-		<< sink->entity()->name() << "["
-		<< sink->index() << "]: " << flags;
+	LOG(MediaDevice, Debug) << *link << ": " << flags;
 
 	return 0;
 }
 
-int MediaDevice::allocateRequests(unsigned int count, std::vector<UniqueFD> &requests)
+/**
+ * \brief Identify all entities of a common function in the MediaDevice
+ * \param[in] function The entity function to search for
+ *
+ * Search all entities within the graph of the MediaDevice and return
+ * a vector of those which match the given function.
+ *
+ * \return A vector of matching entities
+ */
+std::vector<MediaEntity *> MediaDevice::locateEntities(unsigned int function)
 {
+	std::vector<MediaEntity *> found;
+
+	/* Gather all the entities matching the function they expose. */
+	for (MediaEntity *entity : entities()) {
+		if (entity->function() == function)
+			found.push_back(entity);
+	}
+
+	return found;
+}
+
+/**
+ * \brief Allocate requests
+ * \param[in] count Number of requests to allocate
+ * \param[out] requests Vector to store allocated requests
+ *
+ * Allocates and stores \a count requests in \a requests. If allocation fails,
+ * an error is returned and \a requests is cleared.
+ *
+ * \return 0 on success or a negative error code otherwise
+ */
+int MediaDevice::allocateRequests(unsigned int count,
+				  std::vector<std::unique_ptr<V4L2Request>> *requests)
+{
+	requests->resize(count);
 	for (unsigned int i = 0; i < count; i++) {
-		int fd;
-		int ret = ioctl(fd_.get(), MEDIA_IOC_REQUEST_ALLOC, &fd);
-		if (ret) {
-			LOG(MediaDevice, Error) << "Allocate request failed "
-						<< strerror(-ret);
-			return -EBUSY;
+		int requestFd;
+		int ret = ::ioctl(fd_.get(), MEDIA_IOC_REQUEST_ALLOC, &requestFd);
+		if (ret < 0) {
+			requests->clear();
+			return -errno;
 		}
-		requests.emplace_back(fd);
+		(*requests)[i] = std::make_unique<V4L2Request>(UniqueFD(requestFd));
 	}
 
 	return 0;
 }
 
-int MediaDevice::queueRequest(int requestFd) {
-	int ret = ioctl(requestFd, MEDIA_REQUEST_IOC_QUEUE, NULL);
-	if (ret)
-		LOG(MediaDevice, Error) << "QueueRequest fd " << requestFd
-					<< "failed: " << strerror(-ret);
-	return ret;
-}
+/**
+ * \brief Check if requests are supported
+ *
+ * Checks if the device supports V4L2 requests by trying to allocate a single
+ * request. The result is cached, so the allocation is only tried once.
+ *
+ * \return True if the device supports requests, false otherwise
+ */
+bool MediaDevice::supportsRequests()
+{
+	if (supportsRequests_.has_value())
+		return supportsRequests_.value();
 
-int MediaDevice::reInitRequest(int requestFd) {
+	std::vector<std::unique_ptr<V4L2Request>> requests;
+	supportsRequests_ = (allocateRequests(1, &requests) == 0);
 
-	struct pollfd pfd;
-
-	pfd.fd = requestFd;
-	pfd.events = POLLPRI;
-
-	int ret = TEMP_FAILURE_RETRY(poll(&pfd, 1, 300));
-	if (ret < 0)
-		LOG(MediaDevice, Error) << "The request " << requestFd
-					<< " polled failed: " << strerror(-ret);
-	else if (ret == 0)
-		LOG(MediaDevice, Error) << "The request " << requestFd
-					<< " polled timeout: " << strerror(-ret);
-
-	ret = ::ioctl(requestFd, MEDIA_REQUEST_IOC_REINIT, NULL);
-	if (ret)
-		LOG(MediaDevice, Error) << "The request " << requestFd
-					<< " is queued but not yet completed: "
-					<< strerror(-ret);
-
-	return ret;
+	return supportsRequests_.value();
 }
 
 } /* namespace libcamera */

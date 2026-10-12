@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * object-invoke.cpp - Cross-thread Object method invocation test
+ * Cross-thread Object method invocation test
  */
 
 #include <iostream>
@@ -56,6 +56,19 @@ public:
 	int methodWithReturn()
 	{
 		return 42;
+	}
+
+	struct MoveOnly {
+		MoveOnly() = default;
+		MoveOnly(const MoveOnly &) = delete;
+		MoveOnly &operator=(const MoveOnly &) = delete;
+		MoveOnly(MoveOnly &&) = default;
+		MoveOnly &operator=(MoveOnly &&) = default;
+	};
+
+	MoveOnly methodWithReturnMoveOnly()
+	{
+		return {};
 	}
 
 private:
@@ -185,6 +198,10 @@ protected:
 			     << ")" << endl;
 			return TestFail;
 		}
+
+		/* Test invoking a method that returns type with no copy ctor/assignment. */
+		object_.invokeMethod(&InvokedObject::methodWithReturnMoveOnly,
+				     ConnectionTypeBlocking);
 
 		return TestPass;
 	}

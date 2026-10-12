@@ -2,26 +2,31 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * camera.cpp - Camera device
+ * Camera device
  */
 
-#include "libcamera/internal/camera.h"
+#include <libcamera/camera.h>
 
 #include <array>
 #include <atomic>
-#include <iomanip>
+#include <ios>
+#include <memory>
+#include <optional>
+#include <set>
+#include <sstream>
 
 #include <libcamera/base/log.h>
 #include <libcamera/base/thread.h>
 
-#include <libcamera/camera.h>
 #include <libcamera/color_space.h>
+#include <libcamera/control_ids.h>
 #include <libcamera/framebuffer_allocator.h>
+#include <libcamera/property_ids.h>
 #include <libcamera/request.h>
 #include <libcamera/stream.h>
 
+#include "libcamera/internal/camera.h"
 #include "libcamera/internal/camera_controls.h"
-#include "libcamera/internal/formats.h"
 #include "libcamera/internal/pipeline_handler.h"
 #include "libcamera/internal/request.h"
 
@@ -115,6 +120,12 @@
  * on the crop rectangle and the output stream size. The crop rectangle is
  * expressed relatively to the full pixel array size and indicates how the field
  * of view is affected by the pipeline.
+ */
+
+/**
+ * \internal
+ * \file libcamera/internal/camera.h
+ * \brief Internal camera device handling
  */
 
 namespace libcamera {
@@ -291,7 +302,7 @@ bool SensorConfiguration::isValid() const
  * \brief Create an empty camera configuration
  */
 CameraConfiguration::CameraConfiguration()
-	: transform(Transform::Identity), config_({})
+	: orientation(Orientation::Rotate0), config_({})
 {
 }
 
@@ -327,7 +338,7 @@ void CameraConfiguration::addConfiguration(const StreamConfiguration &cfg)
  * \retval CameraConfiguration::Invalid The configuration is invalid and can't
  * be adjusted. This may only occur in extreme cases such as when the
  * configuration is empty.
- * \retval CameraConfigutation::Adjusted The configuration has been adjusted
+ * \retval CameraConfiguration::Adjusted The configuration has been adjusted
  * and is now valid. Parameters may have changed for any stream, and stream
  * configurations may have been removed. The caller shall check the
  * configuration carefully.
@@ -477,7 +488,7 @@ std::size_t CameraConfiguration::size() const
  *
  * \return A CameraConfiguration::Status value that describes the validation
  * status.
- * \retval CameraConfigutation::Adjusted The configuration has been adjusted
+ * \retval CameraConfiguration::Adjusted The configuration has been adjusted
  * and is now valid. The color space of some or all of the streams may have
  * been changed. The caller shall check the color spaces carefully.
  * \retval CameraConfiguration::Valid The configuration was already valid and
@@ -494,7 +505,7 @@ CameraConfiguration::Status CameraConfiguration::validateColorSpaces(ColorSpaceF
 	std::optional<ColorSpace> colorSpace;
 	Size size;
 
-	for (auto [i, cfg] : utils::enumerate(config_)) {
+	for (StreamConfiguration &cfg : config_) {
 		if (!cfg.colorSpace)
 			continue;
 
@@ -540,16 +551,18 @@ CameraConfiguration::Status CameraConfiguration::validateColorSpaces(ColorSpaceF
  */
 
 /**
- * \var CameraConfiguration::transform
- * \brief User-specified transform to be applied to the image
+ * \var CameraConfiguration::orientation
+ * \brief The desired orientation of the images produced by the camera
  *
- * The transform is a user-specified 2D plane transform that will be applied
- * to the camera images by the processing pipeline before being handed to
- * the application.
+ * The orientation field is a user-specified 2D plane transformation that
+ * specifies how the application wants the camera images to be rotated in
+ * the memory buffers.
  *
- * The usual 2D plane transforms are allowed here (horizontal/vertical
- * flips, multiple of 90-degree rotations etc.), but the validate() function
- * may adjust this field at its discretion if the selection is not supported.
+ * If the orientation requested by the application cannot be obtained, the
+ * camera will not rotate or flip the images, and the validate() function will
+ * Adjust this value to the native image orientation produced by the camera.
+ *
+ * By default the orientation field is set to Orientation::Rotate0.
  */
 
 /**
@@ -557,6 +570,7 @@ CameraConfiguration::Status CameraConfiguration::validateColorSpaces(ColorSpaceF
  * \brief The vector of stream configurations
  */
 
+#ifndef __DOXYGEN_PUBLIC__
 /**
  * \class Camera::Private
  * \brief Base class for camera private data
@@ -574,9 +588,9 @@ CameraConfiguration::Status CameraConfiguration::validateColorSpaces(ColorSpaceF
  * \param[in] pipe The pipeline handler responsible for the camera device
  */
 Camera::Private::Private(PipelineHandler *pipe)
-	: requestSequence_(0), pipe_(pipe->shared_from_this()),
-	  disconnected_(false), state_(CameraAvailable),
-	  requestCompletionMode_(Camera::InSubmissionOrder)
+	: controlInfo_({}, controls::controls), properties_(properties::properties),
+	  requestSequence_(0), pipe_(pipe->shared_from_this()),
+	  disconnected_(false), state_(CameraAvailable)
 {
 }
 
@@ -590,6 +604,11 @@ Camera::Private::~Private()
  * \fn Camera::Private::pipe()
  * \brief Retrieve the pipeline handler related to this camera
  * \return The pipeline handler that created this camera
+ */
+
+/**
+ * \fn Camera::Private::pipe() const
+ * \copydoc Camera::Private::pipe()
  */
 
 /**
@@ -607,6 +626,15 @@ Camera::Private::~Private()
  *
  * \sa PipelineHandler::queueRequest(), PipelineHandler::stop(),
  * PipelineHandler::completeRequest()
+ */
+
+/**
+ * \var Camera::Private::waitingRequests_
+ * \brief The queue of waiting requests
+ *
+ * This queue tracks all requests that can not yet be queued to the device.
+ * Either because they are not yet prepared or because the maximum number of
+ * queued requests was reached.
  */
 
 /**
@@ -718,34 +746,7 @@ void Camera::Private::setState(State state)
 {
 	state_.store(state, std::memory_order_release);
 }
-
-/**
- * \brief Set the request completion mode
- * \param[in] mode The RequestCompletionMode
- *
- * This function sets the request completion mode.
- * InSubmissionOrder is the default mode.
- */
-void Camera::Private::setRequestCompletionMode(RequestCompletionMode mode)
-{
-	requestCompletionMode_ = mode;
-}
-
-/**
- * \brief Get the request completion mode
- *
- * \return The current RequestCompletionMode.
- */
-Camera::RequestCompletionMode Camera::Private::requestCompletionMode() const
-{
-	return requestCompletionMode_;
-}
-
-void Camera::Private::notifyDisconnection()
-{
-	Camera *o = LIBCAMERA_O_PTR();
-	o->disconnected.emit();
-}
+#endif /* __DOXYGEN_PUBLIC__ */
 
 /**
  * \class Camera
@@ -840,6 +841,7 @@ void Camera::Private::notifyDisconnection()
  */
 
 /**
+ * \internal
  * \brief Create a camera instance
  * \param[in] d Camera private data
  * \param[in] id The ID of the camera device
@@ -877,15 +879,6 @@ std::shared_ptr<Camera> Camera::create(std::unique_ptr<Private> d,
 }
 
 /**
- * \enum Camera::RequestCompletionMode
- * \brief The mode of request completion behavior
- * \var libcamera::Camera::InSubmissionOrder
- * \brief requestCompleted will be emited according to the request submission order
- * \var libcamera::Camera::Immediately
- * \brief requestCompleted will be emited immediately when a request is completed.
- */
-
-/**
  * \brief Retrieve the ID of the camera
  *
  * The camera ID is a free-form string that identifies a camera in the system.
@@ -917,12 +910,6 @@ const std::string &Camera::id() const
  */
 
 /**
- * \var Camera::metadataAvailable
- * \brief Signal emitted when some metadata for a request is available as a
- * partial result
- */
-
-/**
  * \var Camera::requestCompleted
  * \brief Signal emitted when a request queued to the camera has completed
  */
@@ -944,6 +931,7 @@ Camera::Camera(std::unique_ptr<Private> d, const std::string &id,
 	: Extensible(std::move(d))
 {
 	_d()->id_ = id;
+	_d()->properties_.set(properties::PipelineHandler, _d()->pipe_->name());
 	_d()->streams_ = streams;
 	_d()->validator_ = std::make_unique<CameraControlValidator>(this);
 }
@@ -1028,7 +1016,8 @@ int Camera::acquire()
 	if (ret < 0)
 		return ret == -EACCES ? -EBUSY : ret;
 
-	if (!d->pipe_->acquire(this)) {
+	if (!d->pipe_->invokeMethod(&PipelineHandler::acquire,
+				    ConnectionTypeBlocking, this)) {
 		LOG(Camera, Info)
 			<< "Pipeline handler in use by another process";
 		return -EBUSY;
@@ -1063,7 +1052,8 @@ int Camera::release()
 		return ret == -EACCES ? -EBUSY : ret;
 
 	if (d->isAcquired())
-		d->pipe_->release(this);
+		d->pipe_->invokeMethod(&PipelineHandler::release,
+				       ConnectionTypeBlocking, this);
 
 	d->setState(Private::CameraAvailable);
 
@@ -1142,7 +1132,8 @@ std::unique_ptr<CameraConfiguration> Camera::generateConfiguration(Span<const St
 		return nullptr;
 
 	std::unique_ptr<CameraConfiguration> config =
-		d->pipe_->generateConfiguration(this, roles);
+		d->pipe_->invokeMethod(&PipelineHandler::generateConfiguration,
+				       ConnectionTypeBlocking, this, roles);
 	if (!config) {
 		LOG(Camera, Debug)
 			<< "Pipeline handler failed to generate configuration";
@@ -1206,8 +1197,8 @@ int Camera::configure(CameraConfiguration *config)
 	if (ret < 0)
 		return ret;
 
-	for (auto it : *config)
-		it.setStream(nullptr);
+	for (auto &cfg : *config)
+		cfg.setStream(nullptr);
 
 	if (config->validate() != CameraConfiguration::Valid) {
 		LOG(Camera, Error)
@@ -1287,6 +1278,33 @@ std::unique_ptr<Request> Camera::createRequest(uint64_t cookie)
 }
 
 /**
+ * \brief Patch a control list that contains the AeEnable control
+ * \param[inout] controls The control list to be patched
+ *
+ * The control list is patched in place, turning the AeEnable control into
+ * the equivalent ExposureTimeMode/AnalogueGainMode controls.
+ */
+void Camera::patchControlList(ControlList &controls)
+{
+	const auto &aeEnable = controls.get(controls::AeEnable);
+	if (aeEnable) {
+		if (_d()->controlInfo_.count(controls::AnalogueGainMode.id()) &&
+		    !controls.contains(controls::AnalogueGainMode.id())) {
+			controls.set(controls::AnalogueGainMode,
+				     *aeEnable ? controls::AnalogueGainModeAuto
+					       : controls::AnalogueGainModeManual);
+		}
+
+		if (_d()->controlInfo_.count(controls::ExposureTimeMode.id()) &&
+		    !controls.contains(controls::ExposureTimeMode.id())) {
+			controls.set(controls::ExposureTimeMode,
+				     *aeEnable ? controls::ExposureTimeModeAuto
+					       : controls::ExposureTimeModeManual);
+		}
+	}
+}
+
+/**
  * \brief Queue a request to the camera
  * \param[in] request The request to queue to the camera
  *
@@ -1328,6 +1346,12 @@ int Camera::queueRequest(Request *request)
 		return -EINVAL;
 	}
 
+	/* Make sure the Request has a valid control list. */
+	if (request->controls().infoMap() != &controls()) {
+		LOG(Camera, Error) << "Overwriting Request::controls() is not allowed";
+		return -EINVAL;
+	}
+
 	/*
 	 * The camera state may change until the end of the function. No locking
 	 * is however needed as PipelineHandler::queueRequest() will handle
@@ -1339,14 +1363,15 @@ int Camera::queueRequest(Request *request)
 		return -EINVAL;
 	}
 
-	for (auto const &it : request->buffers()) {
-		const Stream *stream = it.first;
-
+	for (const auto &[stream, buffer] : request->buffers()) {
 		if (d->activeStreams_.find(stream) == d->activeStreams_.end()) {
 			LOG(Camera, Error) << "Invalid request";
 			return -EINVAL;
 		}
 	}
+
+	/* Pre-process AeEnable. */
+	patchControlList(request->controls());
 
 	d->pipe_->invokeMethod(&PipelineHandler::queueRequest,
 			       ConnectionTypeQueued, request);
@@ -1384,8 +1409,16 @@ int Camera::start(const ControlList *controls)
 
 	ASSERT(d->requestSequence_ == 0);
 
-	ret = d->pipe_->invokeMethod(&PipelineHandler::start,
-				     ConnectionTypeBlocking, this, controls);
+	if (controls) {
+		ControlList copy(*controls);
+		patchControlList(copy);
+		ret = d->pipe_->invokeMethod(&PipelineHandler::start,
+					     ConnectionTypeBlocking, this, &copy);
+	} else {
+		ret = d->pipe_->invokeMethod(&PipelineHandler::start,
+					     ConnectionTypeBlocking, this, nullptr);
+	}
+
 	if (ret)
 		return ret;
 
@@ -1436,40 +1469,6 @@ int Camera::stop()
 	d->setState(Private::CameraConfigured);
 
 	return 0;
-}
-
-/**
- * \brief Set the request completion mode
- * \param[in] mode The RequestCompletionMode
- *
- * This function sets the request completion mode.
- * InSubmissionOrder is the default mode.
- *
- * \return 0 on success or a negative error code otherwise
- * \retval -EACCES The camera is running so can't change the behavior
- */
-int Camera::setRequestCompletionMode(RequestCompletionMode mode)
-{
-	Private *const d = _d();
-
-	int ret = d->isAccessAllowed(Private::CameraAvailable,
-				     Private::CameraConfigured);
-	if (ret < 0)
-		return -EACCES;
-
-	d->setRequestCompletionMode(mode);
-
-	return 0;
-}
-
-/**
- * \brief Get the request completion mode
- *
- * \return The current RequestCompletionMode.
- */
-Camera::RequestCompletionMode Camera::requestCompletionMode() const
-{
-	return _d()->requestCompletionMode();
 }
 
 /**

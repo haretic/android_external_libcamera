@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * encoder_libjpeg.h - JPEG encoding using libjpeg
+ * JPEG encoding using libjpeg
  */
 
 #pragma once
@@ -22,7 +22,7 @@ public:
 	~EncoderLibJpeg();
 
 	int configure(const libcamera::StreamConfiguration &cfg) override;
-	int encode(StreamBuffer *buffer,
+	int encode(Camera3RequestDescriptor::StreamBuffer *buffer,
 		   libcamera::Span<const uint8_t> exifData,
 		   unsigned int quality) override;
 	int encode(const std::vector<libcamera::Span<uint8_t>> &planes,
@@ -38,8 +38,6 @@ private:
 	struct jpeg_error_mgr jerr_;
 
 	const libcamera::PixelFormatInfo *pixelFormatInfo_;
-
-	uint32_t stride_;
 
 	bool nv_;
 	bool nvSwap_;

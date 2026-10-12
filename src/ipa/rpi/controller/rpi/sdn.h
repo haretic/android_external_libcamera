@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * sdn.h - SDN (spatial denoise) control algorithm
+ * SDN (spatial denoise) control algorithm
  */
 #pragma once
 
@@ -18,7 +18,7 @@ class Sdn : public DenoiseAlgorithm
 public:
 	Sdn(Controller *controller = NULL);
 	char const *name() const override;
-	int read(const libcamera::YamlObject &params) override;
+	int read(const libcamera::ValueNode &params) override;
 	void initialise() override;
 	void prepare(Metadata *imageMetadata) override;
 	void setMode(DenoiseMode mode) override;

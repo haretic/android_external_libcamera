@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * lsc.cpp - RkISP1 Lens Shading Correction control
+ * RkISP1 Lens Shading Correction control
  */
 
 #include "lsc.h"
@@ -14,8 +14,9 @@
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
 
-#include "libcamera/internal/yaml_parser.h"
+#include "libcamera/internal/value_node.h"
 
+#include "libipa/lsc_polynomial.h"
 #include "linux/rkisp1-config.h"
 
 /**
@@ -23,6 +24,33 @@
  */
 
 namespace libcamera {
+
+namespace ipa {
+
+template<typename T>
+void interpolateVector(const std::vector<T> &a, const std::vector<T> &b,
+		       std::vector<T> &dest, double lambda)
+{
+	ASSERT(a.size() == b.size());
+	dest.resize(a.size());
+	for (size_t i = 0; i < a.size(); i++)
+		dest[i] = a[i] * (1.0 - lambda) + b[i] * lambda;
+}
+
+template<>
+void Interpolator<rkisp1::algorithms::LensShadingCorrection::Components>::
+	interpolate(const rkisp1::algorithms::LensShadingCorrection::Components &a,
+		    const rkisp1::algorithms::LensShadingCorrection::Components &b,
+		    rkisp1::algorithms::LensShadingCorrection::Components &dest,
+		    double lambda)
+{
+	interpolateVector(a.r, b.r, dest.r, lambda);
+	interpolateVector(a.gr, b.gr, dest.gr, lambda);
+	interpolateVector(a.gb, b.gb, dest.gb, lambda);
+	interpolateVector(a.b, b.b, dest.b, lambda);
+}
+
+} /* namespace ipa */
 
 namespace ipa::rkisp1::algorithms {
 
@@ -33,18 +61,276 @@ namespace ipa::rkisp1::algorithms {
  * Due to the optical characteristics of the lens, the light intensity received
  * by the sensor is not uniform.
  *
- * The Lens Shading Correction algorithm applies multipliers to all pixels
- * to compensate for the lens shading effect. The coefficients are
- * specified in a downscaled table in the YAML tuning file.
+ * The Lens Shading Correction algorithm applies multipliers to all pixels to
+ * compensate for the lens shading effect. The coefficients are specified in a
+ * downscaled table in the tuning data.
  */
 
 LOG_DEFINE_CATEGORY(RkISP1Lsc)
 
-static std::vector<double> parseSizes(const YamlObject &tuningData,
-				      const char *prop)
+namespace {
+
+constexpr int kColourTemperatureQuantization = 10;
+
+class LscPolynomialShadingDescriptor : public LensShadingCorrection::ShadingDescriptor
+{
+public:
+	LscPolynomialShadingDescriptor(const LscPolynomial &pr, const LscPolynomial &pgr,
+				       const LscPolynomial &pgb, const LscPolynomial &pb)
+		: pr_(pr), pgr_(pgr), pgb_(pgb), pb_(pb)
+	{
+	}
+
+	LensShadingCorrection::Components sampleForCrop(const Rectangle &cropRectangle,
+							Span<const double> xSizes,
+							Span<const double> ySizes) override;
+
+private:
+	std::vector<uint16_t> samplePolynomial(const LscPolynomial &poly,
+					       Span<const double> xPositions,
+					       Span<const double> yPositions,
+					       const Rectangle &cropRectangle);
+
+	std::vector<double> sizesListToPositions(Span<const double> sizes);
+
+	LscPolynomial pr_;
+	LscPolynomial pgr_;
+	LscPolynomial pgb_;
+	LscPolynomial pb_;
+};
+
+LensShadingCorrection::Components
+LscPolynomialShadingDescriptor::sampleForCrop(const Rectangle &cropRectangle,
+					      Span<const double> xSizes,
+					      Span<const double> ySizes)
+{
+	std::vector<double> xPos = sizesListToPositions(xSizes);
+	std::vector<double> yPos = sizesListToPositions(ySizes);
+
+	return {
+		.r = samplePolynomial(pr_, xPos, yPos, cropRectangle),
+		.gr = samplePolynomial(pgr_, xPos, yPos, cropRectangle),
+		.gb = samplePolynomial(pgb_, xPos, yPos, cropRectangle),
+		.b = samplePolynomial(pb_, xPos, yPos, cropRectangle)
+	};
+}
+
+std::vector<uint16_t>
+LscPolynomialShadingDescriptor::samplePolynomial(const LscPolynomial &poly,
+						 Span<const double> xPositions,
+						 Span<const double> yPositions,
+						 const Rectangle &cropRectangle)
+{
+	double m = poly.getM();
+	double x0 = cropRectangle.x / m;
+	double y0 = cropRectangle.y / m;
+	double w = cropRectangle.width / m;
+	double h = cropRectangle.height / m;
+	std::vector<uint16_t> samples;
+
+	samples.reserve(xPositions.size() * yPositions.size());
+
+	for (double y : yPositions) {
+		for (double x : xPositions) {
+			double xp = x0 + x * w;
+			double yp = y0 + y * h;
+			/*
+			 * The hardware uses 2.10 fixed point format and limits
+			 * the legal values to [1..3.999]. Scale and clamp the
+			 * sampled value accordingly.
+			 */
+			int v = static_cast<int>(
+				poly.sampleAtNormalizedPixelPos(xp, yp) *
+				1024);
+			v = std::clamp(v, 1024, 4095);
+			samples.push_back(v);
+		}
+	}
+	return samples;
+}
+
+/*
+ * The rkisp1 LSC grid spacing is defined by the cell sizes on the top-left
+ * quadrant of the grid. This is then mirrored in hardware to the other
+ * quadrants. See parseSizes() for further details. For easier handling, this
+ * function converts the cell sizes of half the grid to a list of position of
+ * the whole grid (on one axis). Example:
+ *
+ * input:   | 0.2 | 0.3 |
+ * output: 0.0   0.2   0.5   0.8   1.0
+ */
+std::vector<double>
+LscPolynomialShadingDescriptor::sizesListToPositions(Span<const double> sizes)
+{
+	const int half = sizes.size();
+	std::vector<double> positions(half * 2 + 1);
+	double x = 0.0;
+
+	positions[half] = 0.5;
+	for (int i = 1; i <= half; i++) {
+		x += sizes[half - i];
+		positions[half - i] = 0.5 - x;
+		positions[half + i] = 0.5 + x;
+	}
+
+	return positions;
+}
+
+class LscPolynomialLoader
+{
+public:
+	LscPolynomialLoader(const Size &sensorSize)
+		: sensorSize_(sensorSize)
+	{
+	}
+
+	int parseLscData(const ValueNode &sets,
+			 LensShadingCorrection::ShadingDescriptorMap &lscData);
+
+private:
+	Size sensorSize_;
+};
+
+int LscPolynomialLoader::parseLscData(const ValueNode &sets,
+				      LensShadingCorrection::ShadingDescriptorMap &lscData)
+{
+	for (const auto &set : sets.asList()) {
+		std::optional<LscPolynomial> pr, pgr, pgb, pb;
+		uint32_t ct = set["ct"].get<uint32_t>(0);
+
+		if (lscData.count(ct)) {
+			LOG(RkISP1Lsc, Error)
+				<< "Multiple sets found for "
+				<< "color temperature " << ct;
+			return -EINVAL;
+		}
+
+		pr = set["r"].get<LscPolynomial>();
+		pgr = set["gr"].get<LscPolynomial>();
+		pgb = set["gb"].get<LscPolynomial>();
+		pb = set["b"].get<LscPolynomial>();
+
+		if (!(pr || pgr || pgb || pb)) {
+			LOG(RkISP1Lsc, Error)
+				<< "Failed to parse polynomial for "
+				<< "colour temperature " << ct;
+			return -EINVAL;
+		}
+
+		pr->setReferenceImageSize(sensorSize_);
+		pgr->setReferenceImageSize(sensorSize_);
+		pgb->setReferenceImageSize(sensorSize_);
+		pb->setReferenceImageSize(sensorSize_);
+
+		lscData.emplace(
+			ct, std::make_unique<LscPolynomialShadingDescriptor>(
+				    *pr, *pgr, *pgb, *pb));
+	}
+
+	if (lscData.empty()) {
+		LOG(RkISP1Lsc, Error) << "Failed to load any sets";
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+class LscTableShadingDescriptor : public LensShadingCorrection::ShadingDescriptor
+{
+public:
+	LscTableShadingDescriptor(LensShadingCorrection::Components components)
+		: lscData_(std::move(components))
+	{
+	}
+
+	LensShadingCorrection::Components
+	sampleForCrop([[maybe_unused]] const Rectangle &cropRectangle,
+		      [[maybe_unused]] Span<const double> xSizes,
+		      [[maybe_unused]] Span<const double> ySizes) override
+	{
+		LOG(RkISP1Lsc, Warning)
+			<< "Tabular LSC data doesn't support resampling";
+		return lscData_;
+	}
+
+private:
+	LensShadingCorrection::Components lscData_;
+};
+
+class LscTableLoader
+{
+public:
+	int parseLscData(const ValueNode &sets,
+			 LensShadingCorrection::ShadingDescriptorMap &lscData);
+
+private:
+	std::vector<uint16_t> parseTable(const ValueNode &tuningData,
+					 const char *prop);
+};
+
+int LscTableLoader::parseLscData(const ValueNode &sets,
+				 LensShadingCorrection::ShadingDescriptorMap &lscData)
+{
+	for (const auto &set : sets.asList()) {
+		uint32_t ct = set["ct"].get<uint32_t>(0);
+
+		if (lscData.count(ct)) {
+			LOG(RkISP1Lsc, Error)
+				<< "Multiple sets found for color temperature "
+				<< ct;
+			return -EINVAL;
+		}
+
+		LensShadingCorrection::Components components;
+		components.r = parseTable(set, "r");
+		components.gr = parseTable(set, "gr");
+		components.gb = parseTable(set, "gb");
+		components.b = parseTable(set, "b");
+
+		if (components.r.empty() || components.gr.empty() ||
+		    components.gb.empty() || components.b.empty()) {
+			LOG(RkISP1Lsc, Error)
+				<< "Set for color temperature " << ct
+				<< " is missing tables";
+			return -EINVAL;
+		}
+
+		lscData.emplace(
+			ct, std::make_unique<LscTableShadingDescriptor>(std::move(components)));
+	}
+
+	if (lscData.empty()) {
+		LOG(RkISP1Lsc, Error) << "Failed to load any sets";
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+std::vector<uint16_t> LscTableLoader::parseTable(const ValueNode &tuningData,
+						 const char *prop)
+{
+	static constexpr unsigned int kLscNumSamples =
+		RKISP1_CIF_ISP_LSC_SAMPLES_MAX * RKISP1_CIF_ISP_LSC_SAMPLES_MAX;
+
+	std::vector<uint16_t> table =
+		tuningData[prop].get<std::vector<uint16_t>>().value_or(utils::defopt);
+	if (table.size() != kLscNumSamples) {
+		LOG(RkISP1Lsc, Error)
+			<< "Invalid '" << prop << "' values: expected "
+			<< kLscNumSamples
+			<< " elements, got " << table.size();
+		return {};
+	}
+
+	return table;
+}
+
+std::vector<double> parseSizes(const ValueNode &tuningData,
+			       const char *prop)
 {
 	std::vector<double> sizes =
-		tuningData[prop].getList<double>().value_or(std::vector<double>{});
+		tuningData[prop].get<std::vector<double>>().value_or(utils::defopt);
 	if (sizes.size() != RKISP1_CIF_ISP_LSC_SECTORS_TBL_SIZE) {
 		LOG(RkISP1Lsc, Error)
 			<< "Invalid '" << prop << "' values: expected "
@@ -70,27 +356,15 @@ static std::vector<double> parseSizes(const YamlObject &tuningData,
 	return sizes;
 }
 
-static std::vector<uint16_t> parseTable(const YamlObject &tuningData,
-					const char *prop)
+unsigned int quantize(unsigned int value, unsigned int step)
 {
-	static constexpr unsigned int kLscNumSamples =
-		RKISP1_CIF_ISP_LSC_SAMPLES_MAX * RKISP1_CIF_ISP_LSC_SAMPLES_MAX;
-
-	std::vector<uint16_t> table =
-		tuningData[prop].getList<uint16_t>().value_or(std::vector<uint16_t>{});
-	if (table.size() != kLscNumSamples) {
-		LOG(RkISP1Lsc, Error)
-			<< "Invalid '" << prop << "' values: expected "
-			<< kLscNumSamples
-			<< " elements, got " << table.size();
-		return {};
-	}
-
-	return table;
+	return std::lround(value / static_cast<double>(step)) * step;
 }
 
+} /* namespace */
+
 LensShadingCorrection::LensShadingCorrection()
-	: lastCt_({ 0, 0 })
+	: lastAppliedCt_(0), lastAppliedQuantizedCt_(0)
 {
 }
 
@@ -98,7 +372,7 @@ LensShadingCorrection::LensShadingCorrection()
  * \copydoc libcamera::ipa::Algorithm::init
  */
 int LensShadingCorrection::init([[maybe_unused]] IPAContext &context,
-				const YamlObject &tuningData)
+				const ValueNode &tuningData)
 {
 	xSize_ = parseSizes(tuningData, "x-size");
 	ySize_ = parseSizes(tuningData, "y-size");
@@ -107,45 +381,42 @@ int LensShadingCorrection::init([[maybe_unused]] IPAContext &context,
 		return -EINVAL;
 
 	/* Get all defined sets to apply. */
-	const YamlObject &yamlSets = tuningData["sets"];
-	if (!yamlSets.isList()) {
+	const ValueNode &sets = tuningData["sets"];
+	if (!sets.isList()) {
 		LOG(RkISP1Lsc, Error)
 			<< "'sets' parameter not found in tuning file";
 		return -EINVAL;
 	}
 
-	const auto &sets = yamlSets.asList();
-	for (const auto &yamlSet : sets) {
-		uint32_t ct = yamlSet["ct"].get<uint32_t>(0);
+	ShadingDescriptorMap lscData;
+	int ret = 0;
 
-		if (sets_.count(ct)) {
-			LOG(RkISP1Lsc, Error)
-				<< "Multiple sets found for color temperature "
-				<< ct;
-			return -EINVAL;
-		}
-
-		Components &set = sets_[ct];
-
-		set.ct = ct;
-		set.r = parseTable(yamlSet, "r");
-		set.gr = parseTable(yamlSet, "gr");
-		set.gb = parseTable(yamlSet, "gb");
-		set.b = parseTable(yamlSet, "b");
-
-		if (set.r.empty() || set.gr.empty() ||
-		    set.gb.empty() || set.b.empty()) {
-			LOG(RkISP1Lsc, Error)
-				<< "Set for color temperature " << ct
-				<< " is missing tables";
-			return -EINVAL;
-		}
+	std::string type = tuningData["type"].get<std::string>("table");
+	if (type == "table") {
+		LOG(RkISP1Lsc, Debug) << "Loading tabular LSC data.";
+		auto loader = LscTableLoader();
+		ret = loader.parseLscData(sets, lscData);
+	} else if (type == "polynomial") {
+		LOG(RkISP1Lsc, Debug) << "Loading polynomial LSC data.";
+		/*
+		 * \todo: Most likely the reference frame should be native_size.
+		 * Let's wait how the internal discussions progress.
+		 */
+		auto loader = LscPolynomialLoader(context.sensorInfo.activeAreaSize);
+		ret = loader.parseLscData(sets, lscData);
+	} else {
+		LOG(RkISP1Lsc, Error) << "Unsupported LSC data type '"
+				      << type << "'";
+		ret = -EINVAL;
 	}
 
-	if (sets_.empty()) {
-		LOG(RkISP1Lsc, Error) << "Failed to load any sets";
-		return -EINVAL;
-	}
+	if (ret)
+		return ret;
+
+	context.ctrlMap[&controls::LensShadingCorrectionEnable] =
+		ControlInfo(false, true, true);
+
+	shadingDescriptors_ = std::move(lscData);
 
 	return 0;
 }
@@ -181,22 +452,24 @@ int LensShadingCorrection::configure(IPAContext &context,
 		yGrad_[i] = std::round(32768 / ySizes_[i]);
 	}
 
-	context.configuration.lsc.enabled = true;
+	LOG(RkISP1Lsc, Debug) << "Sample LSC data for " << configInfo.analogCrop;
+	std::map<unsigned int, LensShadingCorrection::Components> shadingData;
+	for (const auto &[t, descriptor] : shadingDescriptors_)
+		shadingData[t] = descriptor->sampleForCrop(configInfo.analogCrop,
+							   xSize_, ySize_);
+
+	sets_.setData(std::move(shadingData));
+
+	context.activeState.lsc.enabled = true;
 	return 0;
 }
 
-void LensShadingCorrection::setParameters(rkisp1_params_cfg *params)
+void LensShadingCorrection::setParameters(rkisp1_cif_isp_lsc_config &config)
 {
-	struct rkisp1_cif_isp_lsc_config &config = params->others.lsc_config;
-
 	memcpy(config.x_grad_tbl, xGrad_, sizeof(config.x_grad_tbl));
 	memcpy(config.y_grad_tbl, yGrad_, sizeof(config.y_grad_tbl));
 	memcpy(config.x_size_tbl, xSizes_, sizeof(config.x_size_tbl));
 	memcpy(config.y_size_tbl, ySizes_, sizeof(config.y_size_tbl));
-
-	params->module_en_update |= RKISP1_CIF_ISP_MODULE_LSC;
-	params->module_ens |= RKISP1_CIF_ISP_MODULE_LSC;
-	params->module_cfg_update |= RKISP1_CIF_ISP_MODULE_LSC;
 }
 
 void LensShadingCorrection::copyTable(rkisp1_cif_isp_lsc_config &config,
@@ -208,131 +481,85 @@ void LensShadingCorrection::copyTable(rkisp1_cif_isp_lsc_config &config,
 	std::copy(set.b.begin(), set.b.end(), &config.b_data_tbl[0][0]);
 }
 
-/*
- * Interpolate LSC parameters based on color temperature value.
+/**
+ * \copydoc libcamera::ipa::Algorithm::queueRequest
  */
-void LensShadingCorrection::interpolateTable(rkisp1_cif_isp_lsc_config &config,
-					     const Components &set0,
-					     const Components &set1,
-					     const uint32_t ct)
+void LensShadingCorrection::queueRequest(IPAContext &context,
+					 [[maybe_unused]] const uint32_t frame,
+					 IPAFrameContext &frameContext,
+					 const ControlList &controls)
 {
-	double coeff0 = (set1.ct - ct) / static_cast<double>(set1.ct - set0.ct);
-	double coeff1 = (ct - set0.ct) / static_cast<double>(set1.ct - set0.ct);
+	auto &lsc = context.activeState.lsc;
 
-	for (unsigned int i = 0; i < RKISP1_CIF_ISP_LSC_SAMPLES_MAX; ++i) {
-		for (unsigned int j = 0; j < RKISP1_CIF_ISP_LSC_SAMPLES_MAX; ++j) {
-			unsigned int sample = i * RKISP1_CIF_ISP_LSC_SAMPLES_MAX + j;
+	const auto &lscEnable = controls.get(controls::LensShadingCorrectionEnable);
+	if (lscEnable && *lscEnable != lsc.enabled) {
+		lsc.enabled = *lscEnable;
 
-			config.r_data_tbl[i][j] =
-				set0.r[sample] * coeff0 +
-				set1.r[sample] * coeff1;
+		LOG(RkISP1Lsc, Debug)
+			<< (lsc.enabled ? "Enabling" : "Disabling") << " Lsc";
 
-			config.gr_data_tbl[i][j] =
-				set0.gr[sample] * coeff0 +
-				set1.gr[sample] * coeff1;
-
-			config.gb_data_tbl[i][j] =
-				set0.gb[sample] * coeff0 +
-				set1.gb[sample] * coeff1;
-
-			config.b_data_tbl[i][j] =
-				set0.b[sample] * coeff0 +
-				set1.b[sample] * coeff1;
-		}
+		frameContext.lsc.update = true;
 	}
+
+	frameContext.lsc.enabled = lsc.enabled;
 }
 
 /**
  * \copydoc libcamera::ipa::Algorithm::prepare
  */
-void LensShadingCorrection::prepare(IPAContext &context,
-				    const uint32_t frame,
-				    [[maybe_unused]] IPAFrameContext &frameContext,
-				    rkisp1_params_cfg *params)
+void LensShadingCorrection::prepare([[maybe_unused]] IPAContext &context,
+				    [[maybe_unused]] const uint32_t frame,
+				    IPAFrameContext &frameContext,
+				    RkISP1Params *params)
 {
-	struct rkisp1_cif_isp_lsc_config &config = params->others.lsc_config;
+	uint32_t ct = frameContext.awb.temperatureK;
+	unsigned int quantizedCt = quantize(ct, kColourTemperatureQuantization);
 
-	/*
-	 * If there is only one set, the configuration has already been done
-	 * for first frame.
-	 */
-	if (sets_.size() == 1 && frame > 0)
-		return;
+	/* Check if we can skip the update. */
+	if (!frameContext.lsc.update) {
+		if (!frameContext.lsc.enabled)
+			return;
 
-	/*
-	 * If there is only one set, pick it. We can ignore lastCt_, as it will
-	 * never be relevant.
-	 */
-	if (sets_.size() == 1) {
-		setParameters(params);
-		copyTable(config, sets_.cbegin()->second);
-		return;
+		/*
+		 * Add a threshold so that oscillations around a quantization
+		 * step don't lead to constant changes.
+		 */
+		if (utils::abs_diff(ct, lastAppliedCt_) < kColourTemperatureQuantization / 2)
+			return;
+
+		if (quantizedCt == lastAppliedQuantizedCt_)
+			return;
 	}
 
-	uint32_t ct = context.activeState.awb.temperatureK;
-	ct = std::clamp(ct, sets_.cbegin()->first, sets_.crbegin()->first);
+	auto config = params->block<BlockType::Lsc>();
+	config.setEnabled(frameContext.lsc.enabled);
 
-	/*
-	 * If the original is the same, then it means the same adjustment would
-	 * be made. If the adjusted is the same, then it means that it's the
-	 * same as what was actually applied. Thus in these cases we can skip
-	 * reprogramming the LSC.
-	 *
-	 * original == adjusted can only happen if an interpolation
-	 * happened, or if original has an exact entry in sets_. This means
-	 * that if original != adjusted, then original was adjusted to
-	 * the nearest available entry in sets_, resulting in adjusted.
-	 * Clearly, any ct value that is in between original and adjusted
-	 * will be adjusted to the same adjusted value, so we can skip
-	 * reprogramming the LSC table.
-	 *
-	 * We also skip updating the original value, as the last one had a
-	 * larger bound and thus a larger range of ct values that will be
-	 * adjusted to the same adjusted.
-	 */
-	if ((lastCt_.original <= ct && ct <= lastCt_.adjusted) ||
-	    (lastCt_.adjusted <= ct && ct <= lastCt_.original))
+	if (!frameContext.lsc.enabled)
 		return;
 
-	setParameters(params);
+	setParameters(*config);
 
-	/*
-	 * The color temperature matches exactly one of the available LSC tables.
-	 */
-	if (sets_.count(ct)) {
-		copyTable(config, sets_[ct]);
-		lastCt_ = { ct, ct };
-		return;
-	}
+	const Components &set = sets_.getInterpolated(quantizedCt);
+	copyTable(*config, set);
 
-	/* No shortcuts left; we need to round or interpolate */
-	auto iter = sets_.upper_bound(ct);
-	const Components &set1 = iter->second;
-	const Components &set0 = (--iter)->second;
-	uint32_t ct0 = set0.ct;
-	uint32_t ct1 = set1.ct;
-	uint32_t diff0 = ct - ct0;
-	uint32_t diff1 = ct1 - ct;
-	static constexpr double kThreshold = 0.1;
-	float threshold = kThreshold * (ct1 - ct0);
+	lastAppliedCt_ = ct;
+	lastAppliedQuantizedCt_ = quantizedCt;
 
-	if (diff0 < threshold || diff1 < threshold) {
-		const Components &set = diff0 < diff1 ? set0 : set1;
-		LOG(RkISP1Lsc, Debug) << "using LSC table for " << set.ct;
-		copyTable(config, set);
-		lastCt_ = { ct, set.ct };
-		return;
-	}
-
-	/*
-	 * ct is not within 10% of the difference between the neighbouring
-	 * color temperatures, so we need to interpolate.
-	 */
 	LOG(RkISP1Lsc, Debug)
-		<< "ct is " << ct << ", interpolating between "
-		<< ct0 << " and " << ct1;
-	interpolateTable(config, set0, set1, ct);
-	lastCt_ = { ct, ct };
+		<< "ct is " << ct << ", quantized to "
+		<< quantizedCt;
+}
+
+/**
+ * \copydoc libcamera::ipa::Algorithm::process
+ */
+void LensShadingCorrection::process([[maybe_unused]] IPAContext &context,
+				    [[maybe_unused]] const uint32_t frame,
+				    IPAFrameContext &frameContext,
+				    [[maybe_unused]] const rkisp1_stat_buffer *stats,
+				    ControlList &metadata)
+{
+	metadata.set(controls::LensShadingCorrectionEnable, frameContext.lsc.enabled);
 }
 
 REGISTER_IPA_ALGORITHM(LensShadingCorrection, "LensShadingCorrection")

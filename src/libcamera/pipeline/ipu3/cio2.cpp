@@ -2,13 +2,13 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * cio2.cpp - Intel IPU3 CIO2
+ * Intel IPU3 CIO2
  */
 
 #include "cio2.h"
 
+#include <cmath>
 #include <limits>
-#include <math.h>
 
 #include <linux/media-bus-format.h>
 
@@ -82,11 +82,11 @@ std::vector<SizeRange> CIO2Device::sizes(const PixelFormat &format) const
 		return {};
 
 	std::vector<SizeRange> sizes;
-	for (const auto &iter : mbusCodesToPixelFormat) {
-		if (iter.second != format)
+	for (const auto &[code, pixelFormat] : mbusCodesToPixelFormat) {
+		if (pixelFormat != format)
 			continue;
 
-		mbusCode = iter.first;
+		mbusCode = code;
 		break;
 	}
 
@@ -112,7 +112,7 @@ std::vector<SizeRange> CIO2Device::sizes(const PixelFormat &format) const
  * \return 0 on success or a negative error code otherwise
  * \retval -ENODEV No supported image sensor is connected to this CIO2 instance
  */
-int CIO2Device::init(const MediaDevice *media, unsigned int index)
+int CIO2Device::init(std::shared_ptr<const MediaDevice> media, unsigned int index)
 {
 	int ret;
 
@@ -134,10 +134,9 @@ int CIO2Device::init(const MediaDevice *media, unsigned int index)
 
 	MediaLink *link = links[0];
 	MediaEntity *sensorEntity = link->source()->entity();
-	sensor_ = std::make_unique<CameraSensor>(sensorEntity);
-	ret = sensor_->init();
-	if (ret)
-		return ret;
+	sensor_ = CameraSensorFactoryBase::create(sensorEntity);
+	if (!sensor_)
+		return -ENODEV;
 
 	ret = link->setEnabled(true);
 	if (ret)
@@ -171,7 +170,7 @@ int CIO2Device::init(const MediaDevice *media, unsigned int index)
 		return ret;
 
 	std::string cio2Name = "ipu3-cio2 " + std::to_string(index);
-	output_ = V4L2VideoDevice::fromEntityName(media, cio2Name);
+	output_ = V4L2VideoDevice::fromEntityName(media.get(), cio2Name);
 	return output_->open();
 }
 
@@ -202,7 +201,7 @@ int CIO2Device::configure(const Size &size, const Transform &transform,
 	if (ret)
 		return ret;
 
-	const auto &itInfo = mbusCodesToPixelFormat.find(sensorFormat.mbus_code);
+	const auto &itInfo = mbusCodesToPixelFormat.find(sensorFormat.code);
 	if (itInfo == mbusCodesToPixelFormat.end())
 		return -EINVAL;
 
@@ -230,13 +229,13 @@ StreamConfiguration CIO2Device::generateConfiguration(Size size) const
 	/* Query the sensor static information for closest match. */
 	std::vector<unsigned int> mbusCodes = utils::map_keys(mbusCodesToPixelFormat);
 	V4L2SubdeviceFormat sensorFormat = getSensorFormat(mbusCodes, size);
-	if (!sensorFormat.mbus_code) {
+	if (!sensorFormat.code) {
 		LOG(IPU3, Error) << "Sensor does not support mbus code";
 		return {};
 	}
 
 	cfg.size = sensorFormat.size;
-	cfg.pixelFormat = mbusCodesToPixelFormat.at(sensorFormat.mbus_code);
+	cfg.pixelFormat = mbusCodesToPixelFormat.at(sensorFormat.code);
 	cfg.bufferCount = kBufferCount;
 
 	return cfg;
@@ -304,7 +303,7 @@ V4L2SubdeviceFormat CIO2Device::getSensorFormat(const std::vector<unsigned int> 
 			 * comparing it with a single precision digit is enough.
 			 */
 			ratio = static_cast<unsigned int>(ratio * 10) / 10.0;
-			float ratioDiff = fabsf(ratio - desiredRatio);
+			float ratioDiff = std::abs(ratio - desiredRatio);
 			unsigned int area = sz.width * sz.height;
 			unsigned int areaDiff = area - desiredArea;
 
@@ -326,7 +325,7 @@ V4L2SubdeviceFormat CIO2Device::getSensorFormat(const std::vector<unsigned int> 
 	}
 
 	V4L2SubdeviceFormat format{};
-	format.mbus_code = bestCode;
+	format.code = bestCode;
 	format.size = bestSize;
 
 	return format;
@@ -379,7 +378,7 @@ int CIO2Device::stop()
 	return ret;
 }
 
-FrameBuffer *CIO2Device::queueBuffer(Request *request, FrameBuffer *rawBuffer)
+FrameBuffer *CIO2Device::queueBuffer(FrameBuffer *rawBuffer)
 {
 	FrameBuffer *buffer = rawBuffer;
 
@@ -392,7 +391,6 @@ FrameBuffer *CIO2Device::queueBuffer(Request *request, FrameBuffer *rawBuffer)
 
 		buffer = availableBuffers_.front();
 		availableBuffers_.pop();
-		buffer->_d()->setRequest(request);
 	}
 
 	int ret = output_->queueBuffer(buffer);

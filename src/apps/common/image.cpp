@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Ideas on Board Oy
  *
- * image.cpp - Multi-planar image with access to pixel data
+ * Multi-planar image with access to pixel data
  */
 
 #include "image.h"
@@ -98,12 +98,12 @@ unsigned int Image::numPlanes() const
 
 Span<uint8_t> Image::data(unsigned int plane)
 {
-	assert(plane <= planes_.size());
+	assert(plane < planes_.size());
 	return planes_[plane];
 }
 
 Span<const uint8_t> Image::data(unsigned int plane) const
 {
-	assert(plane <= planes_.size());
+	assert(plane < planes_.size());
 	return planes_[plane];
 }

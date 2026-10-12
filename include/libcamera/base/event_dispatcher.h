@@ -2,12 +2,10 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * event_dispatcher.h - Event dispatcher
+ * Event dispatcher
  */
 
 #pragma once
-
-#include <vector>
 
 #include <libcamera/base/private.h>
 
@@ -28,7 +26,6 @@ public:
 	virtual void unregisterTimer(Timer *timer) = 0;
 
 	virtual void processEvents() = 0;
-	virtual void processEventsOnNotifier(EventNotifier* notifier) = 0;
 
 	virtual void interrupt() = 0;
 };

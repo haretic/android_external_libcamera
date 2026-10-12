@@ -2,9 +2,9 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * histogram.cpp - histogram calculations
+ * histogram calculations
  */
-#include <math.h>
+#include <cmath>
 #include <stdio.h>
 
 #include "histogram.h"
@@ -47,23 +47,29 @@ double Histogram::quantile(double q, int first, int last) const
 
 double Histogram::interBinMean(double binLo, double binHi) const
 {
-	assert(binHi > binLo);
+	assert(binHi >= binLo);
 	double sumBinFreq = 0, cumulFreq = 0;
-	for (double binNext = floor(binLo) + 1.0; binNext <= ceil(binHi);
+	for (double binNext = std::floor(binLo) + 1.0; binNext <= std::ceil(binHi);
 	     binLo = binNext, binNext += 1.0) {
-		int bin = floor(binLo);
+		int bin = std::floor(binLo);
 		double freq = (cumulative_[bin + 1] - cumulative_[bin]) *
 			      (std::min(binNext, binHi) - binLo);
 		sumBinFreq += bin * freq;
 		cumulFreq += freq;
 	}
+
+	if (cumulFreq == 0) {
+		/* interval had zero width or contained no weight? */
+		return binHi;
+	}
+
 	/* add 0.5 to give an average for bin mid-points */
 	return sumBinFreq / cumulFreq + 0.5;
 }
 
 double Histogram::interQuantileMean(double qLo, double qHi) const
 {
-	assert(qHi > qLo);
+	assert(qHi >= qLo);
 	double pLo = quantile(qLo);
 	double pHi = quantile(qHi, (int)pLo);
 	return interBinMean(pLo, pHi);

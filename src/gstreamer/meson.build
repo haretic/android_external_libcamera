@@ -25,6 +25,17 @@ libcamera_gst_sources = [
     'gstlibcamerasrc.cpp',
 ]
 
+# Generate gstreamer control properties
+
+gen_gst_controls_template = files('gstlibcamera-controls.cpp.in')
+libcamera_gst_sources += custom_target('gstlibcamera-controls.cpp',
+                                       input : controls_files,
+                                       output : 'gstlibcamera-controls.cpp',
+                                       command : [gen_gst_controls, '-o', '@OUTPUT@',
+                                                  '-t', gen_gst_controls_template, '@INPUT@'],
+                                       depend_files : [py_mod_controls],
+                                       env : py_build_env)
+
 libcamera_gst_cpp_args = [
     '-DVERSION="@0@"'.format(libcamera_git_version),
     '-DPACKAGE="@0@"'.format(meson.project_name()),
@@ -39,6 +50,13 @@ if cc.get_id() == 'clang' and glib_dep.version().version_compare('<2.63.0')
     libcamera_gst_cpp_args += ['-Wno-unused-function']
 endif
 
+# In C++20 many operations involving the `volatile` qualifier became deprecated.
+# glib however made use of `volatile` in certain macros that would trigger
+# this warning. See https://gitlab.gnome.org/GNOME/glib/-/merge_requests/1719.
+if cc.get_id() == 'gcc' and glib_dep.version().version_compare('<2.67.1')
+    libcamera_gst_cpp_args += ['-Wno-volatile']
+endif
+
 libcamera_gst = shared_library('gstlibcamera',
     libcamera_gst_sources,
     cpp_args : libcamera_gst_cpp_args,
@@ -46,3 +64,15 @@ libcamera_gst = shared_library('gstlibcamera',
     install : true,
     install_dir : '@0@/gstreamer-1.0'.format(get_option('libdir')),
 )
+
+# Make the plugin visible to GStreamer inside meson devenv.
+fs = import('fs')
+gst_plugin_path = fs.parent(libcamera_gst.full_path())
+
+gst_env = environment()
+gst_env.prepend('GST_PLUGIN_PATH', gst_plugin_path)
+
+# Avoid polluting the system registry.
+gst_env.set('GST_REGISTRY', gst_plugin_path / 'registry.data')
+
+meson.add_devenv(gst_env)

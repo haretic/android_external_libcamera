@@ -29,9 +29,9 @@ ConfigParser::parseConfigFile(File &file, PipelineHandler *pipe)
 {
 	std::vector<std::unique_ptr<VirtualCameraData>> configurations;
 
-	std::unique_ptr<YamlObject> cameras = YamlParser::parse(file);
+	std::unique_ptr<ValueNode> cameras = YamlParser::parse(file);
 	if (!cameras) {
-		LOG(Virtual, Error) << "Failed to pass config file.";
+		LOG(Virtual, Error) << "Failed to parse config file.";
 		return configurations;
 	}
 
@@ -54,13 +54,13 @@ ConfigParser::parseConfigFile(File &file, PipelineHandler *pipe)
 
 		data->config_.id = cameraId;
 		ControlInfoMap::Map controls;
-		/* todo: Check which resolution's frame rate to be reported */
+		/* \todo Check which resolution's frame rate to be reported */
 		controls[&controls::FrameDurationLimits] =
 			ControlInfo(1000000 / data->config_.resolutions[0].frameRates[1],
 				    1000000 / data->config_.resolutions[0].frameRates[0]);
 
 		std::vector<ControlValue> supportedFaceDetectModes{
-			static_cast<uint8_t>(controls::draft::FaceDetectModeOff),
+			static_cast<int32_t>(controls::draft::FaceDetectModeOff),
 		};
 		controls[&controls::draft::FaceDetectMode] = ControlInfo(supportedFaceDetectModes);
 
@@ -72,7 +72,7 @@ ConfigParser::parseConfigFile(File &file, PipelineHandler *pipe)
 }
 
 std::unique_ptr<VirtualCameraData>
-ConfigParser::parseCameraConfigData(const YamlObject &cameraConfigData,
+ConfigParser::parseCameraConfigData(const ValueNode &cameraConfigData,
 				    PipelineHandler *pipe)
 {
 	std::vector<VirtualCameraData::Resolution> resolutions;
@@ -94,13 +94,13 @@ ConfigParser::parseCameraConfigData(const YamlObject &cameraConfigData,
 	return data;
 }
 
-int ConfigParser::parseSupportedFormats(const YamlObject &cameraConfigData,
+int ConfigParser::parseSupportedFormats(const ValueNode &cameraConfigData,
 					std::vector<VirtualCameraData::Resolution> *resolutions)
 {
 	if (cameraConfigData.contains("supported_formats")) {
-		const YamlObject &supportedResolutions = cameraConfigData["supported_formats"];
+		const ValueNode &supportedResolutions = cameraConfigData["supported_formats"];
 
-		for (const YamlObject &supportedResolution : supportedResolutions.asList()) {
+		for (const ValueNode &supportedResolution : supportedResolutions.asList()) {
 			unsigned int width = supportedResolution["width"].get<unsigned int>(1920);
 			unsigned int height = supportedResolution["height"].get<unsigned int>(1080);
 			if (width == 0 || height == 0) {
@@ -115,7 +115,7 @@ int ConfigParser::parseSupportedFormats(const YamlObject &cameraConfigData,
 			std::vector<int64_t> frameRates;
 			if (supportedResolution.contains("frame_rates")) {
 				auto frameRatesList =
-					supportedResolution["frame_rates"].getList<int>();
+					supportedResolution["frame_rates"].get<std::vector<int>>();
 				if (!frameRatesList || (frameRatesList->size() != 1 &&
 							frameRatesList->size() != 2)) {
 					LOG(Virtual, Error) << "Invalid frame_rates: either one or two values";
@@ -152,7 +152,7 @@ int ConfigParser::parseSupportedFormats(const YamlObject &cameraConfigData,
 	return 0;
 }
 
-int ConfigParser::parseFrameGenerator(const YamlObject &cameraConfigData, VirtualCameraData *data)
+int ConfigParser::parseFrameGenerator(const ValueNode &cameraConfigData, VirtualCameraData *data)
 {
 	const std::string testPatternKey = "test_pattern";
 	const std::string framesKey = "frames";
@@ -178,12 +178,17 @@ int ConfigParser::parseFrameGenerator(const YamlObject &cameraConfigData, Virtua
 		return 0;
 	}
 
-	const YamlObject &frames = cameraConfigData[framesKey];
+	const ValueNode &frames = cameraConfigData[framesKey];
 
 	/* When there is no frames provided in the config file, use color bar test pattern */
-	if (!frames.isDictionary()) {
+	if (!frames) {
 		data->config_.frame = TestPattern::ColorBars;
 		return 0;
+	}
+
+	if (!frames.isDictionary()) {
+		LOG(Virtual, Error) << "'frames' is not a dictionary.";
+		return -EINVAL;
 	}
 
 	auto path = frames["path"].get<std::string>();
@@ -226,30 +231,28 @@ int ConfigParser::parseFrameGenerator(const YamlObject &cameraConfigData, Virtua
 	return 0;
 }
 
-int ConfigParser::parseLocation(const YamlObject &cameraConfigData, VirtualCameraData *data)
+int ConfigParser::parseLocation(const ValueNode &cameraConfigData, VirtualCameraData *data)
 {
-	std::string location = cameraConfigData["location"].get<std::string>("CameraLocationFront");
-
 	/* Default value is properties::CameraLocationFront */
-	if (location == "CameraLocationFront") {
-		data->properties_.set(properties::Location,
-				      properties::LocationEnum::CameraLocationFront);
-	} else if (location == "CameraLocationBack") {
-		data->properties_.set(properties::Location,
-				      properties::LocationEnum::CameraLocationBack);
-	} else if (location == "CameraLocationExternal") {
-		data->properties_.set(properties::Location,
-				      properties::LocationEnum::CameraLocationExternal);
-	} else {
-		LOG(Virtual, Error)
-			<< "location: " << location << " is not supported";
-		return -EINVAL;
+	int32_t location = properties::CameraLocationFront;
+
+	if (auto l = cameraConfigData["location"].get<std::string>()) {
+		auto it = properties::LocationNameValueMap.find(*l);
+		if (it == properties::LocationNameValueMap.end()) {
+			LOG(Virtual, Error)
+				<< "location: " << *l << " is not supported";
+			return -EINVAL;
+		}
+
+		location = it->second;
 	}
+
+	data->properties_.set(properties::Location, location);
 
 	return 0;
 }
 
-int ConfigParser::parseModel(const YamlObject &cameraConfigData, VirtualCameraData *data)
+int ConfigParser::parseModel(const ValueNode &cameraConfigData, VirtualCameraData *data)
 {
 	std::string model = cameraConfigData["model"].get<std::string>("Unknown");
 

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * geometry.cpp - Geometry-related structures
+ * Geometry-related structures
  */
 
 #include <libcamera/geometry.h>
@@ -11,6 +11,8 @@
 #include <stdint.h>
 
 #include <libcamera/base/log.h>
+
+#include "libcamera/internal/value_node.h"
 
 /**
  * \file geometry.h
@@ -53,7 +55,7 @@ namespace libcamera {
  * \brief Assemble and return a string describing the point
  * \return A string describing the point
  */
-const std::string Point::toString() const
+std::string Point::toString() const
 {
 	std::stringstream ss;
 	ss << *this;
@@ -95,10 +97,10 @@ std::ostream &operator<<(std::ostream &out, const Point &p)
 }
 
 /**
- * \struct Size
+ * \class Size
  * \brief Describe a two-dimensional size
  *
- * The Size structure defines a two-dimensional size with integer precision.
+ * The Size class defines a two-dimensional size with integer precision.
  */
 
 /**
@@ -133,7 +135,7 @@ std::ostream &operator<<(std::ostream &out, const Point &p)
  * \brief Assemble and return a string describing the size
  * \return A string describing the size
  */
-const std::string Size::toString() const
+std::string Size::toString() const
 {
 	std::stringstream ss;
 	ss << *this;
@@ -205,6 +207,16 @@ const std::string Size::toString() const
  * This function subtracts the width and height of the \a margin size from this
  * size. If the width or height of the size are smaller than those of \a
  * margins, the result is clamped to 0.
+ *
+ * \return A reference to this object
+ */
+
+/**
+ * \fn Size::transpose()
+ * \brief Transpose the size in place
+ *
+ * This function swaps width and height of this size. This effectively applies
+ * the \a Transform::Transpose transformation on this size.
  *
  * \return A reference to this object
  */
@@ -455,7 +467,7 @@ std::ostream &operator<<(std::ostream &out, const Size &s)
 }
 
 /**
- * \struct SizeRange
+ * \class SizeRange
  * \brief Describe a range of sizes
  *
  * A SizeRange describes a range of sizes included in the [min, max] interval
@@ -589,11 +601,13 @@ std::ostream &operator<<(std::ostream &out, const SizeRange &sr)
 }
 
 /**
- * \struct Rectangle
+ * \class Rectangle
  * \brief Describe a rectangle's position and dimensions
  *
  * Rectangles are used to identify an area of an image. They are specified by
  * the coordinates of top-left corner and their horizontal and vertical size.
+ * By convention, the top-left corner is defined as the corner with the lowest
+ * x and y coordinates, regardless of the origin and direction of the axes.
  *
  * The measure unit of the rectangle coordinates and size, as well as the
  * reference point from which the Rectangle::x and Rectangle::y displacements
@@ -611,6 +625,8 @@ std::ostream &operator<<(std::ostream &out, const SizeRange &sr)
  * \param[in] x The horizontal coordinate of the top-left corner
  * \param[in] y The vertical coordinate of the top-left corner
  * \param[in] size The size
+ *
+ * The rectangle's top-left corner is the point with the smaller x and y values.
  */
 
 /**
@@ -620,6 +636,8 @@ std::ostream &operator<<(std::ostream &out, const SizeRange &sr)
  * \param[in] y The vertical coordinate of the top-left corner
  * \param[in] width The width
  * \param[in] height The height
+ *
+ * The rectangle's top-left corner is the point with the smaller x and y values.
  */
 
 /**
@@ -639,11 +657,15 @@ std::ostream &operator<<(std::ostream &out, const SizeRange &sr)
 /**
  * \var Rectangle::x
  * \brief The horizontal coordinate of the rectangle's top-left corner
+ *
+ * The rectangle's top-left corner is the point with the smaller x and y values.
  */
 
 /**
  * \var Rectangle::y
  * \brief The vertical coordinate of the rectangle's top-left corner
+ *
+ * The rectangle's top-left corner is the point with the smaller x and y values.
  */
 
 /**
@@ -666,7 +688,7 @@ std::ostream &operator<<(std::ostream &out, const SizeRange &sr)
  * \brief Assemble and return a string describing the rectangle
  * \return A string describing the Rectangle
  */
-const std::string Rectangle::toString() const
+std::string Rectangle::toString() const
 {
 	std::stringstream ss;
 	ss << *this;
@@ -692,6 +714,9 @@ Point Rectangle::center() const
 /**
  * \fn Point Rectangle::topLeft() const
  * \brief Retrieve the coordinates of the top left corner of this Rectangle
+ *
+ * The rectangle's top-left corner is the point with the smaller x and y values.
+ *
  * \return The Rectangle's top left corner
  */
 
@@ -825,6 +850,55 @@ Rectangle Rectangle::translatedBy(const Point &point) const
 }
 
 /**
+ * \brief Transform a Rectangle from one reference rectangle to another
+ * \param[in] source The \a source reference rectangle
+ * \param[in] destination The \a destination reference rectangle
+ *
+ * The \a source and \a destination parameters describe two rectangles defined
+ * in different reference systems. The Rectangle is translated from the source
+ * reference system into the destination reference system.
+ *
+ * The typical use case for this function is to translate a selection rectangle
+ * specified in a reference system, in example the sensor's pixel array, into
+ * the same rectangle re-scaled and translated into a different reference
+ * system, in example the output frame on which the selection rectangle is
+ * applied to.
+ *
+ * For example, consider a sensor with a resolution of 4040x2360 pixels and a
+ * assume a rectangle of (100, 100)/3840x2160 (sensorFrame) in sensor
+ * coordinates is mapped to a rectangle (0,0)/(1920,1080) (displayFrame) in
+ * display coordinates. This function can be used to transform an arbitrary
+ * rectangle from display coordinates to sensor coordinates or vice versa:
+ *
+ * \code{.cpp}
+ * Rectangle sensorReference(100, 100, 3840, 2160);
+ * Rectangle displayReference(0, 0, 1920, 1080);
+ *
+ * // Bottom right quarter in sensor coordinates
+ * Rectangle sensorRect(2020, 100, 1920, 1080);
+ * displayRect = sensorRect.transformedBetween(sensorReference, displayReference);
+ * // displayRect is now (960, 540)/960x540
+ *
+ * // Transformation back to sensor coordinates
+ * sensorRect = displayRect.transformedBetween(displayReference, sensorReference);
+ * \endcode
+ */
+Rectangle Rectangle::transformedBetween(const Rectangle &source,
+					const Rectangle &destination) const
+{
+	Rectangle r;
+	double sx = static_cast<double>(destination.width) / source.width;
+	double sy = static_cast<double>(destination.height) / source.height;
+
+	r.x = static_cast<int>((x - source.x) * sx) + destination.x;
+	r.y = static_cast<int>((y - source.y) * sy) + destination.y;
+	r.width = static_cast<int>(width * sx);
+	r.height = static_cast<int>(height * sy);
+
+	return r;
+}
+
+/**
  * \brief Compare rectangles for equality
  * \return True if the two rectangles are equal, false otherwise
  */
@@ -851,5 +925,32 @@ std::ostream &operator<<(std::ostream &out, const Rectangle &r)
 	out << "(" << r.x << ", " << r.y << ")/" << r.width << "x" << r.height;
 	return out;
 }
+
+#ifndef __DOXYGEN__
+/*
+ * The value node shall be a list of two numerical values containing the x and y
+ * coordinates, in that order.
+ */
+template<>
+std::optional<Size>
+ValueNode::Accessor<Size>::get(const ValueNode &obj) const
+{
+	if (obj.type_ != Type::List)
+		return std::nullopt;
+
+	if (obj.list_.size() != 2)
+		return std::nullopt;
+
+	auto width = obj.list_[0].value->get<uint32_t>();
+	if (!width)
+		return std::nullopt;
+
+	auto height = obj.list_[1].value->get<uint32_t>();
+	if (!height)
+		return std::nullopt;
+
+	return Size(*width, *height);
+}
+#endif /* __DOXYGEN__ */
 
 } /* namespace libcamera */

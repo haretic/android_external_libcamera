@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * vimc.cpp - Vimc Image Processing Algorithm module
+ * Vimc Image Processing Algorithm module
  */
 #include <libcamera/ipa/vimc_ipa_interface.h>
 
@@ -14,6 +14,7 @@
 #include <iostream>
 
 #include <libcamera/base/file.h>
+#include <libcamera/base/flags.h>
 #include <libcamera/base/log.h>
 
 #include <libcamera/ipa/ipa_interface.h>
@@ -32,6 +33,7 @@ public:
 	~IPAVimc();
 
 	int init(const IPASettings &settings,
+		 const SharedFD &traceFd,
 		 const ipa::vimc::IPAOperationCode code,
 		 const Flags<ipa::vimc::TestFlag> inFlags,
 		 Flags<ipa::vimc::TestFlag> *outFlags) override;
@@ -47,33 +49,31 @@ public:
 	void unmapBuffers(const std::vector<unsigned int> &ids) override;
 
 	void queueRequest(uint32_t frame, const ControlList &controls) override;
-	void fillParamsBuffer(uint32_t frame, uint32_t bufferId) override;
+	void computeParams(uint32_t frame, uint32_t bufferId) override;
 
 private:
-	void initTrace();
 	void trace(enum ipa::vimc::IPAOperationCode operation);
 
-	int fd_;
+	SharedFD fd_;
 	std::map<unsigned int, MappedFrameBuffer> buffers_;
 };
 
 IPAVimc::IPAVimc()
-	: fd_(-1)
 {
-	initTrace();
 }
 
 IPAVimc::~IPAVimc()
 {
-	if (fd_ != -1)
-		::close(fd_);
 }
 
 int IPAVimc::init(const IPASettings &settings,
+		  const SharedFD &traceFd,
 		  const ipa::vimc::IPAOperationCode code,
 		  const Flags<ipa::vimc::TestFlag> inFlags,
 		  Flags<ipa::vimc::TestFlag> *outFlags)
 {
+	fd_ = traceFd;
+
 	trace(ipa::vimc::IPAOperationInit);
 
 	LOG(IPAVimc, Debug)
@@ -149,7 +149,7 @@ void IPAVimc::queueRequest([[maybe_unused]] uint32_t frame,
 {
 }
 
-void IPAVimc::fillParamsBuffer([[maybe_unused]] uint32_t frame, uint32_t bufferId)
+void IPAVimc::computeParams([[maybe_unused]] uint32_t frame, uint32_t bufferId)
 {
 	auto it = buffers_.find(bufferId);
 	if (it == buffers_.end()) {
@@ -158,33 +158,15 @@ void IPAVimc::fillParamsBuffer([[maybe_unused]] uint32_t frame, uint32_t bufferI
 	}
 
 	Flags<ipa::vimc::TestFlag> flags;
-	paramsBufferReady.emit(bufferId, flags);
-}
-
-void IPAVimc::initTrace()
-{
-	struct stat fifoStat;
-	int ret = stat(ipa::vimc::VimcIPAFIFOPath.c_str(), &fifoStat);
-	if (ret)
-		return;
-
-	ret = ::open(ipa::vimc::VimcIPAFIFOPath.c_str(), O_WRONLY | O_CLOEXEC);
-	if (ret < 0) {
-		ret = errno;
-		LOG(IPAVimc, Error) << "Failed to open vimc IPA test FIFO: "
-				    << strerror(ret);
-		return;
-	}
-
-	fd_ = ret;
+	paramsComputed.emit(bufferId, flags);
 }
 
 void IPAVimc::trace(enum ipa::vimc::IPAOperationCode operation)
 {
-	if (fd_ < 0)
+	if (!fd_.isValid())
 		return;
 
-	int ret = ::write(fd_, &operation, sizeof(operation));
+	int ret = ::write(fd_.get(), &operation, sizeof(operation));
 	if (ret < 0) {
 		ret = errno;
 		LOG(IPAVimc, Error) << "Failed to write to vimc IPA test FIFO: "
@@ -200,7 +182,7 @@ extern "C" {
 const struct IPAModuleInfo ipaModuleInfo = {
 	IPA_MODULE_API_VERSION,
 	0,
-	"PipelineHandlerVimc",
+	"vimc",
 	"vimc",
 };
 

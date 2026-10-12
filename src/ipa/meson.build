@@ -4,7 +4,7 @@ ipa_includes = [
     libcamera_includes,
 ]
 
-ipa_install_dir = libcamera_libdir
+ipa_install_dir = libcamera_libdir / 'ipa'
 ipa_data_dir = libcamera_datadir / 'ipa'
 ipa_sysconf_dir = libcamera_sysconfdir / 'ipa'
 
@@ -24,8 +24,6 @@ subdir('libipa')
 
 ipa_sign = files('ipa-sign.sh')
 
-ipa_names = []
-
 ipa_modules = get_option('ipas')
 
 # Tests require the vimc IPA, similar to vimc pipline-handler for their
@@ -41,6 +39,9 @@ ipa_names = []
 
 subdirs = []
 foreach pipeline : pipelines
+    # The current implementation expects the IPA module name to match the
+    # pipeline name.
+    # \todo Make the IPA naming scheme more flexible.
     if not ipa_modules.contains(pipeline)
         continue
     endif
@@ -72,5 +73,6 @@ if ipa_sign_module
     # install time, which invalidates the signatures.
     meson.add_install_script('ipa-sign-install.sh',
                              ipa_priv_key.full_path(),
-                             enabled_ipa_modules)
+                             enabled_ipa_modules,
+                             install_tag : 'runtime')
 endif

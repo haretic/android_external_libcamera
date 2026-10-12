@@ -2,13 +2,15 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * thread.cpp - Thread support
+ * Thread support
  */
 
 #include <libcamera/base/thread.h>
 
 #include <atomic>
 #include <list>
+#include <optional>
+#include <pthread.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -18,6 +20,7 @@
 #include <libcamera/base/log.h>
 #include <libcamera/base/message.h>
 #include <libcamera/base/mutex.h>
+#include <libcamera/base/object.h>
 
 /**
  * \page thread Thread Support
@@ -63,42 +66,6 @@
  * receiver's event loop, running in the receiver's thread. This mechanism can
  * be overridden by selecting a different connection type when calling
  * Signal::connect().
- *
- * \section thread-reentrancy Reentrancy and Thread-Safety
- *
- * Through the documentation, several terms are used to define how classes and
- * their member functions can be used from multiple threads.
- *
- * - A **reentrant** function may be called simultaneously from multiple
- *   threads if and only if each invocation uses a different instance of the
- *   class. This is the default for all member functions not explictly marked
- *   otherwise.
- *
- * - \anchor thread-safe A **thread-safe** function may be called
- *   simultaneously from multiple threads on the same instance of a class. A
- *   thread-safe function is thus reentrant. Thread-safe functions may also be
- *   called simultaneously with any other reentrant function of the same class
- *   on the same instance.
- *
- * - \anchor thread-bound A **thread-bound** function may be called only from
- *   the thread that the class instances lives in (see section \ref
- *   thread-objects). For instances of classes that do not derive from the
- *   Object class, this is the thread in which the instance was created. A
- *   thread-bound function is not thread-safe, and may or may not be reentrant.
- *
- * Neither reentrancy nor thread-safety, in this context, mean that a function
- * may be called simultaneously from the same thread, for instance from a
- * callback invoked by the function. This may deadlock and isn't allowed unless
- * separately documented.
- *
- * A class is defined as reentrant, thread-safe or thread-bound if all its
- * member functions are reentrant, thread-safe or thread-bound respectively.
- * Some member functions may additionally be documented as having additional
- * thread-related attributes.
- *
- * Most classes are reentrant but not thread-safe, as making them fully
- * thread-safe would incur locking costs considered prohibitive for the
- * expected use cases.
  */
 
 /**
@@ -126,6 +93,11 @@ public:
 	 * \brief Protects the \ref list_
 	 */
 	Mutex mutex_;
+	/**
+	 * \brief The recursion level for recursive Thread::dispatchMessages()
+	 * calls
+	 */
+	unsigned int recursion_ = 0;
 };
 
 /**
@@ -134,8 +106,12 @@ public:
 class ThreadData
 {
 public:
-	ThreadData()
-		: thread_(nullptr), running_(false), dispatcher_(nullptr)
+	/**
+	 * \brief Constructor for internal thread data
+	 * \param[in] thread The associated thread
+	 */
+	ThreadData(Thread *thread)
+		: thread_(thread), running_(false), dispatcher_(nullptr)
 	{
 	}
 
@@ -158,6 +134,8 @@ private:
 	int exitCode_;
 
 	MessageQueue messages_;
+
+	std::optional<cpu_set_t> cpuset_;
 };
 
 /**
@@ -167,6 +145,7 @@ class ThreadMain : public Thread
 {
 public:
 	ThreadMain()
+		: Thread("libcamera-main")
 	{
 		data_->running_ = true;
 	}
@@ -194,7 +173,7 @@ ThreadData *ThreadData::current()
 	 * The main thread doesn't receive thread-local data when it is
 	 * started, set it here.
 	 */
-	ThreadData *data = mainThread.data_;
+	ThreadData *data = mainThread.data_.get();
 	data->tid_ = syscall(SYS_gettid);
 	currentThreadData = data;
 	return data;
@@ -257,41 +236,15 @@ ThreadData *ThreadData::current()
 /**
  * \brief Create a thread
  */
-Thread::Thread()
+Thread::Thread(std::string name)
+	: name_(std::move(name)),
+	  data_(std::make_unique<ThreadData>(this))
 {
-	data_ = new ThreadData;
-	data_->thread_ = this;
 }
 
 Thread::~Thread()
 {
-	delete data_->dispatcher_.load(std::memory_order_relaxed);
-	delete data_;
-}
-
-void Thread::setThreadAffinityInternal()
-{
-	if (affinity_.empty())
-		return;
-
-	auto handle = thread_.native_handle();
-
-	cpu_set_t cpuset;
-	CPU_ZERO(&cpuset);
-
-	for (auto cpu : affinity_)
-		CPU_SET(cpu, &cpuset);
-
-	pthread_setaffinity_np(handle, sizeof(cpu_set_t), &cpuset);
-}
-
-void Thread::setThreadAffinity(const std::vector<int> &affinity)
-{
-	affinity_ = affinity;
-
-	MutexLocker locker(data_->mutex_);
-	if (data_->running_)
-		setThreadAffinityInternal();
+	delete data_->dispatcher_.load(std::memory_order_acquire);
 }
 
 /**
@@ -336,7 +289,10 @@ void Thread::startThread()
 	thread_local ThreadCleaner cleaner(this, &Thread::finishThread);
 
 	data_->tid_ = syscall(SYS_gettid);
-	currentThreadData = data_;
+	currentThreadData = data_.get();
+
+	if (!name_.empty())
+		pthread_setname_np(pthread_self(), name_.substr(0, 15).c_str());
 
 	run();
 }
@@ -392,6 +348,12 @@ void Thread::run()
 
 void Thread::finishThread()
 {
+	/*
+	 * Objects may have been scheduled for deletion right before the thread
+	 * exited. Ensure they get deleted now, before the thread stops.
+	 */
+	dispatchMessages(Message::Type::DeferredDelete);
+
 	data_->mutex_.lock();
 	data_->running_ = false;
 	data_->mutex_.unlock();
@@ -417,7 +379,7 @@ void Thread::exit(int code)
 	data_->exitCode_ = code;
 	data_->exit_.store(true, std::memory_order_release);
 
-	EventDispatcher *dispatcher = data_->dispatcher_.load(std::memory_order_relaxed);
+	EventDispatcher *dispatcher = data_->dispatcher_.load(std::memory_order_acquire);
 	if (!dispatcher)
 		return;
 
@@ -459,6 +421,48 @@ bool Thread::wait(utils::duration duration)
 		thread_.join();
 
 	return hasFinished;
+}
+
+/**
+ * \brief Set the CPU affinity mask of the thread
+ * \param[in] cpus The list of CPU indices that the thread is set affinity to
+ *
+ * The CPU indices should be within [0, std::thread::hardware_concurrency()).
+ * If any index is invalid, this function won't modify the thread affinity and
+ * will return an error.
+ *
+ * \return 0 if all indices are valid, -EINVAL otherwise
+ */
+int Thread::setThreadAffinity(const Span<const unsigned int> &cpus)
+{
+	const unsigned int numCpus = std::thread::hardware_concurrency();
+
+	MutexLocker locker(data_->mutex_);
+	data_->cpuset_ = cpu_set_t();
+	CPU_ZERO(&data_->cpuset_.value());
+
+	for (const unsigned int &cpu : cpus) {
+		if (cpu >= numCpus) {
+			LOG(Thread, Error) << "Invalid CPU " << cpu << "for thread affinity";
+			return -EINVAL;
+		}
+
+		CPU_SET(cpu, &data_->cpuset_.value());
+	}
+
+	if (data_->running_)
+		setThreadAffinityInternal();
+
+	return 0;
+}
+
+void Thread::setThreadAffinityInternal()
+{
+	if (!data_->cpuset_)
+		return;
+
+	const cpu_set_t &cpuset = data_->cpuset_.value();
+	pthread_setaffinity_np(thread_.native_handle(), sizeof(cpuset), &cpuset);
 }
 
 /**
@@ -516,12 +520,12 @@ pid_t Thread::currentId()
  * This function retrieves the internal event dispatcher for the thread. The
  * returned event dispatcher is valid until the thread is destroyed.
  *
- * \context This function is \threadsafe.
- *
  * \return Pointer to the event dispatcher
  */
 EventDispatcher *Thread::eventDispatcher()
 {
+	ASSERT(data_.get() == ThreadData::current());
+
 	if (!data_->dispatcher_.load(std::memory_order_relaxed))
 		data_->dispatcher_.store(new EventDispatcherPoll(),
 					 std::memory_order_release);
@@ -608,10 +612,12 @@ void Thread::removeMessages(Object *receiver)
 /**
  * \brief Dispatch posted messages for this thread
  * \param[in] type The message type
+ * \param[in] receiver The receiver whose messages to dispatch
  *
- * This function immediately dispatches all the messages previously posted for
- * this thread with postMessage() that match the message \a type. If the \a type
- * is Message::Type::None, all messages are dispatched.
+ * This function immediately dispatches all the messages of the given \a type
+ * previously posted to this thread for the \a receiver with postMessage(). If
+ * the \a type is Message::Type::None, all messages types are dispatched. If the
+ * \a receiver is null, messages to all receivers are dispatched.
  *
  * Messages shall only be dispatched from the current thread, typically within
  * the thread from the run() function. Calling this function outside of the
@@ -621,47 +627,55 @@ void Thread::removeMessages(Object *receiver)
  * same thread from an object's message handler. It guarantees delivery of
  * messages in the order they have been posted in all cases.
  */
-void Thread::dispatchMessages(Message::Type type)
+void Thread::dispatchMessages(Message::Type type, Object *receiver)
 {
-	ASSERT(data_ == ThreadData::current());
+	ASSERT(data_.get() == ThreadData::current());
+
+	++data_->messages_.recursion_;
 
 	MutexLocker locker(data_->messages_.mutex_);
 
-	/*
-	 * Since the function may be called recursively, the messages may
-	 * increase during dispatching messages. Move current messages from
-	 * the list before dispatch them. The recursively generated messages
-	 * will be added to the message list and be processed in next run.
-	 */
 	std::list<std::unique_ptr<Message>> &messages = data_->messages_.list_;
-	std::list<std::unique_ptr<Message>> readyMessages;
 
-	for (auto iter = messages.begin(); iter != messages.end(); ) {
-		if (!*iter) {
-			iter = messages.erase(iter);
+	for (std::unique_ptr<Message> &msg : messages) {
+		if (!msg)
 			continue;
-		}
 
-		if (type != Message::Type::None && (*iter)->type() != type) {
-			iter++;
+		if (type != Message::Type::None && msg->type() != type)
 			continue;
-		}
 
-		readyMessages.emplace_back(std::move(*iter));
-		iter = messages.erase(iter);
-	}
+		if (receiver && receiver != msg->receiver_)
+			continue;
 
-	for (std::unique_ptr<Message> &msg : readyMessages) {
+		/*
+		 * Move the message, setting the entry in the list to null. It
+		 * will cause recursive calls to ignore the entry, and the erase
+		 * loop at the end of the function to delete it from the list.
+		 */
 		std::unique_ptr<Message> message = std::move(msg);
 
-		Object *receiver = message->receiver_;
-		ASSERT(data_ == receiver->thread()->data_);
-		receiver->pendingMessages_--;
+		Object *messageReceiver = message->receiver_;
+		ASSERT(data_ == messageReceiver->thread()->data_);
+		messageReceiver->pendingMessages_--;
 
 		locker.unlock();
-		receiver->message(message.get());
+		messageReceiver->message(message.get());
 		message.reset();
 		locker.lock();
+	}
+
+	/*
+	 * If the recursion level is 0, erase all null messages in the list. We
+	 * can't do so during recursion, as it would invalidate the iterator of
+	 * the outer calls.
+	 */
+	if (!--data_->messages_.recursion_) {
+		for (auto iter = messages.begin(); iter != messages.end();) {
+			if (!*iter)
+				iter = messages.erase(iter);
+			else
+				++iter;
+		}
 	}
 }
 
@@ -671,8 +685,8 @@ void Thread::dispatchMessages(Message::Type type)
  */
 void Thread::moveObject(Object *object)
 {
-	ThreadData *currentData = object->thread_->data_;
-	ThreadData *targetData = data_;
+	ThreadData *currentData = object->thread_->data_.get();
+	ThreadData *targetData = data_.get();
 
 	MutexLocker lockerFrom(currentData->messages_.mutex_, std::defer_lock);
 	MutexLocker lockerTo(targetData->messages_.mutex_, std::defer_lock);

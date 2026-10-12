@@ -1,10 +1,10 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Copyright (C) 2018, Google Inc.
 #
 # Author: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
 #
-# checkstyle.py - A patch style checker script based on clang-format
+# A patch style checker script based on clang-format
 #
 # TODO:
 #
@@ -23,7 +23,6 @@ import subprocess
 import sys
 
 dependencies = {
-    'clang-format': True,
     'git': True,
 }
 
@@ -168,6 +167,12 @@ def parse_diff(diff):
             hunk = DiffHunk(line)
 
         elif hunk is not None:
+            # Work around https://github.com/python/cpython/issues/46395
+            # See https://www.gnu.org/software/diffutils/manual/html_node/Incomplete-Lines.html
+            if line[-1] != '\n':
+                hunk.append(line + '\n')
+                line = '\\ No newline at end of file\n'
+
             hunk.append(line)
 
     if hunk:
@@ -205,34 +210,64 @@ class CommitFile:
 
 class Commit:
     def __init__(self, commit):
-        self.commit = commit
+        self._commit = commit
+        self._author = None
         self._trailers = []
         self._parse()
 
-    def _parse_trailers(self, lines):
-        for index in range(1, len(lines)):
-            line = lines[index]
-            if not line:
-                break
-
-            self._trailers.append(line)
-
-        return index
-
-    def _parse(self):
-        # Get the commit title and list of files.
-        ret = subprocess.run(['git', 'show', '--format=%s%n%(trailers:only,unfold)', '--name-status',
-                              self.commit],
+    def _parse_commit(self):
+        # Get and parse the commit message.
+        ret = subprocess.run(['git', 'show', '--format=%H%n%an <%ae>%n%s%n%b',
+                              '--no-patch', self.commit],
                              stdout=subprocess.PIPE).stdout.decode('utf-8')
         lines = ret.splitlines()
 
-        self._title = lines[0]
+        self._commit = lines[0]
+        self._author = lines[1]
+        self._title = lines[2]
+        self._body = lines[3:]
 
-        index = self._parse_trailers(lines)
-        self._files = [CommitFile(f) for f in lines[index:] if f]
+        # Parse the trailers. Feed git-interpret-trailers with a full commit
+        # message that includes both the title and the body, as it otherwise
+        # fails to find trailers when the body contains trailers only.
+        message = self._title + '\n\n' + '\n'.join(self._body)
+        trailers = subprocess.run(['git', 'interpret-trailers', '--parse'],
+                                  input=message.encode('utf-8'),
+                                  stdout=subprocess.PIPE).stdout.decode('utf-8')
+
+        self._trailers = trailers.splitlines()
+
+    def _parse(self):
+        self._parse_commit()
+
+        # Get the list of files. Use an empty format specifier to suppress the
+        # commit message completely.
+        ret = subprocess.run(['git', 'show', '--format=', '--name-status',
+                              self.commit],
+                             stdout=subprocess.PIPE).stdout.decode('utf-8')
+        self._files = [CommitFile(f) for f in ret.splitlines()]
+
+    def __repr__(self):
+        return '\n'.join([
+            f'commit {self.commit}',
+            f'Author: {self.author}',
+            f'',
+            f'    {self.title}',
+            '',
+            '\n'.join([line and f'    {line}' or '' for line in self._body]),
+            'Trailers:',
+        ] + self.trailers)
 
     def files(self, filter='AMR'):
         return [f.filename for f in self._files if f.status in filter]
+
+    @property
+    def author(self):
+        return self._author
+
+    @property
+    def commit(self):
+        return self._commit
 
     @property
     def title(self):
@@ -272,20 +307,14 @@ class StagedChanges(Commit):
 
 class Amendment(Commit):
     def __init__(self):
-        Commit.__init__(self, '')
+        Commit.__init__(self, 'HEAD')
 
     def _parse(self):
-        # Create a title using HEAD commit and parse the trailers.
-        ret = subprocess.run(['git', 'show', '--format=%H %s%n%(trailers:only,unfold)',
-                             '--no-patch'],
-                             stdout=subprocess.PIPE).stdout.decode('utf-8')
-        lines = ret.splitlines()
+        self._parse_commit()
 
-        self._title = 'Amendment of ' + lines[0].strip()
+        self._title = f'Amendment of "{self.title}"'
 
-        self._parse_trailers(lines)
-
-        # Extract the list of modified files
+        # Extract the list of modified files.
         ret = subprocess.run(['git', 'diff', '--staged', '--name-status', 'HEAD~'],
                              stdout=subprocess.PIPE).stdout.decode('utf-8')
         self._files = [CommitFile(f) for f in ret.splitlines()]
@@ -304,40 +333,83 @@ class Amendment(Commit):
 class ClassRegistry(type):
     def __new__(cls, clsname, bases, attrs):
         newclass = super().__new__(cls, clsname, bases, attrs)
-        if bases:
-            bases[0].subclasses.append(newclass)
-            bases[0].subclasses.sort(key=lambda x: getattr(x, 'priority', 0),
-                                     reverse=True)
+        if bases and bases[0] != CheckerBase:
+            base = bases[0]
+
+            if not hasattr(base, 'subclasses'):
+                base.subclasses = []
+            base.subclasses.append(newclass)
+            base.subclasses.sort(key=lambda x: getattr(x, 'priority', 0),
+                                 reverse=True)
         return newclass
+
+
+class CheckerBase(metaclass=ClassRegistry):
+    @classmethod
+    def instances(cls, obj, names):
+        for instance in cls.subclasses:
+            if names and instance.__name__ not in names:
+                continue
+            if instance.supports(obj):
+                yield instance
+
+    @classmethod
+    def supports(cls, obj):
+        if hasattr(cls, 'commit_types'):
+            return type(obj) in cls.commit_types
+
+        if hasattr(cls, 'patterns'):
+            for pattern in cls.patterns:
+                if fnmatch.fnmatch(os.path.basename(obj), pattern):
+                    return True
+
+        return False
+
+    @classmethod
+    def all_patterns(cls):
+        patterns = set()
+        for instance in cls.subclasses:
+            if hasattr(instance, 'patterns'):
+                patterns.update(instance.patterns)
+
+        return patterns
+
+    @classmethod
+    def check_dependencies(cls):
+        if not hasattr(cls, 'dependencies'):
+            return []
+
+        issues = []
+
+        for command in cls.dependencies:
+            if command not in dependencies:
+                dependencies[command] = shutil.which(command)
+
+            if not dependencies[command]:
+                issues.append(CommitIssue(f'Missing {command} to run {cls.__name__}'))
+
+        return issues
 
 
 # ------------------------------------------------------------------------------
 # Commit Checkers
 #
 
-class CommitChecker(metaclass=ClassRegistry):
-    subclasses = []
-
-    def __init__(self):
-        pass
-
-    #
-    # Class methods
-    #
-    @classmethod
-    def checkers(cls, names):
-        for checker in cls.subclasses:
-            if names and checker.__name__ not in names:
-                continue
-            yield checker
+class CommitChecker(CheckerBase):
+    pass
 
 
 class CommitIssue(object):
     def __init__(self, msg):
         self.msg = msg
 
+    def __str__(self):
+        return f'{Colours.fg(Colours.Yellow)}{self.msg}{Colours.reset()}'
+
 
 class HeaderAddChecker(CommitChecker):
+    commit_types = (Commit, StagedChanges, Amendment)
+
     @classmethod
     def check(cls, commit, top_level):
         issues = []
@@ -381,18 +453,40 @@ class HeaderAddChecker(CommitChecker):
         return issues
 
 
+class LicenseChecker(CommitChecker):
+    commit_types = (Commit, StagedChanges, Amendment)
+    dependencies = ('reuse',)
+
+    missing_license_regex = re.compile(r'^(.*): no license identifier$')
+
+    @classmethod
+    def check(cls, commit, top_level):
+        issues = []
+
+        ret = subprocess.run(['reuse', 'lint-file'] + commit.files('AR'),
+                             stdout=subprocess.PIPE)
+
+        for line in ret.stdout.decode('utf-8').splitlines():
+            match = LicenseChecker.missing_license_regex.match(line)
+            if not match:
+                continue
+
+            filename = match.group(1)
+            issue = CommitIssue(f'File {filename} has no license identifier')
+            issues.append(issue)
+
+        return issues
+
+
 class TitleChecker(CommitChecker):
+    commit_types = (Commit,)
+
     prefix_regex = re.compile(r'^([a-zA-Z0-9_.-]+: )+')
     release_regex = re.compile(r'libcamera v[0-9]+\.[0-9]+\.[0-9]+')
 
     @classmethod
     def check(cls, commit, top_level):
         title = commit.title
-
-        # Skip the check when validating staged changes (as done through a
-        # pre-commit hook) as there is no title to check in that case.
-        if isinstance(commit, StagedChanges):
-            return []
 
         # Ignore release commits, they don't need a prefix.
         if TitleChecker.release_regex.fullmatch(title):
@@ -449,6 +543,8 @@ class TitleChecker(CommitChecker):
 
 
 class TrailersChecker(CommitChecker):
+    commit_types = (Commit,)
+
     commit_regex = re.compile(r'[0-9a-f]{12}[0-9a-f]* \(".*"\)')
 
     coverity_regex = re.compile(r'Coverity CID=.*')
@@ -470,7 +566,8 @@ class TrailersChecker(CommitChecker):
 
     known_trailers = {
         'Acked-by': email_regex,
-        'Bug': link_regex,
+        'Closes': link_regex,
+        'Co-developed-by': email_regex,
         'Fixes': commit_regex,
         'Link': link_regex,
         'Reported-by': validate_reported_by,
@@ -485,6 +582,8 @@ class TrailersChecker(CommitChecker):
     @classmethod
     def check(cls, commit, top_level):
         issues = []
+
+        sob_found = False
 
         for trailer in commit.trailers:
             match = TrailersChecker.trailer_regex.fullmatch(trailer)
@@ -508,6 +607,13 @@ class TrailersChecker(CommitChecker):
                 issues.append(CommitIssue(f"Malformed value '{value}' for commit trailer '{key}'"))
                 continue
 
+            if key == 'Signed-off-by':
+                if value == commit.author:
+                    sob_found = True
+
+        if not sob_found:
+            issues.append(CommitIssue(f"No 'Signed-off-by' trailer matching author '{commit.author}', see Documentation/contributing.rst"))
+
         return issues
 
 
@@ -515,64 +621,76 @@ class TrailersChecker(CommitChecker):
 # Style Checkers
 #
 
-class StyleChecker(metaclass=ClassRegistry):
-    subclasses = []
-
-    def __init__(self):
-        pass
-
-    #
-    # Class methods
-    #
-    @classmethod
-    def checkers(cls, filename, names):
-        for checker in cls.subclasses:
-            if names and checker.__name__ not in names:
-                continue
-            if checker.supports(filename):
-                yield checker
-
-    @classmethod
-    def supports(cls, filename):
-        for pattern in cls.patterns:
-            if fnmatch.fnmatch(os.path.basename(filename), pattern):
-                return True
-        return False
-
-    @classmethod
-    def all_patterns(cls):
-        patterns = set()
-        for checker in cls.subclasses:
-            patterns.update(checker.patterns)
-
-        return patterns
+class StyleChecker(CheckerBase):
+    pass
 
 
 class StyleIssue(object):
-    def __init__(self, line_number, line, msg):
+    def __init__(self, line_number, position, line, msg):
         self.line_number = line_number
+        self.position = position
         self.line = line
         self.msg = msg
+
+    def __str__(self):
+        s = []
+        s.append(f'{Colours.fg(Colours.Yellow)}#{self.line_number}: {self.msg}{Colours.reset()}')
+        if self.line is not None:
+            s.append(f'{Colours.fg(Colours.Yellow)}+{self.line.rstrip()}{Colours.reset()}')
+
+            if self.position is not None:
+                # Align the position marker by using the original line with
+                # all characters except for tabs replaced with spaces. This
+                # ensures proper alignment regardless of how the code is
+                # indented.
+                start = self.position[0]
+                prefix = ''.join([c if c == '\t' else ' ' for c in self.line[:start]])
+                length = self.position[1] - start - 1
+                s.append(f' {prefix}^{"~" * length}')
+
+        return '\n'.join(s)
+
+
+class HexValueChecker(StyleChecker):
+    patterns = ('*.c', '*.cpp', '*.h')
+
+    regex = re.compile(r'\b0[xX][0-9a-fA-F]+\b')
+
+    @classmethod
+    def check(cls, content, line_numbers):
+        issues = []
+
+        for line_number in line_numbers:
+            line = content[line_number - 1]
+            match = HexValueChecker.regex.search(line)
+            if not match:
+                continue
+
+            value = match.group(0)
+            if value == value.lower():
+                continue
+
+            issues.append(StyleIssue(line_number, match.span(0), line,
+                                     f'Use lowercase hex constant {value.lower()}'))
+
+        return issues
 
 
 class IncludeChecker(StyleChecker):
     patterns = ('*.cpp', '*.h')
 
-    headers = ('assert', 'ctype', 'errno', 'fenv', 'float', 'inttypes',
-               'limits', 'locale', 'setjmp', 'signal', 'stdarg', 'stddef',
-               'stdint', 'stdio', 'stdlib', 'string', 'time', 'uchar', 'wchar',
-               'wctype')
-    include_regex = re.compile('^#include <c([a-z]*)>')
+    headers = ('cassert', 'cctype', 'cerrno', 'cfenv', 'cfloat', 'cinttypes',
+               'climits', 'clocale', 'csetjmp', 'csignal', 'cstdarg', 'cstddef',
+               'cstdint', 'cstdio', 'cstdlib', 'cstring', 'ctime', 'cuchar',
+               'cwchar', 'cwctype', 'math.h')
+    include_regex = re.compile(r'^#include <([a-z.]*)>')
 
-    def __init__(self, content):
-        super().__init__()
-        self.__content = content
-
-    def check(self, line_numbers):
+    @classmethod
+    def check(self, content, line_numbers):
         issues = []
 
         for line_number in line_numbers:
-            line = self.__content[line_number - 1]
+            line = content[line_number - 1]
             match = IncludeChecker.include_regex.match(line)
             if not match:
                 continue
@@ -581,28 +699,34 @@ class IncludeChecker(StyleChecker):
             if header not in IncludeChecker.headers:
                 continue
 
-            issues.append(StyleIssue(line_number, line,
-                                     'C compatibility header <%s.h> is preferred' % header))
+            if header.endswith('.h'):
+                header_type = 'C++'
+                header = 'c' + header[:-2]
+            else:
+                header_type = 'C compatibility'
+                header = header[1:] + '.h'
+
+            issues.append(StyleIssue(line_number, match.span(1), line,
+                                     f'{header_type} header <{header}> is preferred'))
 
         return issues
 
 
 class LogCategoryChecker(StyleChecker):
-    log_regex = re.compile('\\bLOG\((Debug|Info|Warning|Error|Fatal)\)')
+    log_regex = re.compile(r'\bLOG\((Debug|Info|Warning|Error|Fatal)\)')
     patterns = ('*.cpp',)
 
-    def __init__(self, content):
-        super().__init__()
-        self.__content = content
-
-    def check(self, line_numbers):
+    @classmethod
+    def check(cls, content, line_numbers):
         issues = []
         for line_number in line_numbers:
-            line = self.__content[line_number-1]
-            if not LogCategoryChecker.log_regex.search(line):
+            line = content[line_number - 1]
+            match = LogCategoryChecker.log_regex.search(line)
+            if not match:
                 continue
 
-            issues.append(StyleIssue(line_number, line, 'LOG() should use categories'))
+            issues.append(StyleIssue(line_number, match.span(1), line,
+                                     'LOG() should use categories'))
 
         return issues
 
@@ -610,70 +734,30 @@ class LogCategoryChecker(StyleChecker):
 class MesonChecker(StyleChecker):
     patterns = ('meson.build',)
 
-    def __init__(self, content):
-        super().__init__()
-        self.__content = content
-
-    def check(self, line_numbers):
+    @classmethod
+    def check(cls, content, line_numbers):
         issues = []
         for line_number in line_numbers:
-            line = self.__content[line_number-1]
-            if line.find('\t') != -1:
-                issues.append(StyleIssue(line_number, line, 'meson.build should use spaces for indentation'))
-        return issues
-
-
-class Pep8Checker(StyleChecker):
-    patterns = ('*.py',)
-    results_regex = re.compile('stdin:([0-9]+):([0-9]+)(.*)')
-
-    def __init__(self, content):
-        super().__init__()
-        self.__content = content
-
-    def check(self, line_numbers):
-        issues = []
-        data = ''.join(self.__content).encode('utf-8')
-
-        try:
-            ret = subprocess.run(['pycodestyle', '--ignore=E501', '-'],
-                                 input=data, stdout=subprocess.PIPE)
-        except FileNotFoundError:
-            issues.append(StyleIssue(0, None, 'Please install pycodestyle to validate python additions'))
-            return issues
-
-        results = ret.stdout.decode('utf-8').splitlines()
-        for item in results:
-            search = re.search(Pep8Checker.results_regex, item)
-            line_number = int(search.group(1))
-            position = int(search.group(2))
-            msg = search.group(3)
-
-            if line_number in line_numbers:
-                line = self.__content[line_number - 1]
-                issues.append(StyleIssue(line_number, line, msg))
-
+            line = content[line_number - 1]
+            pos = line.find('\t')
+            if pos != -1:
+                issues.append(StyleIssue(line_number, [pos, pos], line,
+                                         'meson.build should use spaces for indentation'))
         return issues
 
 
 class ShellChecker(StyleChecker):
+    dependencies = ('shellcheck',)
     patterns = ('*.sh',)
-    results_line_regex = re.compile('In - line ([0-9]+):')
+    results_line_regex = re.compile(r'In - line ([0-9]+):')
 
-    def __init__(self, content):
-        super().__init__()
-        self.__content = content
-
-    def check(self, line_numbers):
+    @classmethod
+    def check(cls, content, line_numbers):
         issues = []
-        data = ''.join(self.__content).encode('utf-8')
+        data = ''.join(content).encode('utf-8')
 
-        try:
-            ret = subprocess.run(['shellcheck', '-Cnever', '-'],
-                                 input=data, stdout=subprocess.PIPE)
-        except FileNotFoundError:
-            issues.append(StyleIssue(0, None, 'Please install shellcheck to validate shell script additions'))
-            return issues
+        ret = subprocess.run(['shellcheck', '-Cnever', '-'],
+                             input=data, stdout=subprocess.PIPE)
 
         results = ret.stdout.decode('utf-8').splitlines()
         for nr, item in enumerate(results):
@@ -685,11 +769,8 @@ class ShellChecker(StyleChecker):
             line = results[nr + 1]
             msg = results[nr + 2]
 
-            # Determined, but not yet used
-            position = msg.find('^') + 1
-
             if line_number in line_numbers:
-                issues.append(StyleIssue(line_number, line, msg))
+                issues.append(StyleIssue(line_number, None, line, msg))
 
         return issues
 
@@ -698,40 +779,12 @@ class ShellChecker(StyleChecker):
 # Formatters
 #
 
-class Formatter(metaclass=ClassRegistry):
-    subclasses = []
-
-    def __init__(self):
-        pass
-
-    #
-    # Class methods
-    #
-    @classmethod
-    def formatters(cls, filename, names):
-        for formatter in cls.subclasses:
-            if names and formatter.__name__ not in names:
-                continue
-            if formatter.supports(filename):
-                yield formatter
-
-    @classmethod
-    def supports(cls, filename):
-        for pattern in cls.patterns:
-            if fnmatch.fnmatch(os.path.basename(filename), pattern):
-                return True
-        return False
-
-    @classmethod
-    def all_patterns(cls):
-        patterns = set()
-        for formatter in cls.subclasses:
-            patterns.update(formatter.patterns)
-
-        return patterns
+class Formatter(CheckerBase):
+    pass
 
 
 class CLangFormatter(Formatter):
+    dependencies = ('clang-format',)
     patterns = ('*.c', '*.cpp', '*.h')
     priority = -1
 
@@ -746,7 +799,8 @@ class CLangFormatter(Formatter):
 class DoxygenFormatter(Formatter):
     patterns = ('*.c', '*.cpp')
 
-    return_regex = re.compile(' +\\* +\\\\return +[a-z]')
+    oneliner_regex = re.compile(r'^ +\* +\\(brief|param|return)\b.*\.$')
+    return_regex = re.compile(r' +\* +\\return +[a-z]')
 
     @classmethod
     def format(cls, filename, data):
@@ -761,6 +815,7 @@ class DoxygenFormatter(Formatter):
                 lines.append(line)
                 continue
 
+            line = cls.oneliner_regex.sub(lambda m: m.group(0)[:-1], line)
             line = cls.return_regex.sub(lambda m: m.group(0)[:-1] + m.group(0)[-1].upper(), line)
 
             if line.find('*/') != -1:
@@ -806,7 +861,7 @@ class DPointerFormatter(Formatter):
 class IncludeOrderFormatter(Formatter):
     patterns = ('*.cpp', '*.h')
 
-    include_regex = re.compile('^#include (["<])([^">]*)([">])')
+    include_regex = re.compile(r'^#include (["<])([^">]*)([">])')
 
     @classmethod
     def format(cls, filename, data):
@@ -858,6 +913,17 @@ class IncludeOrderFormatter(Formatter):
         return '\n'.join(lines)
 
 
+class Pep8Formatter(Formatter):
+    dependencies = ('autopep8',)
+    patterns = ('*.py',)
+
+    @classmethod
+    def format(cls, filename, data):
+        ret = subprocess.run(['autopep8', '--ignore=E501', '-'],
+                             input=data.encode('utf-8'), stdout=subprocess.PIPE)
+        return ret.stdout.decode('utf-8')
+
+
 class StripTrailingSpaceFormatter(Formatter):
     patterns = ('*.c', '*.cpp', '*.h', '*.py', 'meson.build')
 
@@ -872,6 +938,24 @@ class StripTrailingSpaceFormatter(Formatter):
 # ------------------------------------------------------------------------------
 # Style checking
 #
+
+def check_commit(top_level, commit, checkers):
+    issues = []
+
+    # Apply the commit checkers first.
+    for checker in CommitChecker.instances(commit, checkers):
+        issues_ = checker.check_dependencies()
+        if issues_:
+            issues += issues_
+            continue
+
+        issues += checker.check(commit, top_level)
+
+    for issue in issues:
+        print(issue)
+
+    return len(issues)
+
 
 def check_file(top_level, commit, filename, checkers):
     # Extract the line numbers touched by the commit.
@@ -888,9 +972,15 @@ def check_file(top_level, commit, filename, checkers):
     # Format the file after the commit with all formatters and compute the diff
     # between the unformatted and formatted contents.
     after = commit.get_file(filename)
+    issues = []
 
     formatted = after
-    for formatter in Formatter.formatters(filename, checkers):
+    for formatter in Formatter.instances(filename, checkers):
+        issues_ = formatter.check_dependencies()
+        if issues_:
+            issues += issues_
+            continue
+
         formatted = formatter.format(filename, formatted)
 
     after = after.splitlines(True)
@@ -903,11 +993,14 @@ def check_file(top_level, commit, filename, checkers):
     formatted_diff = [hunk for hunk in formatted_diff if hunk.intersects(lines)]
 
     # Check for code issues not related to formatting.
-    issues = []
-    for checker in StyleChecker.checkers(filename, checkers):
-        checker = checker(after)
+    for checker in StyleChecker.instances(filename, checkers):
+        issues_ = checker.check_dependencies()
+        if issues_:
+            issues += issues_
+            continue
+
         for hunk in commit_diff:
-            issues += checker.check(hunk.side('to').touched)
+            issues += checker.check(after, hunk.side('to').touched)
 
     # Print the detected issues.
     if len(issues) == 0 and len(formatted_diff) == 0:
@@ -921,13 +1014,9 @@ def check_file(top_level, commit, filename, checkers):
             print(hunk)
 
     if len(issues):
-        issues = sorted(issues, key=lambda i: i.line_number)
+        issues = sorted(issues, key=lambda i: getattr(i, 'line_number', -1))
         for issue in issues:
-            print('%s#%u: %s%s' % (Colours.fg(Colours.Yellow), issue.line_number,
-                                   issue.msg, Colours.reset()))
-            if issue.line is not None:
-                print('%s+%s%s' % (Colours.fg(Colours.Yellow), issue.line.rstrip(),
-                                   Colours.reset()))
+            print(issue)
 
     return len(formatted_diff) + len(issues)
 
@@ -939,13 +1028,8 @@ def check_style(top_level, commit, checkers):
     print(title)
     print(separator)
 
-    issues = 0
-
     # Apply the commit checkers first.
-    for checker in CommitChecker.checkers(checkers):
-        for issue in checker.check(commit, top_level):
-            print('%s%s%s' % (Colours.fg(Colours.Yellow), issue.msg, Colours.reset()))
-            issues += 1
+    issues = check_commit(top_level, commit, checkers)
 
     # Filter out files we have no checker for.
     patterns = set()
@@ -1017,7 +1101,7 @@ def main(argv):
     if args.checkers:
         args.checkers = args.checkers.split(',')
 
-    # Check for required dependencies.
+    # Check for required common dependencies.
     for command, mandatory in dependencies.items():
         found = shutil.which(command)
         if mandatory and not found:

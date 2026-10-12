@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * cam_helper_imx219.cpp - camera helper for imx219 sensor
+ * camera helper for imx219 sensor
  */
 
 #include <assert.h>
@@ -99,7 +99,7 @@ void CamHelperImx219::populateMetadata(const MdParser::RegisterMap &registers,
 
 	deviceStatus.lineLength = lineLengthPckToDuration(registers.at(lineLengthHiReg) * 256 +
 							  registers.at(lineLengthLoReg));
-	deviceStatus.shutterSpeed = exposure(registers.at(expHiReg) * 256 + registers.at(expLoReg),
+	deviceStatus.exposureTime = exposure(registers.at(expHiReg) * 256 + registers.at(expLoReg),
 					     deviceStatus.lineLength);
 	deviceStatus.analogueGain = gain(registers.at(gainReg));
 	deviceStatus.frameLength = registers.at(frameLengthHiReg) * 256 + registers.at(frameLengthLoReg);

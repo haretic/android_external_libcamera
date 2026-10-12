@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * ipc_unixsocket.cpp - IPC mechanism based on Unix sockets
+ * IPC mechanism based on Unix sockets
  */
 
 #include "libcamera/internal/ipc_unixsocket.h"
@@ -11,8 +11,8 @@
 #include <poll.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
+#include <vector>
 
 #include <libcamera/base/event_notifier.h>
 #include <libcamera/base/log.h>
@@ -70,7 +70,7 @@ LOG_DEFINE_CATEGORY(IPCUnixSocket)
  */
 
 IPCUnixSocket::IPCUnixSocket()
-	: notifier_(nullptr), headerReceived_(false)
+	: headerReceived_(false)
 {
 }
 
@@ -114,67 +114,6 @@ UniqueFD IPCUnixSocket::create()
 	return std::move(socketFds[1]);
 }
 
-bool MakeUnixAddrForPath(const std::string &socket_name,
-			 struct sockaddr_un *unix_addr,
-			 size_t *unix_addr_len)
-{
-	if (socket_name.length() == 0) {
-		LOG(IPCUnixSocket, Error) << "Empty socket name provided for unix socket address.";
-		return false;
-	}
-
-	// We reject socket_name.length() == kMaxSocketNameLength to make room for
-	// the NUL terminator at the end of the string.
-	if (socket_name.length() >= 104) {
-		LOG(IPCUnixSocket, Error) << "Socket name too long: " << socket_name;
-		return false;
-	}
-
-	// Create unix_addr structure.
-	memset(unix_addr, 0, sizeof(struct sockaddr_un));
-	unix_addr->sun_family = AF_UNIX;
-	strncpy(unix_addr->sun_path, socket_name.c_str(), 104);
-	*unix_addr_len =
-		offsetof(struct sockaddr_un, sun_path) + socket_name.length();
-
-	return true;
-}
-
-bool IPCUnixSocket::connectRemote(const std::string &socketName)
-{
-	struct sockaddr_un unix_addr;
-	size_t unix_addr_len;
-
-	if (!MakeUnixAddrForPath(socketName, &unix_addr, &unix_addr_len))
-		return false;
-
-	UniqueFD fd(socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0));
-	if (!fd.isValid()) {
-		LOG(IPCUnixSocket, Error)
-			<< "Failed to create AF_UNIX socket";
-		return false;
-	}
-
-	int ret;
-	do {
-		ret = connect(fd.get(),
-			      reinterpret_cast<sockaddr *>(&unix_addr),
-			      unix_addr_len);
-
-	} while (ret == -1 && errno == EINTR);
-
-	if (ret < 0) {
-		LOG(IPCUnixSocket, Error) << "connect socket failed";
-		return false;
-	}
-
-	if (bind(std::move(fd)) < 0)
-		return false;
-
-	LOG(IPCUnixSocket, Info) << "Connect Successfully!!!!";
-	return true;
-}
-
 /**
  * \brief Bind to an existing IPC channel
  * \param[in] fd File descriptor
@@ -191,18 +130,10 @@ int IPCUnixSocket::bind(UniqueFD fd)
 		return -EINVAL;
 
 	fd_ = std::move(fd);
-	notifier_ = new EventNotifier(fd_.get(), EventNotifier::Read);
+	notifier_ = std::make_unique<EventNotifier>(fd_.get(), EventNotifier::Read);
 	notifier_->activated.connect(this, &IPCUnixSocket::dataNotifier);
 
-	notifier_->disconnected.connect(
-		this, &IPCUnixSocket::EventNotifierDisconnected);
-
 	return 0;
-}
-
-void IPCUnixSocket::EventNotifierDisconnected()
-{
-	disconnected.emit();
 }
 
 /**
@@ -215,8 +146,7 @@ void IPCUnixSocket::close()
 	if (!isBound())
 		return;
 
-	delete notifier_;
-	notifier_ = nullptr;
+	notifier_.reset();
 
 	fd_.reset();
 	headerReceived_ = false;
@@ -255,16 +185,11 @@ int IPCUnixSocket::send(const Payload &payload)
 	if (!hdr.data && !hdr.fds)
 		return -EINVAL;
 
-	ret = ::send(fd_.get(), &hdr, sizeof(hdr), MSG_NOSIGNAL);
+	ret = ::send(fd_.get(), &hdr, sizeof(hdr), 0);
 	if (ret < 0) {
 		ret = -errno;
 		LOG(IPCUnixSocket, Error)
 			<< "Failed to send: " << strerror(-ret);
-		if (errno == ECONNRESET) {
-			disconnected.emit();
-			fd_.reset();
-		}
-
 		return ret;
 	}
 
@@ -322,10 +247,9 @@ int IPCUnixSocket::sendData(const void *buffer, size_t length,
 	iov[0].iov_base = const_cast<void *>(buffer);
 	iov[0].iov_len = length;
 
-	char buf[CMSG_SPACE(num * sizeof(uint32_t))];
-	memset(buf, 0, sizeof(buf));
+	std::vector<uint8_t> buf(CMSG_SPACE(num * sizeof(uint32_t)));
 
-	struct cmsghdr *cmsg = (struct cmsghdr *)buf;
+	struct cmsghdr *cmsg = reinterpret_cast<struct cmsghdr *>(buf.data());
 	cmsg->cmsg_len = CMSG_LEN(num * sizeof(uint32_t));
 	cmsg->cmsg_level = SOL_SOCKET;
 	cmsg->cmsg_type = SCM_RIGHTS;
@@ -341,15 +265,10 @@ int IPCUnixSocket::sendData(const void *buffer, size_t length,
 	if (fds)
 		memcpy(CMSG_DATA(cmsg), fds, num * sizeof(uint32_t));
 
-	if (sendmsg(fd_.get(), &msg, MSG_NOSIGNAL) < 0) {
+	if (sendmsg(fd_.get(), &msg, 0) < 0) {
 		int ret = -errno;
 		LOG(IPCUnixSocket, Error)
 			<< "Failed to sendmsg: " << strerror(-ret);
-		if (errno == ECONNRESET) {
-			disconnected.emit();
-			fd_.reset();
-		}
-
 		return ret;
 	}
 
@@ -363,10 +282,9 @@ int IPCUnixSocket::recvData(void *buffer, size_t length,
 	iov[0].iov_base = buffer;
 	iov[0].iov_len = length;
 
-	char buf[CMSG_SPACE(num * sizeof(uint32_t))];
-	memset(buf, 0, sizeof(buf));
+	std::vector<uint8_t> buf(CMSG_SPACE(num * sizeof(uint32_t)));
 
-	struct cmsghdr *cmsg = (struct cmsghdr *)buf;
+	struct cmsghdr *cmsg = reinterpret_cast<struct cmsghdr *>(buf.data());
 	cmsg->cmsg_len = CMSG_LEN(num * sizeof(uint32_t));
 	cmsg->cmsg_level = SOL_SOCKET;
 	cmsg->cmsg_type = SCM_RIGHTS;
@@ -405,11 +323,6 @@ void IPCUnixSocket::dataNotifier()
 			ret = -errno;
 			LOG(IPCUnixSocket, Error)
 				<< "Failed to receive header: " << strerror(-ret);
-			if (errno == ECONNRESET) {
-				disconnected.emit();
-				fd_.reset();
-			}
-
 			return;
 		}
 

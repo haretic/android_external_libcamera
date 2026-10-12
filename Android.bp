@@ -2,236 +2,452 @@ package {
     default_visibility: [
         ":__subpackages__",
         "//vendor:__subpackages__",
+        "//device:__subpackages__",
     ],
 }
 
-cc_library_headers {
-    name: "libcamera_headers",
-    vendor: true,
-    export_include_dirs: [
-        "include",
-        "src/libcamera",
-    ],
+//
+// Code generation
+//
+
+genrule {
+    name: "libcamera_version_h",
+    srcs: ["include/libcamera/version.h.in"],
+    cmd: "sed -e 's/@LIBCAMERA_VERSION_MAJOR@/0/' " +
+        "-e 's/@LIBCAMERA_VERSION_MINOR@/7/' " +
+        "-e 's/@LIBCAMERA_VERSION_PATCH@/2/' " +
+        "$(in) > $(out)",
+    out: ["include/libcamera/version.h"],
+    export_include_dirs: ["include"],
 }
 
 genrule {
-    name: "libcamera_controls_gen_h",
+    name: "libcamera_version_cpp",
+    srcs: ["src/libcamera/version.cpp.in"],
+    cmd: "sed -e 's/@VCS_TAG@/0.7.2+android/' $(in) > $(out)",
+    out: ["src/libcamera/version.cpp"],
+}
+
+genrule {
+    name: "libcamera_control_ids_h",
     srcs: [
         "src/libcamera/control_ids_core.yaml",
+        "src/libcamera/control_ids_debug.yaml",
         "src/libcamera/control_ids_draft.yaml",
-        "src/libcamera/control_ranges.yaml",
-        "include/libcamera/control_ids.h.in",
     ],
-    tools: ["libcamera_controls_script_host"],
-    cmd: "$(location libcamera_controls_script_host)" +
-        " -o $(genDir)/include/libcamera/control_ids.h" +
-        " --mode controls" +
+    tool_files: [
+        "include/libcamera/control_ids.h.in",
+        "src/libcamera/control_ranges.yaml",
+        "utils/codegen/controls.py",
+        "utils/codegen/gen-controls.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/gen-controls.py)" +
+        " -o $(out) --mode controls" +
         " -t $(location include/libcamera/control_ids.h.in)" +
         " -r $(location src/libcamera/control_ranges.yaml)" +
-        " $(location src/libcamera/control_ids_core.yaml)" +
-        " $(location src/libcamera/control_ids_draft.yaml)",
-    out: [
-        "include/libcamera/control_ids.h",
-    ],
+        " $(in)",
+    out: ["include/libcamera/control_ids.h"],
     export_include_dirs: [
-        ".",
         "include",
+        "include/libcamera",
     ],
 }
 
 genrule {
-    name: "libcamera_controls_gen_src",
+    name: "libcamera_control_ids_cpp",
     srcs: [
         "src/libcamera/control_ids_core.yaml",
+        "src/libcamera/control_ids_debug.yaml",
         "src/libcamera/control_ids_draft.yaml",
-        "src/libcamera/control_ranges.yaml",
-        "src/libcamera/control_ids.cpp.in",
     ],
-    tools: [":libcamera_controls_script_host"],
-    cmd: "$(location :libcamera_controls_script_host)" +
-        " -o $(genDir)/src/libcamera/control_ids.cpp" +
-        " --mode controls" +
+    tool_files: [
+        "src/libcamera/control_ids.cpp.in",
+        "src/libcamera/control_ranges.yaml",
+        "utils/codegen/controls.py",
+        "utils/codegen/gen-controls.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/gen-controls.py)" +
+        " -o $(out) --mode controls" +
         " -t $(location src/libcamera/control_ids.cpp.in)" +
         " -r $(location src/libcamera/control_ranges.yaml)" +
-        " $(location src/libcamera/control_ids_core.yaml)" +
-        " $(location src/libcamera/control_ids_draft.yaml)",
-    out: [
-        "src/libcamera/control_ids.cpp",
-    ],
+        " $(in)",
+    out: ["src/libcamera/control_ids.cpp"],
 }
 
 genrule {
-    name: "libcamera_properties_gen_h",
+    name: "libcamera_property_ids_h",
     srcs: [
         "src/libcamera/property_ids_core.yaml",
         "src/libcamera/property_ids_draft.yaml",
-        "src/libcamera/control_ranges.yaml",
-        "include/libcamera/control_ids.h.in",
     ],
-    tools: [":libcamera_controls_script_host"],
-    cmd: "$(location :libcamera_controls_script_host)" +
-        " -o $(genDir)/include/libcamera/property_ids.h" +
-        " --mode properties" +
+    tool_files: [
+        "include/libcamera/control_ids.h.in",
+        "src/libcamera/control_ranges.yaml",
+        "utils/codegen/controls.py",
+        "utils/codegen/gen-controls.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/gen-controls.py)" +
+        " -o $(out) --mode properties" +
         " -t $(location include/libcamera/control_ids.h.in)" +
         " -r $(location src/libcamera/control_ranges.yaml)" +
-        " $(location src/libcamera/property_ids_core.yaml)" +
-        " $(location src/libcamera/property_ids_draft.yaml)",
-    out: [
-        "include/libcamera/property_ids.h",
-    ],
-    export_include_dirs: [
-        ".",
-        "include",
-    ],
+        " $(in)",
+    out: ["include/libcamera/property_ids.h"],
+    export_include_dirs: ["include"],
 }
 
 genrule {
-    name: "libcamera_properties_gen_src",
+    name: "libcamera_property_ids_cpp",
     srcs: [
         "src/libcamera/property_ids_core.yaml",
         "src/libcamera/property_ids_draft.yaml",
-        "src/libcamera/control_ranges.yaml",
-        "src/libcamera/control_ids.cpp.in",
     ],
-    tools: [":libcamera_controls_script_host"],
-    cmd: "$(location :libcamera_controls_script_host)" +
-        " -o $(genDir)/src/libcamera/property_ids.cpp" +
-        " --mode properties" +
+    tool_files: [
+        "src/libcamera/control_ids.cpp.in",
+        "src/libcamera/control_ranges.yaml",
+        "utils/codegen/controls.py",
+        "utils/codegen/gen-controls.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/gen-controls.py)" +
+        " -o $(out) --mode properties" +
         " -t $(location src/libcamera/control_ids.cpp.in)" +
         " -r $(location src/libcamera/control_ranges.yaml)" +
-        " $(location src/libcamera/property_ids_core.yaml)" +
-        " $(location src/libcamera/property_ids_draft.yaml)",
-    out: [
-        "src/libcamera/property_ids.cpp",
-    ],
+        " $(in)",
+    out: ["src/libcamera/property_ids.cpp"],
 }
 
 genrule {
-    name: "libcamera_mojom_core_ipa_module",
-    srcs: [
-        "include/libcamera/ipa/core.mojom",
-    ],
-    tools: ["libcamera_ipc_parser_host"],
-    cmd: "$(location libcamera_ipc_parser_host)" +
-        " --output-root $(genDir)" +
-        " --input-root ." +
-        " --mojoms $(location include/libcamera/ipa/core.mojom)",
-    out: [
-        "external/libcamera/include/libcamera/ipa/core.mojom-module",
-    ],
-    export_include_dirs: [
-        ".",
-        "include",
-    ],
-}
-
-genrule {
-    name: "libcamera_mojom_core_ipa_interface_h",
-    srcs: [
-        ":libcamera_mojom_core_ipa_module",
-        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
-    ],
-    tools: ["libcamera_ipc_generate_host"],
-    cmd: "$(location libcamera_ipc_generate_host)" +
-        " generate -g libcamera" +
-        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
-        " --libcamera_generate_core_header" +
-        " --libcamera_output_path=$(genDir)/include/libcamera/ipa/core_ipa_interface.h" +
-        " $(location :libcamera_mojom_core_ipa_module)",
-    out: [
-        "include/libcamera/ipa/core_ipa_interface.h",
-    ],
-    export_include_dirs: [
-        ".",
-        "include",
-    ],
-}
-
-genrule {
-    name: "libcamera_mojom_core_ipa_serializer_h",
-    srcs: [
-        ":libcamera_mojom_core_ipa_module",
-        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
-    ],
-    tools: ["libcamera_ipc_generate_host"],
-    cmd: "$(location libcamera_ipc_generate_host)" +
-        " generate -g libcamera" +
-        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
-        " --libcamera_generate_core_serializer" +
-        " --libcamera_output_path=$(genDir)/include/libcamera/ipa/core_ipa_serializer.h" +
-        " $(location :libcamera_mojom_core_ipa_module)",
-    out: [
-        "include/libcamera/ipa/core_ipa_serializer.h",
-    ],
-    export_include_dirs: [
-        ".",
-        "include",
-    ],
-}
-
-genrule {
-    name: "libcamera_format_gen_h",
+    name: "libcamera_formats_h",
     srcs: [
         "src/libcamera/formats.yaml",
         "include/libcamera/formats.h.in",
         "include/linux/drm_fourcc.h",
     ],
-    tools: ["libcamera_format_gen_host"],
-    cmd: "$(location libcamera_format_gen_host)" +
-        " -o $(out)" +
-        " $(in)",
-    out: [
-        "include/libcamera/formats.h",
-    ],
+    tool_files: ["utils/codegen/gen-formats.py"],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/gen-formats.py)" +
+        " -o $(out) $(in)",
+    out: ["include/libcamera/formats.h"],
     export_include_dirs: ["include"],
 }
 
 genrule {
-    name: "libcamera_tracepoint_gen_h",
+    name: "libcamera_tracepoints_h",
     srcs: [
         "include/libcamera/internal/tracepoints.h.in",
-        "include/libcamera/internal/tracepoints/pipeline.perfetto",
-        "include/libcamera/internal/tracepoints/request.perfetto",
+        "include/libcamera/internal/tracepoints/buffer_enums.tp",
+        "include/libcamera/internal/tracepoints/request_enums.tp",
+        "include/libcamera/internal/tracepoints/pipeline.tp",
+        "include/libcamera/internal/tracepoints/request.tp",
     ],
-    tools: ["libcamera_tracepoint_gen_host"],
-    cmd: "$(location libcamera_tracepoint_gen_host)" +
-        " $(out) $(in)",
-    out: [
-        "include/libcamera/internal/tracepoints.h",
-    ],
+    tool_files: ["utils/codegen/gen-tp-header.py"],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/gen-tp-header.py)" +
+        " $$PWD/$(genDir)/include $(out) $(in)",
+    out: ["include/libcamera/internal/tracepoints.h"],
     export_include_dirs: ["include"],
 }
 
+genrule {
+    name: "libcamera_libcamera_h",
+    srcs: [
+        "include/libcamera/camera.h",
+        "include/libcamera/camera_manager.h",
+        "include/libcamera/color_space.h",
+        "include/libcamera/controls.h",
+        "include/libcamera/fence.h",
+        "include/libcamera/framebuffer.h",
+        "include/libcamera/framebuffer_allocator.h",
+        "include/libcamera/geometry.h",
+        "include/libcamera/logging.h",
+        "include/libcamera/orientation.h",
+        "include/libcamera/pixel_format.h",
+        "include/libcamera/request.h",
+        "include/libcamera/stream.h",
+        "include/libcamera/transform.h",
+        ":libcamera_control_ids_h",
+        ":libcamera_property_ids_h",
+        ":libcamera_formats_h",
+        ":libcamera_version_h",
+    ],
+    tool_files: ["utils/codegen/gen-header.sh"],
+    cmd: "$(location utils/codegen/gen-header.sh) $(out) $(in)",
+    out: ["include/libcamera/libcamera.h"],
+    export_include_dirs: ["include"],
+}
+
+//
+// IPA interface code generation (mojom)
+//
+
+filegroup {
+    name: "libcamera_mojom_codegen_srcs",
+    srcs: [
+        "utils/codegen/ipc/generators/**/*",
+        "utils/codegen/ipc/mojo/**/*.py",
+        "utils/codegen/ipc/tools/**/*.py",
+    ],
+}
+
+genrule {
+    name: "libcamera_mojom_templates",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        "utils/codegen/ipc/generate.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/ipc/generate.py)" +
+        " -o $(genDir) precompile",
+    out: ["libcamera_templates.zip"],
+}
+
+genrule {
+    name: "libcamera_mojom_core_module",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        "include/libcamera/ipa/core.mojom",
+        "utils/codegen/ipc/parser.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/ipc/parser.py)" +
+        " --output-root $(genDir)" +
+        " --input-root $$(dirname $(location include/libcamera/ipa/core.mojom))/../../.." +
+        " --mojoms $(location include/libcamera/ipa/core.mojom)",
+    out: ["include/libcamera/ipa/core.mojom-module"],
+}
+
+genrule {
+    name: "libcamera_mojom_soft_module",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        ":libcamera_mojom_core_module",
+        "include/libcamera/ipa/core.mojom",
+        "include/libcamera/ipa/soft.mojom",
+        "utils/codegen/ipc/parser.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/ipc/parser.py)" +
+        " --output-root $(genDir)" +
+        " --input-root $$(dirname $(location include/libcamera/ipa/soft.mojom))/../../.." +
+        " --module-root $$(dirname $(location :libcamera_mojom_core_module))/../../.." +
+        " --mojoms $(location include/libcamera/ipa/soft.mojom)",
+    out: ["include/libcamera/ipa/soft.mojom-module"],
+}
+
+// Arguments common to all IPC code generation steps, the generator mode
+// option, output path and mojom module are appended by each rule.
+libcamera_mojom_generate = "$(location libcamera_codegen_host)" +
+    " $(location utils/codegen/ipc/generate.py) generate -g libcamera" +
+    " --bytecode_path $$(dirname $(location :libcamera_mojom_templates))"
+
+genrule {
+    name: "libcamera_core_ipa_interface_h",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        ":libcamera_mojom_templates",
+        ":libcamera_mojom_core_module",
+        "utils/codegen/ipc/generate.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: libcamera_mojom_generate +
+        " --libcamera_generate_core_header" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_core_module)",
+    out: ["include/libcamera/ipa/core_ipa_interface.h"],
+    export_include_dirs: [
+        "include",
+        "include/libcamera/ipa",
+    ],
+}
+
+genrule {
+    name: "libcamera_core_ipa_serializer_h",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        ":libcamera_mojom_templates",
+        ":libcamera_mojom_core_module",
+        "utils/codegen/ipc/generate.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: libcamera_mojom_generate +
+        " --libcamera_generate_core_serializer" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_core_module)",
+    out: ["include/libcamera/ipa/core_ipa_serializer.h"],
+    export_include_dirs: [
+        "include",
+        "include/libcamera/ipa",
+    ],
+}
+
+genrule {
+    name: "libcamera_soft_ipa_interface_h",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        ":libcamera_mojom_templates",
+        ":libcamera_mojom_soft_module",
+        "utils/codegen/ipc/generate.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: libcamera_mojom_generate +
+        " --libcamera_generate_header" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_soft_module)",
+    out: ["include/libcamera/ipa/soft_ipa_interface.h"],
+    export_include_dirs: [
+        "include",
+        "include/libcamera/ipa",
+    ],
+}
+
+genrule {
+    name: "libcamera_soft_ipa_serializer_h",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        ":libcamera_mojom_templates",
+        ":libcamera_mojom_soft_module",
+        "utils/codegen/ipc/generate.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: libcamera_mojom_generate +
+        " --libcamera_generate_serializer" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_soft_module)",
+    out: ["include/libcamera/ipa/soft_ipa_serializer.h"],
+    export_include_dirs: [
+        "include",
+        "include/libcamera/ipa",
+    ],
+}
+
+genrule {
+    name: "libcamera_soft_ipa_proxy_h",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        ":libcamera_mojom_templates",
+        ":libcamera_mojom_soft_module",
+        "utils/codegen/ipc/generate.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: libcamera_mojom_generate +
+        " --libcamera_generate_proxy_h" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_soft_module)",
+    out: ["include/libcamera/ipa/soft_ipa_proxy.h"],
+    export_include_dirs: [
+        "include",
+        "include/libcamera/ipa",
+    ],
+}
+
+genrule {
+    name: "libcamera_soft_ipa_proxy_cpp",
+    srcs: [
+        ":libcamera_mojom_codegen_srcs",
+        ":libcamera_mojom_templates",
+        ":libcamera_mojom_soft_module",
+        "utils/codegen/ipc/generate.py",
+    ],
+    tools: ["libcamera_codegen_host"],
+    cmd: libcamera_mojom_generate +
+        " --libcamera_generate_proxy_cpp" +
+        " --libcamera_output_path=$(out)" +
+        " $(location :libcamera_mojom_soft_module)",
+    out: ["src/libcamera/proxy/soft_ipa_proxy.cpp"],
+}
+
+//
+// Libraries
+//
+
 cc_defaults {
-    name: "libcamera_src_base_defaults",
+    name: "libcamera_defaults",
     vendor: true,
-    header_libs: [
-        "libcamera_headers",
-    ],
-    export_header_lib_headers: [
-        "libcamera_headers",
-    ],
-
-    cflags: [
-        "-DLIBCAMERA_BASE_PRIVATE",
-        "-DHAVE_LOCALE_T=1",
-        "-DHAVE_ANDROID_OS",
-    ],
     rtti: true,
-
-    shared_libs: [
-        "liblog",
+    local_include_dirs: ["include"],
+    generated_headers: [
+        "libcamera_control_ids_h",
+        "libcamera_core_ipa_interface_h",
+        "libcamera_core_ipa_serializer_h",
+        "libcamera_formats_h",
+        "libcamera_property_ids_h",
+        "libcamera_soft_ipa_interface_h",
+        "libcamera_soft_ipa_proxy_h",
+        "libcamera_soft_ipa_serializer_h",
+        "libcamera_tracepoints_h",
+        "libcamera_version_h",
     ],
+    cflags: [
+        // Equivalent of the config.h generated by meson for bionic.
+        "-DHAVE_BACKTRACE=1",
+        "-DHAVE_CLOSE_RANGE=1",
+        "-DHAVE_FILE_SEALS=1",
+        "-DHAVE_LOCALE_T=1",
+        "-DHAVE_MEMFD_CREATE=1",
+        "-DIPA_CONFIG_DIR=\"/vendor/etc/libcamera/ipa\"",
+        "-DIPA_PROXY_DIR=\"/vendor/libexec/libcamera\"",
+        "-DLIBCAMERA_DATA_DIR=\"/vendor/etc/libcamera\"",
+        "-DLIBCAMERA_SYSCONF_DIR=\"/vendor/etc/libcamera\"",
+
+        "-Wall",
+        "-Wextra",
+        "-Wmissing-declarations",
+        "-Wno-c99-designator",
+        "-Wno-error",
+        "-Wno-missing-field-initializers",
+        "-Wno-unused-parameter",
+        "-Wshadow",
+    ],
+    cppflags: [
+        "-Wextra-semi",
+        "-Wnon-virtual-dtor",
+        "-Wthread-safety",
+    ],
+    multilib: {
+        lib32: {
+            cflags: ["-DIPA_MODULE_DIR=\"/vendor/lib/libcamera/ipa\""],
+        },
+        lib64: {
+            cflags: ["-DIPA_MODULE_DIR=\"/vendor/lib64/libcamera/ipa\""],
+        },
+    },
+}
+
+// Users of the internal API, the libcamera_private dependency in meson.
+cc_defaults {
+    name: "libcamera_private_defaults",
+    defaults: ["libcamera_defaults"],
+    cflags: ["-DLIBCAMERA_BASE_PRIVATE"],
+}
+
+cc_library_shared {
+    name: "libcamera-base",
+    defaults: ["libcamera_private_defaults"],
+    shared_libs: ["liblog"],
+    export_include_dirs: ["include"],
     srcs: [
         "src/libcamera/base/backtrace.cpp",
-        "src/libcamera/base/class.cpp",
         "src/libcamera/base/bound_method.cpp",
+        "src/libcamera/base/class.cpp",
         "src/libcamera/base/event_dispatcher.cpp",
         "src/libcamera/base/event_dispatcher_poll.cpp",
         "src/libcamera/base/event_notifier.cpp",
         "src/libcamera/base/file.cpp",
         "src/libcamera/base/flags.cpp",
         "src/libcamera/base/log.cpp",
+        "src/libcamera/base/memfd.cpp",
         "src/libcamera/base/message.cpp",
         "src/libcamera/base/mutex.cpp",
         "src/libcamera/base/object.cpp",
@@ -245,77 +461,56 @@ cc_defaults {
     ],
 }
 
-cc_defaults {
-    name: "libcamera_src_defaults",
-    relative_install_path: "hw",
-    vendor: true,
-    generated_headers: [
-        "libcamera_controls_gen_h",
-        "libcamera_properties_gen_h",
-        "libcamera_mojom_core_ipa_interface_h",
-        "libcamera_mojom_core_ipa_serializer_h",
-        "libcamera_format_gen_h",
-        "libcamera_tracepoint_gen_h",
-    ],
-    header_libs: [
-        "libandroid_sensor_headers",
-        "libcamera_headers",
-    ],
-    export_header_lib_headers: [
-        "libcamera_headers",
-    ],
-
-    cflags: [
-        "-Wno-unused-but-set-variable",
-        "-Wno-user-defined-warnings",
-    ],
-    cppflags: [
-        // TODO: check if we load IPA without IPC
-        "-DIPA_PROXY_DIR=\"\"",
-        // TODO: make sure we don't use configurationFile for IPA
-        "-DIPA_CONFIG_DIR=\"\"",
-        // TODO: check relative_install_path of the upcoming ipa impl.
-        "-DIPA_MODULE_DIR=\"/vendor/lib64/libcamera/ipa\"",
-        // TODO: check how pipeline handlers' configuration files are used.
-        "-DLIBCAMERA_DATA_DIR=\"/vendor/etc/camera/libcamera\"",
-    ],
-    rtti: true,
-    shared_libs: [
-        "android.frameworks.sensorservice-V1-ndk",
-        "libbinder_ndk",
-        "libsensorndkbridge",
-    ],
-    defaults: [
-        "libcamera_src_base_defaults",
+cc_library_shared {
+    name: "libcamera",
+    defaults: ["libcamera_private_defaults"],
+    shared_libs: ["libcamera-base"],
+    export_shared_lib_headers: ["libcamera-base"],
+    static_libs: ["libyaml"],
+    export_include_dirs: ["include"],
+    export_generated_headers: [
+        "libcamera_control_ids_h",
+        "libcamera_core_ipa_interface_h",
+        "libcamera_core_ipa_serializer_h",
+        "libcamera_formats_h",
+        "libcamera_property_ids_h",
+        "libcamera_soft_ipa_interface_h",
+        "libcamera_soft_ipa_proxy_h",
+        "libcamera_soft_ipa_serializer_h",
+        "libcamera_tracepoints_h",
+        "libcamera_version_h",
     ],
     srcs: [
-        ":libcamera_controls_gen_src",
-        ":libcamera_properties_gen_src",
-        "src/libcamera/al_gyro_sensor.cpp",
+        ":libcamera_control_ids_cpp",
+        ":libcamera_property_ids_cpp",
+        ":libcamera_soft_ipa_proxy_cpp",
+        ":libcamera_version_cpp",
         "src/libcamera/bayer_format.cpp",
         "src/libcamera/byte_stream_buffer.cpp",
         "src/libcamera/camera.cpp",
         "src/libcamera/camera_controls.cpp",
         "src/libcamera/camera_lens.cpp",
         "src/libcamera/camera_manager.cpp",
-        "src/libcamera/camera_sensor.cpp",
-        "src/libcamera/camera_sensor_properties.cpp",
+        "src/libcamera/clock_recovery.cpp",
         "src/libcamera/color_space.cpp",
-        "src/libcamera/controls.cpp",
         "src/libcamera/control_serializer.cpp",
         "src/libcamera/control_validator.cpp",
+        "src/libcamera/controls.cpp",
         "src/libcamera/converter.cpp",
+        "src/libcamera/converter/converter_dw100.cpp",
+        "src/libcamera/converter/converter_dw100_vertexmap.cpp",
+        "src/libcamera/converter/converter_v4l2_m2m.cpp",
         "src/libcamera/debug_controls.cpp",
         "src/libcamera/delayed_controls.cpp",
         "src/libcamera/device_enumerator.cpp",
         "src/libcamera/device_enumerator_sysfs.cpp",
-        "src/libcamera/dma_heaps.cpp",
+        "src/libcamera/dma_buf_allocator.cpp",
         "src/libcamera/fence.cpp",
         "src/libcamera/formats.cpp",
         "src/libcamera/framebuffer.cpp",
         "src/libcamera/framebuffer_allocator.cpp",
         "src/libcamera/geometry.cpp",
-        "src/libcamera/info_frame.cpp",
+        "src/libcamera/global_configuration.cpp",
         "src/libcamera/ipa_controls.cpp",
         "src/libcamera/ipa_data_serializer.cpp",
         "src/libcamera/ipa_interface.cpp",
@@ -326,64 +521,133 @@ cc_defaults {
         "src/libcamera/ipc_pipe_unixsocket.cpp",
         "src/libcamera/ipc_unixsocket.cpp",
         "src/libcamera/mapped_framebuffer.cpp",
+        "src/libcamera/matrix.cpp",
         "src/libcamera/media_device.cpp",
         "src/libcamera/media_object.cpp",
+        "src/libcamera/media_pipeline.cpp",
+        "src/libcamera/orientation.cpp",
+        "src/libcamera/pipeline/simple/simple.cpp",
         "src/libcamera/pipeline_handler.cpp",
         "src/libcamera/pixel_format.cpp",
         "src/libcamera/process.cpp",
         "src/libcamera/pub_key.cpp",
         "src/libcamera/request.cpp",
+        "src/libcamera/sensor/camera_sensor.cpp",
+        "src/libcamera/sensor/camera_sensor_legacy.cpp",
+        "src/libcamera/sensor/camera_sensor_properties.cpp",
+        "src/libcamera/sensor/camera_sensor_raw.cpp",
+        "src/libcamera/shared_mem_object.cpp",
+        "src/libcamera/software_isp/benchmark.cpp",
+        "src/libcamera/software_isp/debayer.cpp",
+        "src/libcamera/software_isp/debayer_cpu.cpp",
+        "src/libcamera/software_isp/software_isp.cpp",
+        "src/libcamera/software_isp/swstats_cpu.cpp",
         "src/libcamera/source_paths.cpp",
         "src/libcamera/stream.cpp",
         "src/libcamera/sysfs.cpp",
-        "src/libcamera/task_scheduler.cpp",
         "src/libcamera/transform.cpp",
         "src/libcamera/v4l2_device.cpp",
         "src/libcamera/v4l2_pixelformat.cpp",
+        "src/libcamera/v4l2_request.cpp",
         "src/libcamera/v4l2_subdevice.cpp",
         "src/libcamera/v4l2_videodevice.cpp",
-        "src/libcamera/version.cpp",
+        "src/libcamera/value_node.cpp",
+        "src/libcamera/vector.cpp",
         "src/libcamera/yaml_parser.cpp",
     ],
 }
 
-cc_defaults {
-    name: "libcamera_android_src_defaults",
-    relative_install_path: "hw",
-    vendor: true,
-    header_libs: [
-        "libcamera_headers",
-    ],
-    export_header_lib_headers: [
-        "libcamera_headers",
-    ],
+//
+// IPA modules
+//
 
-    cflags: [
-        "-Wno-unused-but-set-variable",
+cc_library_static {
+    name: "libcamera_ipa",
+    defaults: ["libcamera_private_defaults"],
+    shared_libs: [
+        "libcamera",
+        "libcamera-base",
     ],
-    cppflags: [
-        // TODO: check how camera sysconf configuration file is used
-        "-DLIBCAMERA_SYSCONF_DIR=\"/vendor/etc/camera/libcamera\"",
-        "-DPIPELINE_PROXY_DIR=\"/vendor/lib64/libcamera/pipeline\"",
+    export_include_dirs: ["src/ipa"],
+    srcs: [
+        "src/ipa/libipa/agc_mean_luminance.cpp",
+        "src/ipa/libipa/algorithm.cpp",
+        "src/ipa/libipa/awb.cpp",
+        "src/ipa/libipa/awb_bayes.cpp",
+        "src/ipa/libipa/awb_grey.cpp",
+        "src/ipa/libipa/camera_sensor_helper.cpp",
+        "src/ipa/libipa/colours.cpp",
+        "src/ipa/libipa/exposure_mode_helper.cpp",
+        "src/ipa/libipa/fc_queue.cpp",
+        "src/ipa/libipa/fixedpoint.cpp",
+        "src/ipa/libipa/histogram.cpp",
+        "src/ipa/libipa/interpolator.cpp",
+        "src/ipa/libipa/lsc_polynomial.cpp",
+        "src/ipa/libipa/lux.cpp",
+        "src/ipa/libipa/module.cpp",
+        "src/ipa/libipa/pwl.cpp",
+        "src/ipa/libipa/quantized.cpp",
+        "src/ipa/libipa/v4l2_params.cpp",
     ],
-    rtti: true,
+}
+
+// Loaded by libcamera from IPA_MODULE_DIR, not linked against.
+cc_library_shared {
+    name: "ipa_soft_simple",
+    defaults: ["libcamera_private_defaults"],
+    relative_install_path: "libcamera/ipa",
+    local_include_dirs: ["src/ipa/simple"],
+    shared_libs: [
+        "libcamera",
+        "libcamera-base",
+    ],
+    static_libs: ["libcamera_ipa"],
+    required: ["libcamera_ipa_simple_uncalibrated.yaml"],
+    srcs: [
+        "src/ipa/simple/algorithms/adjust.cpp",
+        "src/ipa/simple/algorithms/agc.cpp",
+        "src/ipa/simple/algorithms/awb.cpp",
+        "src/ipa/simple/algorithms/blc.cpp",
+        "src/ipa/simple/algorithms/ccm.cpp",
+        "src/ipa/simple/ipa_context.cpp",
+        "src/ipa/simple/soft_simple.cpp",
+    ],
+}
+
+prebuilt_etc {
+    name: "libcamera_ipa_simple_uncalibrated.yaml",
+    vendor: true,
+    src: "src/ipa/simple/data/uncalibrated.yaml",
+    filename: "uncalibrated.yaml",
+    sub_dir: "libcamera/ipa/simple",
+}
+
+//
+// Android camera HAL
+//
+
+cc_library_shared {
+    name: "camera.libcamera",
+    defaults: ["libcamera_private_defaults"],
+    relative_install_path: "hw",
+    header_libs: [
+        "libhardware_headers",
+    ],
+    shared_libs: [
+        "libcamera",
+        "libcamera-base",
+        "libcamera_metadata",
+        "libcutils",
+        "libexif",
+        "libhardware",
+        "libjpeg",
+        "liblog",
+    ],
     static_libs: [
         "libyaml",
         "libyuv_static",
     ],
-    shared_libs: [
-        "libcamera_metadata",
-        "libcutils",
-        "libdrm",
-        "libexif",
-        "libgbm",
-        "libhardware",
-        "libjpeg",
-    ],
-    defaults: [
-        "libcamera_src_base_defaults",
-        "libcamera_src_defaults",
-    ],
+    required: ["ipa_soft_simple"],
     srcs: [
         "src/android/camera3_hal.cpp",
         "src/android/camera_capabilities.cpp",
@@ -395,195 +659,42 @@ cc_defaults {
         "src/android/camera_request.cpp",
         "src/android/camera_stream.cpp",
         "src/android/hal_framebuffer.cpp",
-        "src/android/yuv/post_processor_yuv.cpp",
-        "src/android/vendor_tag.cpp",
         "src/android/jpeg/encoder_libjpeg.cpp",
         "src/android/jpeg/exif.cpp",
         "src/android/jpeg/post_processor_jpeg.cpp",
         "src/android/jpeg/thumbnailer.cpp",
-        "src/android/mm/BufferAdapter.cpp",
-        "src/android/mm/cros_camera_buffer.cpp",
-        "src/android/mm/cros_frame_buffer_allocator.cpp",
-        "src/android/mm/allocator.cpp",
-        "src/android/mm/camera_buffer_manager_impl.cpp",
-        "src/android/mm/minigbm_allocator.cpp",
+        "src/android/mm/generic_camera_buffer.cpp",
+        "src/android/mm/generic_frame_buffer_allocator.cpp",
+        "src/android/yuv/post_processor_yuv.cpp",
     ],
 }
 
-cc_defaults {
-    name: "libcamera_virtual_src_defaults",
-    relative_install_path: "hw",
-    vendor: true,
-    header_libs: [
-        "libcamera_headers",
-    ],
-    export_header_lib_headers: [
-        "libcamera_headers",
-    ],
+//
+// Applications
+//
 
-    cflags: [
-        "-Wno-unused-but-set-variable",
-        "-Dstrverscmp=strcmp",
-    ],
-    rtti: true,
-    static_libs: [
-        "libyuv_static",
-    ],
+cc_binary {
+    name: "cam",
+    defaults: ["libcamera_defaults"],
     shared_libs: [
-        "libjpeg",
+        "libcamera",
+        "libcamera-base",
+        "libevent",
     ],
-    defaults: [
-        "libcamera_src_base_defaults",
-        "libcamera_src_defaults",
-    ],
+    static_libs: ["libyaml"],
+    generated_headers: ["libcamera_libcamera_h"],
+    local_include_dirs: ["src/apps"],
+    required: ["ipa_soft_simple"],
     srcs: [
-        "src/libcamera/pipeline/virtual/config_parser.cpp",
-        "src/libcamera/pipeline/virtual/image_frame_generator.cpp",
-        "src/libcamera/pipeline/virtual/test_pattern_generator.cpp",
-        "src/libcamera/pipeline/virtual/virtual.cpp",
+        "src/apps/cam/camera_session.cpp",
+        "src/apps/cam/capture_script.cpp",
+        "src/apps/cam/file_sink.cpp",
+        "src/apps/cam/frame_sink.cpp",
+        "src/apps/cam/main.cpp",
+        "src/apps/common/event_loop.cpp",
+        "src/apps/common/image.cpp",
+        "src/apps/common/options.cpp",
+        "src/apps/common/ppm_writer.cpp",
+        "src/apps/common/stream_options.cpp",
     ],
 }
-
-cc_library_shared {
-    name: "camera.libcamera_hal_virtual",
-    defaults: [
-        "libcamera_src_defaults",
-        "libcamera_android_src_defaults",
-        "libcamera_virtual_src_defaults",
-    ],
-}
-
-cc_library_shared {
-    name: "camera.libcamera_hal_base",
-    defaults: [
-        "libcamera_src_defaults",
-        "libcamera_android_src_defaults",
-        "libipu7_ipa_proxy",
-    ],
-}
-
-genrule {
-    name: "libcamera_mojom_ipu7_ipa_module",
-    srcs: [
-        "include/libcamera/ipa/core.mojom",
-        "include/libcamera/ipa/ipu7.mojom",
-    ],
-    tools: ["libcamera_ipc_parser_host"],
-    cmd: "$(location libcamera_ipc_parser_host)" +
-        " --output-root $(genDir)" +
-        " --input-root ./external/libcamera" +
-        " --mojoms $(location include/libcamera/ipa/core.mojom) $(location include/libcamera/ipa/ipu7.mojom)",
-    out: [
-        "include/libcamera/ipa/ipu7.mojom-module",
-    ],
-    export_include_dirs: [".", "include"],
-}
-
-genrule {
-    name: "libcamera_mojom_ipu7_ipa_interface_h",
-    srcs: [
-        ":libcamera_mojom_ipu7_ipa_module",
-        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
-    ],
-    tools: ["libcamera_ipc_generate_host"],
-    cmd: "$(location libcamera_ipc_generate_host)" +
-        " generate -g libcamera" +
-        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
-        " --libcamera_generate_header" +
-        " --libcamera_output_path=$(out)" +
-        " $(location :libcamera_mojom_ipu7_ipa_module)",
-    out: [
-        "include/libcamera/ipa/ipu7_ipa_interface.h",
-    ],
-    export_include_dirs: [".", "include"],
-}
-
-genrule {
-    name: "libcamera_mojom_ipu7_ipa_serializer_h",
-    srcs: [
-        ":libcamera_mojom_ipu7_ipa_module",
-        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
-    ],
-    tools: ["libcamera_ipc_generate_host"],
-    cmd: "$(location libcamera_ipc_generate_host)" +
-        " generate -g libcamera" +
-        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
-        " --libcamera_generate_serializer" +
-        " --libcamera_output_path=$(out)" +
-        " $(location :libcamera_mojom_ipu7_ipa_module)",
-    out: [
-        "include/libcamera/ipa/ipu7_ipa_serializer.h",
-    ],
-    export_include_dirs: [".", "include"],
-}
-
-genrule {
-    name: "libcamera_mojom_ipu7_ipa_proxy_h",
-    srcs: [
-        ":libcamera_mojom_ipu7_ipa_module",
-        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
-    ],
-    tools: ["libcamera_ipc_generate_host"],
-    cmd: "$(location libcamera_ipc_generate_host)" +
-        " generate -g libcamera" +
-        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
-        " --libcamera_generate_proxy_h" +
-        " --libcamera_output_path=$(out)" +
-        " $(location :libcamera_mojom_ipu7_ipa_module)",
-    out: [
-        "include/libcamera/ipa/ipu7_ipa_proxy.h",
-    ],
-    export_include_dirs: [".", "include"],
-}
-
-genrule {
-    name: "libcamera_mojom_ipu7_ipa_proxy_cpp",
-    srcs: [
-        ":libcamera_mojom_ipu7_ipa_module",
-        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
-    ],
-    tools: ["libcamera_ipc_generate_host"],
-    cmd: "$(location libcamera_ipc_generate_host)" +
-        " generate -g libcamera" +
-        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
-        " --libcamera_generate_proxy_cpp" +
-        " --libcamera_output_path=$(out)" +
-        " $(location :libcamera_mojom_ipu7_ipa_module)",
-    out: [
-        "include/libcamera/ipa/ipu7_ipa_proxy.cpp",
-    ],
-    export_include_dirs: [".", "include"],
-}
-
-genrule {
-    name: "libcamera_mojom_ipu7_ipa_proxy_worker_cpp",
-    srcs: [
-        ":libcamera_mojom_ipu7_ipa_module",
-        "//external/libcamera/utils/codegen/ipc:libcamera_mojom_templates",
-    ],
-    tools: ["libcamera_ipc_generate_host"],
-    cmd: "$(location libcamera_ipc_generate_host)" +
-        " generate -g libcamera" +
-        " --bytecode_path $(location //external/libcamera/utils/codegen/ipc:libcamera_mojom_templates)" +
-        " --libcamera_generate_proxy_worker" +
-        " --libcamera_output_path=$(out)" +
-        " $(location :libcamera_mojom_ipu7_ipa_module)",
-    out: [
-        "include/libcamera/ipa/ipu7_ipa_proxy_worker.cpp",
-    ],
-    export_include_dirs: [".", "include"],
-}
-
-cc_defaults {
-    name: "libipu7_ipa_proxy",
-    generated_headers: [
-        "libcamera_mojom_ipu7_ipa_interface_h",
-        "libcamera_mojom_ipu7_ipa_serializer_h",
-        "libcamera_mojom_ipu7_ipa_proxy_h",
-    ],
-    srcs: [
-        ":libcamera_mojom_ipu7_ipa_proxy_cpp",
-        ":libcamera_mojom_ipu7_ipa_proxy_worker_cpp",
-    ],
-}
-

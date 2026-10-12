@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * controller.cpp - ISP controller
+ * ISP controller
  */
 
 #include <assert.h>
@@ -17,27 +17,74 @@
 
 using namespace RPiController;
 using namespace libcamera;
+using namespace std::literals::chrono_literals;
 
 LOG_DEFINE_CATEGORY(RPiController)
 
-static const std::map<std::string, Controller::HardwareConfig> HardwareConfigMap = {
-	{
-		"bcm2835",
+namespace {
+
+const std::map<std::string, Controller::HardwareConfig> &hardwareConfigMap()
+{
+	static const std::map<std::string, Controller::HardwareConfig> map = {
 		{
-			/*
-			 * There are only ever 15 AGC regions computed by the firmware
-			 * due to zoning, but the HW defines AGC_REGIONS == 16!
-			 */
-			.agcRegions = { 15 , 1 },
-			.agcZoneWeights = { 15 , 1 },
-			.awbRegions = { 16, 12 },
-			.focusRegions = { 4, 3 },
-			.numHistogramBins = 128,
-			.numGammaPoints = 33,
-			.pipelineWidth = 13
-		}
-	},
-};
+			"bcm2835",
+			{
+				/*
+				* There are only ever 15 AGC regions computed by the firmware
+				* due to zoning, but the HW defines AGC_REGIONS == 16!
+				*/
+				.agcRegions = { 15 , 1 },
+				.agcZoneWeights = { 15 , 1 },
+				.awbRegions = { 16, 12 },
+				.cacRegions = { 0, 0 },
+				.focusRegions = { 4, 3 },
+				.numHistogramBins = 128,
+				.numGammaPoints = 33,
+				.pipelineWidth = 13,
+				.statsInline = false,
+				.minPixelProcessingTime = 0s,
+				.dataBufferStrided = true,
+			}
+		},
+		{
+			"pisp",
+			{
+				.agcRegions = { 0, 0 },
+				.agcZoneWeights = { 15, 15 },
+				.awbRegions = { 32, 32 },
+				.cacRegions = { 8, 8 },
+				.focusRegions = { 8, 8 },
+				.numHistogramBins = 1024,
+				.numGammaPoints = 64,
+				.pipelineWidth = 16,
+				.statsInline = true,
+
+				/*
+				* The constraint below is on the rate of pixels going
+				* from CSI2 peripheral to ISP-FE (400Mpix/s, plus tiny
+				* overheads per scanline, for which 380Mpix/s is a
+				* conservative bound).
+				*
+				* There is a 64kbit data FIFO before the bottleneck,
+				* which means that in all reasonable cases the
+				* constraint applies at a timescale >= 1 scanline, so
+				* adding horizontal blanking can prevent loss.
+				*
+				* If the backlog were to grow beyond 64kbit during a
+				* single scanline, there could still be loss. This
+				* could happen using 4 lanes at 1.5Gbps at 10bpp with
+				* frames wider than ~16,000 pixels.
+				*/
+				.minPixelProcessingTime = 1.0us / 380,
+				.dataBufferStrided = false,
+			}
+		},
+	};
+
+	return map;
+}
+
+} /* namespace */
 
 Controller::Controller()
 	: switchModeCalled_(false)
@@ -55,7 +102,7 @@ int Controller::read(char const *filename)
 		return -EINVAL;
 	}
 
-	std::unique_ptr<YamlObject> root = YamlParser::parse(file);
+	std::unique_ptr<ValueNode> root = YamlParser::parse(file);
 	if (!root)
 		return -EINVAL;
 
@@ -67,7 +114,7 @@ int Controller::read(char const *filename)
 			<< "This format of the tuning file will be deprecated soon!"
 			<< " Please use the convert_tuning.py utility to update to version 2.0.";
 
-		for (auto const &[key, value] : root->asDict()) {
+		for (const auto &[key, value] : root->asDict()) {
 			int ret = createAlgorithm(key, value);
 			if (ret)
 				return ret;
@@ -80,8 +127,8 @@ int Controller::read(char const *filename)
 			return -EINVAL;
 		}
 
-		for (auto const &rootAlgo : (*root)["algorithms"].asList())
-			for (auto const &[key, value] : rootAlgo.asDict()) {
+		for (const auto &rootAlgo : (*root)["algorithms"].asList())
+			for (const auto &[key, value] : rootAlgo.asDict()) {
 				int ret = createAlgorithm(key, value);
 				if (ret)
 					return ret;
@@ -96,13 +143,31 @@ int Controller::read(char const *filename)
 	return 0;
 }
 
-int Controller::createAlgorithm(const std::string &name, const YamlObject &params)
+int Controller::createAlgorithm(const std::string &name, const ValueNode &params)
 {
+	/* Any algorithm may be disabled by setting "enabled" to false. */
+	bool enabled = params["enabled"].get<bool>(true);
+	LOG(RPiController, Debug)
+		<< "Algorithm " << name << ": "
+		<< (enabled ? "enabled" : "disabled");
+	if (!enabled)
+		return 0;
+
 	auto it = getAlgorithms().find(name);
 	if (it == getAlgorithms().end()) {
 		LOG(RPiController, Warning)
 			<< "No algorithm found for \"" << name << "\"";
 		return 0;
+	}
+
+	/* Do not allow duplicate versions of algorithms (e.g. AWB) to run. */
+	size_t pos = name.find_last_of('.');
+	std::string const &algoType =
+		pos == std::string::npos ? name : name.substr(pos + 1);
+	if (getAlgorithm(algoType)) {
+		LOG(RPiController, Error)
+			<< "Algorithm type '" << algoType << "' already exists";
+		return -1;
 	}
 
 	Algorithm *algo = (*it->second)(this);
@@ -173,12 +238,12 @@ const std::string &Controller::getTarget() const
 
 const Controller::HardwareConfig &Controller::getHardwareConfig() const
 {
-	auto cfg = HardwareConfigMap.find(getTarget());
+	auto cfg = hardwareConfigMap().find(getTarget());
 
 	/*
 	 * This really should not happen, the IPA ought to validate the target
 	 * on initialisation.
 	 */
-	ASSERT(cfg != HardwareConfigMap.end());
+	ASSERT(cfg != hardwareConfigMap().end());
 	return cfg->second;
 }

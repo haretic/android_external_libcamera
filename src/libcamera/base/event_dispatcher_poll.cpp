@@ -2,19 +2,18 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * event_dispatcher_poll.cpp - Poll-based event dispatcher
+ * Poll-based event dispatcher
  */
 
 #include <libcamera/base/event_dispatcher_poll.h>
 
-#include <algorithm>
-#include <chrono>
 #include <iomanip>
 #include <poll.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
+#include <vector>
 
 #include <libcamera/base/event_notifier.h>
 #include <libcamera/base/log.h>
@@ -172,34 +171,6 @@ void EventDispatcherPoll::processEvents()
 	processTimers();
 }
 
-void EventDispatcherPoll::processEventsOnNotifier(EventNotifier* notifier)
-{
-	int ret;
-
-	/* Create the pollfd array. */
-	std::vector<struct pollfd> pollfds;
-	pollfds.reserve(1);
-
-	auto iter = notifiers_.find(notifier->fd());
-	if (iter == notifiers_.end()) {
-		LOG(Event, Error) << "notifier doesn't exist";
-		return;
-	}
-	pollfds.push_back({ iter->first, iter->second.events(), 0 });
-
-	/* Wait for events and process notifiers and timers. */
-	do {
-		ret = ppoll(pollfds.data(), pollfds.size(), nullptr, nullptr);
-	} while (ret == -1 && errno == EINTR);
-
-	if (ret < 0) {
-		ret = -errno;
-		LOG(Event, Error) << "poll() failed with " << strerror(-ret);
-	} else if (ret > 0) {
-		processNotifiers(pollfds);
-	}
-}
-
 void EventDispatcherPoll::interrupt()
 {
 	uint64_t value = 1;
@@ -273,9 +244,9 @@ void EventDispatcherPoll::processNotifiers(const std::vector<struct pollfd> &pol
 		EventNotifier::Type type;
 		short events;
 	} events[] = {
+		{ EventNotifier::Exception, POLLPRI },
 		{ EventNotifier::Read, POLLIN },
 		{ EventNotifier::Write, POLLOUT },
-		{ EventNotifier::Exception, POLLPRI },
 	};
 
 	processingEvents_ = true;
@@ -291,15 +262,6 @@ void EventDispatcherPoll::processNotifiers(const std::vector<struct pollfd> &pol
 
 			if (!notifier)
 				continue;
-
-			if (pfd.revents & POLLHUP) {
-				LOG(Event, Debug) << "Got signal POLLHUP."
-						  << " Disconnecting IPC";
-
-				notifier->disconnected.emit();
-				unregisterEventNotifier(notifier);
-				continue;
-			}
 
 			/*
 			 * If the file descriptor is invalid, disable the

@@ -2,14 +2,14 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * ipc_pipe_unixsocket.h - Image Processing Algorithm IPC module using unix socket
+ * Image Processing Algorithm IPC module using unix socket
  */
 
 #pragma once
 
 #include <map>
 #include <memory>
-#include <vector>
+#include <stdint.h>
 
 #include "libcamera/internal/ipc_pipe.h"
 #include "libcamera/internal/ipc_unixsocket.h"
@@ -18,22 +18,16 @@ namespace libcamera {
 
 class Process;
 
-class IPCPipeUnixSocket : public IPCPipe, public Object
+class IPCPipeUnixSocket : public IPCPipe
 {
 public:
-	constexpr static char kCpuPath[] = "/run/camera/camera-algo-libcamera.sock";
-	constexpr static char kGpuPath[] = "/run/camera/camera-algo-gpu-libcamera.sock";
-
 	IPCPipeUnixSocket(const char *ipaModulePath, const char *ipaProxyWorkerPath);
-	IPCPipeUnixSocket(std::string path);
 	~IPCPipeUnixSocket();
 
 	int sendSync(const IPCMessage &in,
 		     IPCMessage *out = nullptr) override;
 
 	int sendAsync(const IPCMessage &data) override;
-
-	Signal<> *disconnected();
 
 private:
 	struct CallData {
@@ -45,12 +39,9 @@ private:
 	int call(const IPCUnixSocket::Payload &message,
 		 IPCUnixSocket::Payload *response, uint32_t seq);
 
-	void emitRecv(std::shared_ptr<IPCMessage> &msg);
-
 	std::unique_ptr<Process> proc_;
 	std::unique_ptr<IPCUnixSocket> socket_;
 	std::map<uint32_t, CallData> callData_;
-	bool inCall_;
 };
 
 } /* namespace libcamera */

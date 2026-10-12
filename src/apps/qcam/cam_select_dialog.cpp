@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2022, Utkarsh Tiwari <utkarsh02t@gmail.com>
  *
- * cam_select_dialog.cpp - qcam - Camera Selection dialog
+ * qcam - Camera Selection dialog
  */
 
 #include "cam_select_dialog.h"
@@ -15,7 +15,9 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QGuiApplication>
 #include <QLabel>
+#include <QScreen>
 #include <QString>
 
 CameraSelectorDialog::CameraSelectorDialog(libcamera::CameraManager *cameraManager,
@@ -53,6 +55,14 @@ CameraSelectorDialog::CameraSelectorDialog(libcamera::CameraManager *cameraManag
 	layout->addRow("Location:", cameraLocation_);
 	layout->addRow("Model:", cameraModel_);
 	layout->addWidget(buttonBox);
+
+	/*
+	 * Decrease the minimum width of dialog to fit on narrow screens, with a
+	 * 20 pixels margin.
+	 */
+	QRect screenGeometry = qGuiApp->primaryScreen()->availableGeometry();
+	if (screenGeometry.width() < minimumWidth())
+		setMinimumWidth(screenGeometry.width() - 20);
 }
 
 CameraSelectorDialog::~CameraSelectorDialog() = default;
@@ -104,8 +114,8 @@ void CameraSelectorDialog::updateCameraInfo(QString cameraId)
 		cameraLocation_->setText("Unknown");
 	}
 
-	const auto &model = properties.get(libcamera::properties::Model)
+	const auto model = properties.get(libcamera::properties::Model)
 				    .value_or("Unknown");
 
-	cameraModel_->setText(QString::fromStdString(model));
+	cameraModel_->setText(QString::fromUtf8(model.data(), model.length()));
 }

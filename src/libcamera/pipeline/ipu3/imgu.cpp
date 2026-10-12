@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * imgu.cpp - Intel IPU3 ImgU
+ * Intel IPU3 ImgU
  */
 
 #include "imgu.h"
@@ -330,7 +330,8 @@ FOV calcFOV(const Size &in, const ImgUDevice::PipeConfig &pipe)
  *
  * \return 0 on success or a negative error code otherwise
  */
-int ImgUDevice::init(MediaDevice *media, unsigned int index)
+int ImgUDevice::init(std::shared_ptr<libcamera::MediaDevice> media,
+		     unsigned int index)
 {
 	int ret;
 
@@ -342,32 +343,32 @@ int ImgUDevice::init(MediaDevice *media, unsigned int index)
 	 * by the match() function: no need to check for newly created
 	 * video devices and subdevice validity here.
 	 */
-	imgu_ = V4L2Subdevice::fromEntityName(media, name_);
+	imgu_ = V4L2Subdevice::fromEntityName(media.get(), name_);
 	ret = imgu_->open();
 	if (ret)
 		return ret;
 
-	input_ = V4L2VideoDevice::fromEntityName(media, name_ + " input");
+	input_ = V4L2VideoDevice::fromEntityName(media.get(), name_ + " input");
 	ret = input_->open();
 	if (ret)
 		return ret;
 
-	output_ = V4L2VideoDevice::fromEntityName(media, name_ + " output");
+	output_ = V4L2VideoDevice::fromEntityName(media.get(), name_ + " output");
 	ret = output_->open();
 	if (ret)
 		return ret;
 
-	viewfinder_ = V4L2VideoDevice::fromEntityName(media, name_ + " viewfinder");
+	viewfinder_ = V4L2VideoDevice::fromEntityName(media.get(), name_ + " viewfinder");
 	ret = viewfinder_->open();
 	if (ret)
 		return ret;
 
-	param_ = V4L2VideoDevice::fromEntityName(media, name_ + " parameters");
+	param_ = V4L2VideoDevice::fromEntityName(media.get(), name_ + " parameters");
 	ret = param_->open();
 	if (ret)
 		return ret;
 
-	stat_ = V4L2VideoDevice::fromEntityName(media, name_ + " 3a stat");
+	stat_ = V4L2VideoDevice::fromEntityName(media.get(), name_ + " 3a stat");
 	ret = stat_->open();
 	if (ret)
 		return ret;
@@ -504,7 +505,7 @@ int ImgUDevice::configure(const PipeConfig &pipeConfig, V4L2DeviceFormat *inputF
 	LOG(IPU3, Debug) << "ImgU BDS rectangle = " << bds;
 
 	V4L2SubdeviceFormat gdcFormat = {};
-	gdcFormat.mbus_code = MEDIA_BUS_FMT_FIXED;
+	gdcFormat.code = MEDIA_BUS_FMT_FIXED;
 	gdcFormat.size = pipeConfig.gdc;
 
 	ret = imgu_->setFormat(PAD_INPUT, &gdcFormat);
@@ -543,7 +544,7 @@ int ImgUDevice::configureVideoDevice(V4L2VideoDevice *dev, unsigned int pad,
 				     V4L2DeviceFormat *outputFormat)
 {
 	V4L2SubdeviceFormat imguFormat = {};
-	imguFormat.mbus_code = MEDIA_BUS_FMT_FIXED;
+	imguFormat.code = MEDIA_BUS_FMT_FIXED;
 	imguFormat.size = cfg.size;
 
 	int ret = imgu_->setFormat(pad, &imguFormat);

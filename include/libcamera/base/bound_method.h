@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * bound_method.h - Method bind and invocation
+ * Method bind and invocation
  */
 
 #pragma once
@@ -33,17 +33,13 @@ template<typename R, typename... Args>
 class BoundMethodPack : public BoundMethodPackBase
 {
 public:
-	BoundMethodPack(const Args &... args)
-		: args_(args...)
+	template<typename... Ts>
+	BoundMethodPack(Ts &&...args)
+		: args_(std::forward<Ts>(args)...)
 	{
 	}
 
-	R returnValue()
-	{
-		return ret_;
-	}
-
-	std::tuple<typename std::remove_reference_t<Args>...> args_;
+	std::tuple<std::remove_cv_t<std::remove_reference_t<Args>>...> args_;
 	R ret_;
 };
 
@@ -51,16 +47,13 @@ template<typename... Args>
 class BoundMethodPack<void, Args...> : public BoundMethodPackBase
 {
 public:
-	BoundMethodPack(const Args &... args)
-		: args_(args...)
+	template<typename... Ts>
+	BoundMethodPack(Ts &&...args)
+		: args_(std::forward<Ts>(args)...)
 	{
 	}
 
-	void returnValue()
-	{
-	}
-
-	std::tuple<typename std::remove_reference_t<Args>...> args_;
+	std::tuple<std::remove_cv_t<std::remove_reference_t<Args>>...> args_;
 };
 
 class BoundMethodBase
@@ -97,31 +90,19 @@ class BoundMethodArgs : public BoundMethodBase
 public:
 	using PackType = BoundMethodPack<R, Args...>;
 
-private:
-	template<std::size_t... I, typename T = R>
-	std::enable_if_t<!std::is_void<T>::value, void>
-	invokePack(BoundMethodPackBase *pack, std::index_sequence<I...>)
-	{
-		PackType *args = static_cast<PackType *>(pack);
-		args->ret_ = invoke(std::get<I>(args->args_)...);
-	}
-
-	template<std::size_t... I, typename T = R>
-	std::enable_if_t<std::is_void<T>::value, void>
-	invokePack(BoundMethodPackBase *pack, std::index_sequence<I...>)
-	{
-		/* args is effectively unused when the sequence I is empty. */
-		PackType *args [[gnu::unused]] = static_cast<PackType *>(pack);
-		invoke(std::get<I>(args->args_)...);
-	}
-
-public:
 	BoundMethodArgs(void *obj, Object *object, ConnectionType type)
 		: BoundMethodBase(obj, object, type) {}
 
 	void invokePack(BoundMethodPackBase *pack) override
 	{
-		invokePack(pack, std::make_index_sequence<sizeof...(Args)>{});
+		auto *argsPack = static_cast<PackType *>(pack);
+
+		std::apply([&](Args &&...args) {
+			if constexpr (!std::is_void_v<R>)
+				argsPack->ret_ = invoke(std::forward<decltype(args)>(args)...);
+			else
+				invoke(std::forward<decltype(args)>(args)...);
+		}, std::move(argsPack->args_));
 	}
 
 	virtual R activate(Args... args, bool deleteMethod = false) = 0;
@@ -136,23 +117,25 @@ public:
 
 	BoundMethodFunctor(T *obj, Object *object, Func func,
 			   ConnectionType type = ConnectionTypeAuto)
-		: BoundMethodArgs<R, Args...>(obj, object, type), func_(func)
+		: BoundMethodArgs<R, Args...>(obj, object, type), func_(std::move(func))
 	{
 	}
 
 	R activate(Args... args, bool deleteMethod = false) override
 	{
 		if (!this->object_)
-			return func_(args...);
+			return func_(std::forward<Args>(args)...);
 
-		auto pack = std::make_shared<PackType>(args...);
-		bool sync = BoundMethodBase::activatePack(pack, deleteMethod);
-		return sync ? pack->returnValue() : R();
+		auto pack = std::make_shared<PackType>(std::forward<Args>(args)...);
+		[[maybe_unused]] bool sync = BoundMethodBase::activatePack(pack, deleteMethod);
+
+		if constexpr (!std::is_void_v<R>)
+			return sync ? std::move(pack->ret_) : R();
 	}
 
 	R invoke(Args... args) override
 	{
-		return func_(args...);
+		return func_(std::forward<Args>(args)...);
 	}
 
 private:
@@ -177,18 +160,20 @@ public:
 	{
 		if (!this->object_) {
 			T *obj = static_cast<T *>(this->obj_);
-			return (obj->*func_)(args...);
+			return (obj->*func_)(std::forward<Args>(args)...);
 		}
 
-		auto pack = std::make_shared<PackType>(args...);
-		bool sync = BoundMethodBase::activatePack(pack, deleteMethod);
-		return sync ? pack->returnValue() : R();
+		auto pack = std::make_shared<PackType>(std::forward<Args>(args)...);
+		[[maybe_unused]] bool sync = BoundMethodBase::activatePack(pack, deleteMethod);
+
+		if constexpr (!std::is_void_v<R>)
+			return sync ? std::move(pack->ret_) : R();
 	}
 
 	R invoke(Args... args) override
 	{
 		T *obj = static_cast<T *>(this->obj_);
-		return (obj->*func_)(args...);
+		return (obj->*func_)(std::forward<Args>(args)...);
 	}
 
 private:
@@ -209,7 +194,7 @@ public:
 
 	R activate(Args... args, [[maybe_unused]] bool deleteMethod = false) override
 	{
-		return (*func_)(args...);
+		return (*func_)(std::forward<Args>(args)...);
 	}
 
 	R invoke(Args...) override

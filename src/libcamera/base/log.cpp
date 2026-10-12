@@ -2,31 +2,32 @@
 /*
  * Copyright (C) 2018, Google Inc.
  *
- * log.cpp - Logging infrastructure
+ * Logging infrastructure
  */
 
+#include <libcamera/base/log.h>
+
 #include <array>
+#include <charconv>
+#include <fnmatch.h>
 #include <fstream>
 #include <iostream>
 #include <list>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string_view>
 #include <syslog.h>
 #include <time.h>
+#include <unistd.h>
 #include <unordered_set>
-
-#include <libcamera/base/backtrace.h>
-#include <libcamera/base/log.h>
-#include <libcamera/base/mutex.h>
-#include <libcamera/base/thread.h>
-#include <libcamera/base/utils.h>
 
 #include <libcamera/logging.h>
 
-#ifdef HAVE_ANDROID_OS
-#include <android/log.h>
-#endif
+#include <libcamera/base/backtrace.h>
+#include <libcamera/base/mutex.h>
+#include <libcamera/base/thread.h>
+#include <libcamera/base/utils.h>
 
 /**
  * \file base/log.h
@@ -41,8 +42,8 @@
  * The levels are configurable through the LIBCAMERA_LOG_LEVELS environment
  * variable that contains a comma-separated list of 'category:level' pairs.
  *
- * The category names are strings and can include a wildcard ('*') character at
- * the end to match multiple categories.
+ * The category names are strings and can include a wildcard ('*') character to
+ * match multiple categories.
  *
  * The level are either numeric values, or strings containing the log level
  * name. The available log levels are DEBUG, INFO, WARN, ERROR and FATAL. Log
@@ -110,9 +111,7 @@ class LogOutput
 public:
 	LogOutput(const char *path, bool color);
 	LogOutput(std::ostream *stream, bool color);
-	LogOutput(bool color);
 	LogOutput();
-	LogOutput(int android);
 	~LogOutput();
 
 	bool isValid() const;
@@ -122,9 +121,6 @@ public:
 private:
 	void writeSyslog(LogSeverity severity, const std::string &msg);
 	void writeStream(const std::string &msg);
-
-	void writeAndroid(LogSeverity severity, const std::string &msg);
-	void writeAndroid(const std::string &msg);
 
 	std::ostream *stream_;
 	LoggingTarget target_;
@@ -153,30 +149,12 @@ LogOutput::LogOutput(std::ostream *stream, bool color)
 }
 
 /**
- * \brief Construct a log output to both std:err and syslog
- * \param[in] color True to output colored messages
- */
-LogOutput::LogOutput(bool color)
-	: stream_(&std::cerr), target_(LoggingTargetCros), color_(color)
-{
-	openlog("libcamera", LOG_PID, 0);
-}
-
-/**
  * \brief Construct a log output to syslog
  */
 LogOutput::LogOutput()
 	: stream_(nullptr), target_(LoggingTargetSyslog), color_(false)
 {
 	openlog("libcamera", LOG_PID, 0);
-}
-
-/**
- * \brief Construct a log output to Android
- */
-LogOutput::LogOutput(int)
-	: stream_(nullptr), target_(LoggingTargetAndroid), color_(false)
-{
 }
 
 LogOutput::~LogOutput()
@@ -186,7 +164,6 @@ LogOutput::~LogOutput()
 		delete stream_;
 		break;
 	case LoggingTargetSyslog:
-	case LoggingTargetCros:
 		closelog();
 		break;
 	default:
@@ -257,51 +234,29 @@ void LogOutput::write(const LogMessage &msg)
 			severityColor = kColorBrightWhite;
 	}
 
-	bool toStream = false;
-	bool toSyslog = false;
-	bool toAndroid = false;
-
 	switch (target_) {
 	case LoggingTargetSyslog:
-		toSyslog = true;
-		break;
-	case LoggingTargetStream:
-	case LoggingTargetFile:
-		toStream = true;
-		break;
-	case LoggingTargetCros:
-		toSyslog = true;
-		toStream = true;
-		break;
-	case LoggingTargetAndroid:
-		toAndroid = true;
-		break;
-	default:
-		break;
-	}
-
-	if (toStream) {
-		str = "[" + utils::time_point_to_string(msg.timestamp()) + "] [" + std::to_string(Thread::currentId()) + "] " + severityColor + log_severity_name(severity) + " " + categoryColor + msg.category().name() + " " + fileColor + msg.fileInfo() + " ";
-		if (!msg.prefix().empty())
-			str += prefixColor + msg.prefix() + ": ";
-		str += resetColor + msg.msg();
-		writeStream(str);
-	}
-
-	if (toSyslog) {
-		str = std::string(log_severity_name(severity)) + " " + msg.category().name() + " " + msg.fileInfo() + " ";
+		str = std::string(log_severity_name(severity)) + ' '
+		    + msg.category().name() + ' ' + msg.fileInfo() + ' ';
 		if (!msg.prefix().empty())
 			str += msg.prefix() + ": ";
 		str += msg.msg();
 		writeSyslog(severity, str);
-	}
-
-	if (toAndroid) {
-		str = msg.category().name() + " " + msg.fileInfo() + " ";
+		break;
+	case LoggingTargetStream:
+	case LoggingTargetFile:
+		str = '[' + utils::time_point_to_string(msg.timestamp()) + "] ["
+		    + std::to_string(Thread::currentId()) + "] "
+		    + severityColor + log_severity_name(severity) + ' '
+		    + categoryColor + msg.category().name() + ' '
+		    + fileColor + msg.fileInfo() + ' ';
 		if (!msg.prefix().empty())
-			str += msg.prefix() + ": ";
-		str += msg.msg();
-		writeAndroid(severity, str);
+			str += prefixColor + msg.prefix() + ": ";
+		str += resetColor + msg.msg();
+		writeStream(str);
+		break;
+	default:
+		break;
 	}
 }
 
@@ -319,10 +274,6 @@ void LogOutput::write(const std::string &str)
 	case LoggingTargetFile:
 		writeStream(str);
 		break;
-	case LoggingTargetCros:
-		writeSyslog(LogDebug, str);
-		writeStream(str);
-		break;
 	default:
 		break;
 	}
@@ -337,38 +288,6 @@ void LogOutput::writeStream(const std::string &str)
 {
 	stream_->write(str.c_str(), str.size());
 	stream_->flush();
-}
-
-void LogOutput::writeAndroid(LogSeverity severity, const std::string &msg)
-{
-	switch (severity) {
-	case LogSeverity::LogDebug:
-		__android_log_print(ANDROID_LOG_DEBUG, "libcamera", "%s", msg.c_str());
-		break;
-
-	case LogSeverity::LogInfo:
-		__android_log_print(ANDROID_LOG_INFO, "libcamera", "%s", msg.c_str());
-		break;
-
-	case LogSeverity::LogWarning:
-		__android_log_print(ANDROID_LOG_WARN, "libcamera", "%s", msg.c_str());
-		break;
-
-	case LogSeverity::LogError:
-		__android_log_print(ANDROID_LOG_ERROR, "libcamera", "%s", msg.c_str());
-		break;
-
-	case LogSeverity::LogFatal:
-		__android_log_print(ANDROID_LOG_FATAL, "libcamera", "%s", msg.c_str());
-		break;
-	default:
-		break;
-	}
-}
-
-void LogOutput::writeAndroid(const std::string &msg)
-{
-	writeAndroid(LogSeverity::LogDebug, msg);
 }
 
 /**
@@ -396,17 +315,22 @@ private:
 
 	void parseLogFile();
 	void parseLogLevels();
-	static LogSeverity parseLogLevel(const std::string &level);
+	static LogSeverity parseLogLevel(std::string_view level);
 
 	friend LogCategory;
-	void registerCategory(LogCategory *category);
-	LogCategory *findCategory(const char *name) const;
+	LogCategory *findOrCreateCategory(std::string_view name);
 
 	static bool destroyed_;
 
-	std::vector<LogCategory *> categories_;
+	Mutex mutex_;
+	std::vector<std::unique_ptr<LogCategory>> categories_ LIBCAMERA_TSA_GUARDED_BY(mutex_);
 	std::list<std::pair<std::string, LogSeverity>> levels_;
 
+	/*
+	 * \todo Use `std::atomic<std::shared_ptr<>>` and drop the pragma
+	 * once it works on all supported platforms.
+	 */
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	std::shared_ptr<LogOutput> output_;
 };
 
@@ -521,9 +445,6 @@ void logSetLevel(const char *category, const char *level)
 Logger::~Logger()
 {
 	destroyed_ = true;
-
-	for (LogCategory *category : categories_)
-		delete category;
 }
 
 /**
@@ -634,12 +555,6 @@ int Logger::logSetTarget(enum LoggingTarget target)
 	case LoggingTargetNone:
 		std::atomic_store(&output_, std::shared_ptr<LogOutput>());
 		break;
-	case LoggingTargetCros:
-		std::atomic_store(&output_, std::make_shared<LogOutput>(true));
-		break;
-	case LoggingTargetAndroid:
-		std::atomic_store(&output_, std::make_shared<LogOutput>(0));
-		break;
 	default:
 		return -EINVAL;
 	}
@@ -660,7 +575,9 @@ void Logger::logSetLevel(const char *category, const char *level)
 	if (severity == LogInvalid)
 		return;
 
-	for (LogCategory *c : categories_) {
+	MutexLocker locker(mutex_);
+
+	for (const auto &c : categories_) {
 		if (c->name() == category) {
 			c->setSeverity(severity);
 			break;
@@ -671,24 +588,21 @@ void Logger::logSetLevel(const char *category, const char *level)
 /**
  * \brief Construct a logger
  *
- * If the environment variable is not set, log to std::cerr. The log messages
- * are then colored by default. This can be overridden by setting the
- * LIBCAMERA_LOG_NO_COLOR environment variable to disable coloring.
+ * If the environment variable is not set, log to std::cerr. The coloring
+ * of log messages can be controlled using the LIBCAMERA_LOG_COLOR environment
+ * variable.
  */
 Logger::Logger()
 {
-#ifdef HAVE_ANDROID_OS
-	logSetTarget(LoggingTargetAndroid);
-	return;
-#endif
-#if defined(OS_CHROMEOS)
-	logSetTarget(LoggingTargetCros);
-	parseLogLevels();
-	return;
-#endif
+	const char *color = utils::secure_getenv("LIBCAMERA_LOG_COLOR");
+	bool wantColor = false;
 
-	bool color = !utils::secure_getenv("LIBCAMERA_LOG_NO_COLOR");
-	logSetStream(&std::cerr, color);
+	if (!color || strcmp(color, "auto") == 0)
+		wantColor = isatty(STDERR_FILENO) == 1;
+	else if (strcmp(color, "yes") == 0)
+		wantColor = true;
+
+	logSetStream(&std::cerr, wantColor);
 
 	parseLogFile();
 	parseLogLevels();
@@ -741,17 +655,17 @@ void Logger::parseLogLevels()
 		if (!len)
 			continue;
 
-		std::string category;
-		std::string level;
+		std::string_view category;
+		std::string_view level;
 
 		const char *colon = static_cast<const char *>(memchr(pair, ':', len));
 		if (!colon) {
 			/* 'x' is a shortcut for '*:x'. */
 			category = "*";
-			level = std::string(pair, len);
+			level = std::string_view(pair, len);
 		} else {
-			category = std::string(pair, colon - pair);
-			level = std::string(colon + 1, comma - colon - 1);
+			category = std::string_view(pair, colon - pair);
+			level = std::string_view(colon + 1, comma - colon - 1);
 		}
 
 		/* Both the category and the level must be specified. */
@@ -762,7 +676,7 @@ void Logger::parseLogLevels()
 		if (severity == LogInvalid)
 			continue;
 
-		levels_.push_back({ category, severity });
+		levels_.emplace_back(category, severity);
 	}
 }
 
@@ -776,7 +690,7 @@ void Logger::parseLogLevels()
  *
  * \return The log severity, or LogInvalid if the string is invalid
  */
-LogSeverity Logger::parseLogLevel(const std::string &level)
+LogSeverity Logger::parseLogLevel(std::string_view level)
 {
 	static const char *const names[] = {
 		"DEBUG",
@@ -786,15 +700,14 @@ LogSeverity Logger::parseLogLevel(const std::string &level)
 		"FATAL",
 	};
 
-	int severity;
+	unsigned int severity = LogInvalid;
 
 	if (std::isdigit(level[0])) {
-		char *endptr;
-		severity = strtoul(level.c_str(), &endptr, 10);
-		if (*endptr != '\0' || severity > LogFatal)
+		const char *levelEnd = level.data() + level.size();
+		auto [end, ec] = std::from_chars(level.data(), levelEnd, severity);
+		if (ec != std::errc() || end != levelEnd || severity > LogFatal)
 			severity = LogInvalid;
 	} else {
-		severity = LogInvalid;
 		for (unsigned int i = 0; i < std::size(names); ++i) {
 			if (names[i] == level) {
 				severity = i;
@@ -807,52 +720,28 @@ LogSeverity Logger::parseLogLevel(const std::string &level)
 }
 
 /**
- * \brief Register a log category with the logger
- * \param[in] category The log category
- *
- * Log categories must have unique names. It is invalid to call this function
- * if a log category with the same name already exists.
- */
-void Logger::registerCategory(LogCategory *category)
-{
-	categories_.push_back(category);
-
-	const std::string &name = category->name();
-	for (const std::pair<std::string, LogSeverity> &level : levels_) {
-		bool match = true;
-
-		for (unsigned int i = 0; i < level.first.size(); ++i) {
-			if (level.first[i] == '*')
-				break;
-
-			if (i >= name.size() ||
-			    name[i] != level.first[i]) {
-				match = false;
-				break;
-			}
-		}
-
-		if (match) {
-			category->setSeverity(level.second);
-			break;
-		}
-	}
-}
-
-/**
- * \brief Find an existing log category with the given name
+ * \brief Find an existing log category with the given name or create one
  * \param[in] name Name of the log category
- * \return The pointer to the found log category or nullptr if not found
+ * \return The pointer to the log category found or created
  */
-LogCategory *Logger::findCategory(const char *name) const
+LogCategory *Logger::findOrCreateCategory(std::string_view name)
 {
-	if (auto it = std::find_if(categories_.begin(), categories_.end(),
-				   [name](auto c) { return c->name() == name; });
-	    it != categories_.end()) {
-		return *it;
+	MutexLocker locker(mutex_);
+
+	for (const auto &category : categories_) {
+		if (category->name() == name)
+			return category.get();
 	}
 
-	return nullptr;
+	LogCategory *category = categories_.emplace_back(std::unique_ptr<LogCategory>(new LogCategory(name))).get();
+	const char *categoryName = category->name().c_str();
+
+	for (const auto &[pattern, severity] : levels_) {
+		if (fnmatch(pattern.c_str(), categoryName, FNM_NOESCAPE) == 0)
+			category->setSeverity(severity);
+	}
+
+	return category;
 }
 
 /**
@@ -888,25 +777,16 @@ LogCategory *Logger::findCategory(const char *name) const
  *
  * \return The pointer to the LogCategory
  */
-LogCategory *LogCategory::create(const char *name)
+LogCategory *LogCategory::create(std::string_view name)
 {
-	static Mutex mutex_;
-	MutexLocker locker(mutex_);
-	LogCategory *category = Logger::instance()->findCategory(name);
-
-	if (!category) {
-		category = new LogCategory(name);
-		Logger::instance()->registerCategory(category);
-	}
-
-	return category;
+	return Logger::instance()->findOrCreateCategory(name);
 }
 
 /**
  * \brief Construct a log category
  * \param[in] name The category name
  */
-LogCategory::LogCategory(const char *name)
+LogCategory::LogCategory(std::string_view name)
 	: name_(name), severity_(LogSeverity::LogInfo)
 {
 }
@@ -925,15 +805,12 @@ LogCategory::LogCategory(const char *name)
  */
 
 /**
+ * \fn LogCategory::setSeverity(LogSeverity severity)
  * \brief Set the severity of the log category
  *
  * Messages of severity higher than or equal to the severity of the log category
  * are printed, other messages are discarded.
  */
-void LogCategory::setSeverity(LogSeverity severity)
-{
-	severity_ = severity;
-}
 
 /**
  * \brief Retrieve the default log category
@@ -975,64 +852,23 @@ const LogCategory &LogCategory::defaultCategory()
  */
 LogMessage::LogMessage(const char *fileName, unsigned int line,
 		       const LogCategory &category, LogSeverity severity,
-		       const std::string &prefix)
-	: category_(category), severity_(severity), prefix_(prefix)
+		       std::string prefix)
+	: category_(category), severity_(severity),
+	  timestamp_(utils::clock::now()),
+	  fileInfo_(static_cast<std::ostringstream &&>(std::ostringstream() << utils::basename(fileName) << ":" << line).str()),
+	  prefix_(std::move(prefix))
 {
-	init(fileName, line);
-}
-
-/**
- * \brief Move-construct a log message
- * \param[in] other The other message
- *
- * The move constructor is meant to support the _log() functions. Thanks to copy
- * elision it will likely never be called, but C++11 only permits copy elision,
- * it doesn't enforce it unlike C++17. To avoid potential link errors depending
- * on the compiler type and version, and optimization level, the move
- * constructor is defined even if it will likely never be called, and ensures
- * that the destructor of the \a other message will not output anything to the
- * log by setting the severity to LogInvalid.
- */
-LogMessage::LogMessage(LogMessage &&other)
-	: msgStream_(std::move(other.msgStream_)), category_(other.category_),
-	  severity_(other.severity_)
-{
-	other.severity_ = LogInvalid;
-}
-
-void LogMessage::init(const char *fileName, unsigned int line)
-{
-	/* Log the timestamp, severity and file information. */
-	timestamp_ = utils::clock::now();
-
-	std::ostringstream ossFileInfo;
-	ossFileInfo << utils::basename(fileName) << ":" << line;
-	fileInfo_ = ossFileInfo.str();
 }
 
 LogMessage::~LogMessage()
 {
-	/* Don't print anything if we have been moved to another LogMessage. */
-	if (severity_ == LogInvalid)
-		return;
-
 	Logger *logger = Logger::instance();
 	if (!logger)
 		return;
 
 	msgStream_ << std::endl;
 
-#ifdef HAVE_ANDROID_OS
 	logger->write(*this);
-#elif
-	if (severity_ >= category_.severity())
-		logger->write(*this);
-#endif
-
-	if (severity_ == LogSeverity::LogFatal) {
-		logger->backtrace();
-		std::abort();
-	}
 }
 
 /**
@@ -1081,6 +917,17 @@ LogMessage::~LogMessage()
  * \return The message text of the message, as a string
  */
 
+#ifndef __DOXYGEN__
+LogMessageAbortGuard<LogFatal>::~LogMessageAbortGuard()
+{
+	Logger *logger = Logger::instance();
+	if (logger)
+		logger->backtrace();
+
+	std::abort();
+}
+#endif
+
 /**
  * \class Loggable
  * \brief Base class to support log message extensions
@@ -1119,12 +966,10 @@ Loggable::~Loggable()
  *
  * \return A log message
  */
-LogMessage Loggable::_log(const LogCategory *category, LogSeverity severity,
+LogMessage Loggable::_log(const LogCategory &category, LogSeverity severity,
 			  const char *fileName, unsigned int line) const
 {
-	return LogMessage(fileName, line,
-			  category ? *category : LogCategory::defaultCategory(),
-			  severity, logPrefix());
+	return LogMessage(fileName, line, category, severity, logPrefix());
 }
 
 /**
@@ -1139,12 +984,10 @@ LogMessage Loggable::_log(const LogCategory *category, LogSeverity severity,
  *
  * \return A log message
  */
-LogMessage _log(const LogCategory *category, LogSeverity severity,
+LogMessage _log(const LogCategory &category, LogSeverity severity,
 		const char *fileName, unsigned int line)
 {
-	return LogMessage(fileName, line,
-			  category ? *category : LogCategory::defaultCategory(),
-			  severity);
+	return LogMessage(fileName, line, category, severity);
 }
 
 /**

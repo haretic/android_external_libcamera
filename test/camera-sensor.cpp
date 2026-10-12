@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * camera-sensor.cpp - Camera sensor tests
+ * Camera sensor tests
  */
 
 #include <algorithm>
@@ -52,8 +52,8 @@ protected:
 			return TestFail;
 		}
 
-		sensor_ = new CameraSensor(entity);
-		if (sensor_->init() < 0) {
+		sensor_ = CameraSensorFactoryBase::create(entity);
+		if (!sensor_) {
 			cerr << "Unable to initialise camera sensor" << endl;
 			return TestFail;
 		}
@@ -96,11 +96,14 @@ protected:
 		}
 
 		/* Use an invalid format and make sure it's not selected. */
-		V4L2SubdeviceFormat format = sensor_->getFormat({ 0xdeadbeef,
-								  MEDIA_BUS_FMT_SBGGR10_1X10,
-								  MEDIA_BUS_FMT_BGR888_1X24 },
-								Size(1024, 768));
-		if (format.mbus_code != MEDIA_BUS_FMT_SBGGR10_1X10 ||
+		static constexpr uint32_t mbusCodes[] = {
+			0xdeadbeef,
+			MEDIA_BUS_FMT_SBGGR10_1X10,
+			MEDIA_BUS_FMT_BGR888_1X24,
+		};
+
+		V4L2SubdeviceFormat format = sensor_->getFormat(mbusCodes, Size(1024, 768));
+		if (format.code != MEDIA_BUS_FMT_SBGGR10_1X10 ||
 		    format.size != Size(4096, 2160)) {
 			cerr << "Failed to get a suitable format, expected 4096x2160-0x"
 			     << utils::hex(MEDIA_BUS_FMT_SBGGR10_1X10)
@@ -118,13 +121,12 @@ protected:
 
 	void cleanup()
 	{
-		delete sensor_;
 	}
 
 private:
 	std::unique_ptr<DeviceEnumerator> enumerator_;
 	std::shared_ptr<MediaDevice> media_;
-	CameraSensor *sensor_;
+	std::unique_ptr<CameraSensor> sensor_;
 	CameraLens *lens_;
 };
 

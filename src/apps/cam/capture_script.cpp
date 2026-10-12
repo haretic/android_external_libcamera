@@ -2,12 +2,13 @@
 /*
  * Copyright (C) 2022, Ideas on Board Oy
  *
- * capture_script.cpp - Capture session configuration script
+ * Capture session configuration script
  */
 
 #include "capture_script.h"
 
 #include <iostream>
+#include <memory>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -351,7 +352,10 @@ ControlValue CaptureScript::parseRectangles()
 	}
 
 	ControlValue controlValue;
-	controlValue.set(Span<const Rectangle>(rectangles));
+	if (rectangles.size() == 1)
+		controlValue.set(rectangles.at(0));
+	else
+		controlValue.set(Span<const Rectangle>(rectangles));
 
 	return controlValue;
 }
@@ -498,7 +502,7 @@ ControlValue CaptureScript::parseScalarControl(const ControlId *id,
 		break;
 	}
 	case ControlTypeString: {
-		value.set<std::string>(repr);
+		value.set<std::string_view>(repr);
 		break;
 	}
 	default:
@@ -518,45 +522,22 @@ ControlValue CaptureScript::parseArrayControl(const ControlId *id,
 	case ControlTypeNone:
 		break;
 	case ControlTypeBool: {
-		/*
-		 * This is unpleasant, but we cannot use an std::vector<> as its
-		 * boolean type overload does not allow to access the raw data,
-		 * as boolean values are stored in a bitmask for efficiency.
-		 *
-		 * As we need a contiguous memory region to wrap in a Span<>,
-		 * use an array instead but be strict about not overflowing it
-		 * by limiting the number of controls we can store.
-		 *
-		 * Be loud but do not fail, as the issue would present at
-		 * runtime and it's not fatal.
-		 */
-		static constexpr unsigned int kMaxNumBooleanControls = 1024;
-		std::array<bool, kMaxNumBooleanControls> values;
-		unsigned int idx = 0;
+		auto values = std::make_unique<bool[]>(repr.size());
 
-		for (const std::string &s : repr) {
-			bool val;
+		for (std::size_t i = 0; i < repr.size(); i++) {
+			const auto &s = repr[i];
 
 			if (s == "true") {
-				val = true;
+				values[i] = true;
 			} else if (s == "false") {
-				val = false;
+				values[i] = false;
 			} else {
 				unpackFailure(id, s);
 				return value;
 			}
-
-			if (idx == kMaxNumBooleanControls) {
-				std::cerr << "Cannot parse more than "
-					  << kMaxNumBooleanControls
-					  << " boolean controls" << std::endl;
-				break;
-			}
-
-			values[idx++] = val;
 		}
 
-		value = Span<bool>(values.data(), idx);
+		value = Span<bool>(values.get(), repr.size());
 		break;
 	}
 	case ControlTypeByte: {
@@ -595,10 +576,6 @@ ControlValue CaptureScript::parseArrayControl(const ControlId *id,
 			values.push_back(strtof(s.c_str(), NULL));
 
 		value = Span<const float>(values.data(), values.size());
-		break;
-	}
-	case ControlTypeString: {
-		value = Span<const std::string>(repr.data(), repr.size());
 		break;
 	}
 	default:

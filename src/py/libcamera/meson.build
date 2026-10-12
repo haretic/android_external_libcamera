@@ -1,21 +1,5 @@
 # SPDX-License-Identifier: CC0-1.0
 
-py3_dep = dependency('python3', required : get_option('pycamera'))
-
-if not py3_dep.found()
-    pycamera_enabled = false
-    subdir_done()
-endif
-
-pybind11_dep = dependency('pybind11', required : get_option('pycamera'))
-
-if not pybind11_dep.found()
-    pycamera_enabled = false
-    subdir_done()
-endif
-
-pycamera_enabled = true
-
 pycamera_sources = files([
     'py_camera_manager.cpp',
     'py_color_space.cpp',
@@ -36,6 +20,7 @@ pycamera_sources += custom_target('py_gen_controls',
                                   output : ['py_controls_generated.cpp'],
                                   command : [gen_py_controls, '--mode', 'controls', '-o', '@OUTPUT@',
                                              '-t', gen_py_controls_template, '@INPUT@'],
+                                  depend_files : [py_mod_controls],
                                   env : py_build_env)
 
 pycamera_sources += custom_target('py_gen_properties',
@@ -43,6 +28,7 @@ pycamera_sources += custom_target('py_gen_properties',
                                   output : ['py_properties_generated.cpp'],
                                   command : [gen_py_controls, '--mode', 'properties', '-o', '@OUTPUT@',
                                              '-t', gen_py_controls_template, '@INPUT@'],
+                                  depend_files : [py_mod_controls],
                                   env : py_build_env)
 
 # Generate formats
@@ -61,25 +47,44 @@ pycamera_sources += custom_target('py_gen_formats',
 
 pycamera_deps = [
     libcamera_private,
-    py3_dep,
+    py3.dependency(),
     pybind11_dep,
 ]
 
 pycamera_args = [
     '-fvisibility=hidden',
+    '-Wno-invalid-offsetof',
     '-Wno-shadow',
     '-DPYBIND11_USE_SMART_HOLDER_AS_DEFAULT',
 ]
 
-destdir = get_option('libdir') / ('python' + py3_dep.version()) / 'site-packages' / 'libcamera'
+if meson.is_cross_build()
+    # Meson doesn't correctly support cross-compilation through the python
+    # module. There's work in progress to fix this, based on PEP 739
+    # (https://github.com/mesonbuild/meson/pull/14657). While waiting for this
+    # to become available, work around the issue by using shared_module().
+    destdir = py3.get_install_dir(subdir : 'libcamera', pure : false)
 
-pycamera = shared_module('_libcamera',
-                         pycamera_sources,
-                         install : true,
-                         install_dir : destdir,
-                         name_prefix : '',
-                         dependencies : pycamera_deps,
-                         cpp_args : pycamera_args)
+    pycamera = shared_module('_libcamera',
+                             pycamera_sources,
+                             install : true,
+                             install_dir : destdir,
+                             install_tag : 'python-runtime',
+                             name_prefix : '',
+                             dependencies : pycamera_deps,
+                             cpp_args : pycamera_args)
+else
+    pycamera = py3.extension_module('_libcamera',
+                                    pycamera_sources,
+                                    install : true,
+                                    subdir : 'libcamera',
+                                    dependencies : pycamera_deps,
+                                    cpp_args : pycamera_args)
+endif
+
+py3.install_sources(['__init__.py'],
+                    subdir : 'libcamera',
+                    pure : false)
 
 # Create symlinks from the build dir to the source dir so that we can use the
 # Python module directly from the build dir.
@@ -91,8 +96,6 @@ run_command('ln', '-fsrT', files('__init__.py'),
 run_command('ln', '-fsrT', meson.current_source_dir() / 'utils',
             meson.current_build_dir() / 'utils',
             check : true)
-
-install_data(['__init__.py'], install_dir : destdir)
 
 # \todo Generate stubs when building. See https://peps.python.org/pep-0484/#stub-files
 # Note: Depends on pybind11-stubgen. To generate pylibcamera stubs:

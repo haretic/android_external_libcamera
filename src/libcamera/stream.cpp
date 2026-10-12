@@ -2,22 +2,22 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * stream.cpp - Video stream for a Camera
+ * Video stream for a Camera
  */
 
 #include <libcamera/stream.h>
 
 #include <algorithm>
 #include <array>
-#include <iomanip>
 #include <limits.h>
-#include <sstream>
-
-#include <libcamera/request.h>
+#include <ostream>
+#include <string>
+#include <vector>
 
 #include <libcamera/base/log.h>
 #include <libcamera/base/utils.h>
 
+#include <libcamera/request.h>
 
 /**
  * \file stream.h
@@ -108,8 +108,8 @@ std::vector<PixelFormat> StreamFormats::pixelformats() const
 {
 	std::vector<PixelFormat> formats;
 
-	for (auto const &it : formats_)
-		formats.push_back(it.first);
+	for (const auto &[format, sizes] : formats_)
+		formats.push_back(format);
 
 	return formats;
 }
@@ -194,7 +194,7 @@ std::vector<Size> StreamFormats::sizes(const PixelFormat &pixelformat) const
 	std::vector<Size> sizes;
 
 	/* Make sure pixel format exists. */
-	auto const &it = formats_.find(pixelformat);
+	const auto &it = formats_.find(pixelformat);
 	if (it == formats_.end())
 		return {};
 
@@ -243,7 +243,7 @@ std::vector<Size> StreamFormats::sizes(const PixelFormat &pixelformat) const
  */
 SizeRange StreamFormats::range(const PixelFormat &pixelformat) const
 {
-	auto const it = formats_.find(pixelformat);
+	const auto it = formats_.find(pixelformat);
 	if (it == formats_.end())
 		return {};
 
@@ -281,7 +281,7 @@ SizeRange StreamFormats::range(const PixelFormat &pixelformat) const
  */
 StreamConfiguration::StreamConfiguration()
 	: pixelFormat(0), stride(0), frameSize(0), bufferCount(0),
-	  role(StreamRole::Viewfinder), stream_(nullptr)
+	  stream_(nullptr)
 {
 }
 
@@ -290,7 +290,7 @@ StreamConfiguration::StreamConfiguration()
  */
 StreamConfiguration::StreamConfiguration(const StreamFormats &formats)
 	: pixelFormat(0), stride(0), frameSize(0), bufferCount(0),
-	  role(StreamRole::Viewfinder), stream_(nullptr), formats_(formats)
+	  stream_(nullptr), formats_(formats)
 {
 }
 
@@ -392,7 +392,24 @@ StreamConfiguration::StreamConfiguration(const StreamFormats &formats)
  */
 std::string StreamConfiguration::toString() const
 {
-	return size.toString() + "-" + pixelFormat.toString();
+	std::stringstream ss;
+	ss << *this;
+
+	return ss.str();
+}
+
+/**
+ * \brief Insert a text representation of a StreamConfiguration into an output
+ * stream
+ * \param[in] out The output stream
+ * \param[in] cfg The StreamConfiguration
+ * \return The output stream \a out
+ */
+std::ostream &operator<<(std::ostream &out, const StreamConfiguration &cfg)
+{
+	out << cfg.size << "-" << cfg.pixelFormat << "/"
+	    << ColorSpace::toString(cfg.colorSpace);
+	return out;
 }
 
 /**
@@ -416,9 +433,6 @@ std::string StreamConfiguration::toString() const
  * The stream is intended to capture video for the purpose of display on the
  * local screen. Trade-offs between quality and usage of system resources are
  * acceptable.
- * \var YuvSnapshot
- * The stream is intended to capture high-resolution, high-quality YUV images
- * with low frame rate.
  */
 
 /**
@@ -429,15 +443,14 @@ std::string StreamConfiguration::toString() const
  */
 std::ostream &operator<<(std::ostream &out, StreamRole role)
 {
-	static constexpr std::array<const char *, 5> names{
+	static constexpr std::array<const char *, 4> names{
 		"Raw",
 		"StillCapture",
 		"VideoRecording",
 		"Viewfinder",
-		"YuvSnapshot",
 	};
 
-	out << names[static_cast<std::underlying_type_t<StreamRole>>(role)];
+	out << names[utils::to_underlying(role)];
 	return out;
 }
 

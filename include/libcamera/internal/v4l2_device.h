@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * v4l2_device.h - Common base for V4L2 video devices and subdevices
+ * Common base for V4L2 video devices and subdevices
  */
 
 #pragma once
@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <stdint.h>
 #include <vector>
 
 #include <linux/videodev2.h>
@@ -23,6 +24,7 @@
 #include <libcamera/controls.h>
 
 #include "libcamera/internal/formats.h"
+#include "libcamera/internal/v4l2_request.h"
 
 namespace libcamera {
 
@@ -36,19 +38,15 @@ public:
 
 	const ControlInfoMap &controls() const { return controls_; }
 
-	ControlList getControls(const std::vector<uint32_t> &ids);
-	int setControls(ControlList *ctrls, int requestFd = -1);
-
-	int ioctl(unsigned long request, void *argp);
-
-	int setExtControl(struct v4l2_ext_control* ext_control, int request_fd = -1);
-	int getExtControl(struct v4l2_ext_control* ext_control);
+	ControlList getControls(Span<const uint32_t> ids, const V4L2Request *request = nullptr);
+	int setControls(ControlList *ctrls, const V4L2Request *request = nullptr);
 
 	const struct v4l2_query_ext_ctrl *controlInfo(uint32_t id) const;
 
 	const std::string &deviceNode() const { return deviceNode_; }
 	std::string devicePath() const;
 
+	bool supportsFrameStartEvent();
 	int setFrameStartEnabled(bool enable);
 	Signal<uint32_t> frameStart;
 
@@ -60,6 +58,8 @@ protected:
 
 	int open(unsigned int flags);
 	int setFd(UniqueFD fd);
+
+	int ioctl(unsigned long request, void *argp);
 
 	int fd() const { return fd_.get(); }
 
@@ -89,7 +89,7 @@ private:
 	std::string deviceNode_;
 	UniqueFD fd_;
 
-	EventNotifier *fdEventNotifier_;
+	std::unique_ptr<EventNotifier> fdEventNotifier_;
 	bool frameStartEnabled_;
 };
 

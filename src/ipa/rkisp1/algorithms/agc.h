@@ -2,16 +2,19 @@
 /*
  * Copyright (C) 2021-2022, Ideas On Board
  *
- * agc.h - RkISP1 AGC/AEC mean-based control algorithm
+ * RkISP1 AGC/AEC mean-based control algorithm
  */
 
 #pragma once
 
 #include <linux/rkisp1-config.h>
 
+#include <libcamera/base/span.h>
 #include <libcamera/base/utils.h>
 
 #include <libcamera/geometry.h>
+
+#include "libipa/agc_mean_luminance.h"
 
 #include "algorithm.h"
 
@@ -19,12 +22,13 @@ namespace libcamera {
 
 namespace ipa::rkisp1::algorithms {
 
-class Agc : public Algorithm
+class Agc : public Algorithm, public AgcMeanLuminance
 {
 public:
 	Agc();
 	~Agc() = default;
 
+	int init(IPAContext &context, const ValueNode &tuningData) override;
 	int configure(IPAContext &context, const IPACameraSensorInfo &configInfo) override;
 	void queueRequest(IPAContext &context,
 			  const uint32_t frame,
@@ -32,27 +36,28 @@ public:
 			  const ControlList &controls) override;
 	void prepare(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
-		     rkisp1_params_cfg *params) override;
+		     RkISP1Params *params) override;
 	void process(IPAContext &context, const uint32_t frame,
 		     IPAFrameContext &frameContext,
 		     const rkisp1_stat_buffer *stats,
 		     ControlList &metadata) override;
 
 private:
-	void computeExposure(IPAContext &Context, IPAFrameContext &frameContext,
-			     double yGain, double iqMeanGain);
-	utils::Duration filterExposure(utils::Duration exposureValue);
-	double estimateLuminance(const rkisp1_cif_isp_ae_stat *ae, double gain);
-	double measureBrightness(const rkisp1_cif_isp_hist_stat *hist) const;
+	int parseMeteringModes(IPAContext &context, const ValueNode &tuningData);
+	uint8_t computeHistogramPredivider(const Size &size,
+					   enum rkisp1_cif_isp_histogram_mode mode);
+
 	void fillMetadata(IPAContext &context, IPAFrameContext &frameContext,
 			  ControlList &metadata);
+	double estimateLuminance(double gain) const override;
+	void processFrameDuration(IPAContext &context,
+				  IPAFrameContext &frameContext,
+				  utils::Duration frameDuration);
 
-	uint64_t frameCount_;
+	Span<const uint8_t> expMeans_;
+	Span<const uint8_t> weights_;
 
-	uint32_t numCells_;
-	uint32_t numHistBins_;
-
-	utils::Duration filteredExposure_;
+	std::map<int32_t, std::vector<uint8_t>> meteringModes_;
 };
 
 } /* namespace ipa::rkisp1::algorithms */

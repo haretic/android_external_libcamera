@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * stream.h - Video stream for a Camera
+ * Video stream for a Camera
  */
 
 #pragma once
 
 #include <map>
-#include <memory>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -22,7 +21,6 @@ namespace libcamera {
 
 class Camera;
 class Stream;
-enum class StreamRole;
 
 class StreamFormats
 {
@@ -52,7 +50,6 @@ struct StreamConfiguration {
 
 	std::optional<ColorSpace> colorSpace;
 
-	StreamRole role;
 	Stream *stream() const { return stream_; }
 	void setStream(Stream *stream) { stream_ = stream; }
 	const StreamFormats &formats() const { return formats_; }
@@ -64,12 +61,13 @@ private:
 	StreamFormats formats_;
 };
 
+std::ostream &operator<<(std::ostream &out, const StreamConfiguration &cfg);
+
 enum class StreamRole {
 	Raw,
 	StillCapture,
 	VideoRecording,
 	Viewfinder,
-	YuvSnapshot,
 };
 
 std::ostream &operator<<(std::ostream &out, StreamRole role);

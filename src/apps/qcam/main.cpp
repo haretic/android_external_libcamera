@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * main.cpp - qcam - The libcamera GUI test application
+ * qcam - The libcamera GUI test application
  */
 
 #include <signal.h>
@@ -20,6 +20,8 @@
 #include "message_handler.h"
 
 using namespace libcamera;
+
+namespace {
 
 void signalHandler([[maybe_unused]] int signal)
 {
@@ -52,6 +54,8 @@ OptionsParser::Options parseOptions(int argc, char *argv[])
 	return options;
 }
 
+} /* namespace */
+
 int main(int argc, char **argv)
 {
 	QApplication app(argc, argv);
@@ -69,7 +73,7 @@ int main(int argc, char **argv)
 	sa.sa_handler = &signalHandler;
 	sigaction(SIGINT, &sa, nullptr);
 
-	CameraManager *cm = new libcamera::CameraManager();
+	std::unique_ptr<CameraManager> cm = std::make_unique<CameraManager>();
 
 	ret = cm->start();
 	if (ret) {
@@ -78,13 +82,12 @@ int main(int argc, char **argv)
 		return EXIT_FAILURE;
 	}
 
-	MainWindow *mainWindow = new MainWindow(cm, options);
+	MainWindow *mainWindow = new MainWindow(cm.get(), options);
 	mainWindow->show();
 	ret = app.exec();
 	delete mainWindow;
 
 	cm->stop();
-	delete cm;
 
 	return ret;
 }

@@ -2,12 +2,13 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * signal.cpp - Signal & slot implementation
+ * Signal & slot implementation
  */
 
 #include <libcamera/base/signal.h>
 
 #include <libcamera/base/mutex.h>
+#include <libcamera/base/object.h>
 
 /**
  * \file base/signal.h
@@ -48,7 +49,7 @@ void SignalBase::disconnect(std::function<bool(SlotList::iterator &)> match)
 {
 	MutexLocker locker(signalsLock);
 
-	for (auto iter = slots_.begin(); iter != slots_.end(); ) {
+	for (auto iter = slots_.begin(); iter != slots_.end();) {
 		if (match(iter)) {
 			Object *object = (*iter)->object();
 			if (object)
@@ -74,7 +75,7 @@ SignalBase::SlotList SignalBase::slots()
  *
  * Signals and slots are a language construct aimed at communication between
  * objects through the observer pattern without the need for boilerplate code.
- * See http://doc.qt.io/qt-5/signalsandslots.html for more information.
+ * See http://doc.qt.io/qt-6/signalsandslots.html for more information.
  *
  * Signals model events that can be observed from objects unrelated to the event
  * source. Slots are functions that are called in response to a signal. Signals

@@ -3,13 +3,13 @@
  * Copyright (C) 2022, Tomi Valkeinen <tomi.valkeinen@ideasonboard.com>
  */
 
-#include "py_helpers.h"
-
-#include <libcamera/libcamera.h>
-
 #include <pybind11/functional.h>
 #include <pybind11/stl.h>
 #include <pybind11/stl_bind.h>
+
+#include "py_helpers.h"
+
+#include <libcamera/libcamera.h>
 
 namespace py = pybind11;
 
@@ -34,6 +34,8 @@ static py::object valueOrTuple(const ControlValue &cv)
 py::object controlValueToPy(const ControlValue &cv)
 {
 	switch (cv.type()) {
+	case ControlTypeNone:
+		return py::none();
 	case ControlTypeBool:
 		return valueOrTuple<bool>(cv);
 	case ControlTypeByte:
@@ -45,15 +47,15 @@ py::object controlValueToPy(const ControlValue &cv)
 	case ControlTypeFloat:
 		return valueOrTuple<float>(cv);
 	case ControlTypeString:
-		return py::cast(cv.get<std::string>());
-	case ControlTypeRectangle:
-		return valueOrTuple<Rectangle>(cv);
+		return py::cast(cv.get<std::string_view>());
 	case ControlTypeSize: {
 		const Size *v = reinterpret_cast<const Size *>(cv.data().data());
 		return py::cast(v);
 	}
-	case ControlTypeNone:
-		return py::none();
+	case ControlTypeRectangle:
+		return valueOrTuple<Rectangle>(cv);
+	case ControlTypePoint:
+		return valueOrTuple<Point>(cv);
 	default:
 		throw std::runtime_error("Unsupported ControlValue type");
 	}
@@ -73,6 +75,8 @@ static ControlValue controlValueMaybeArray(const py::object &ob)
 ControlValue pyToControlValue(const py::object &ob, ControlType type)
 {
 	switch (type) {
+	case ControlTypeNone:
+		return ControlValue();
 	case ControlTypeBool:
 		return ControlValue(ob.cast<bool>());
 	case ControlTypeByte:
@@ -84,13 +88,13 @@ ControlValue pyToControlValue(const py::object &ob, ControlType type)
 	case ControlTypeFloat:
 		return controlValueMaybeArray<float>(ob);
 	case ControlTypeString:
-		return ControlValue(ob.cast<std::string>());
+		return ControlValue(ob.cast<std::string_view>());
 	case ControlTypeRectangle:
 		return controlValueMaybeArray<Rectangle>(ob);
 	case ControlTypeSize:
 		return ControlValue(ob.cast<Size>());
-	case ControlTypeNone:
-		return ControlValue();
+	case ControlTypePoint:
+		return controlValueMaybeArray<Point>(ob);
 	default:
 		throw std::runtime_error("Control type not implemented");
 	}

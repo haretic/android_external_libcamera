@@ -16,5 +16,5 @@ foreach mojom : ipa_mojoms
                           ],
                           env : py_build_env)
 
-    libcamera_sources += proxy
+    libcamera_internal_sources += proxy
 endforeach

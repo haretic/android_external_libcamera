@@ -1,4 +1,4 @@
-# Copyright 2013 The Chromium Authors. All rights reserved.
+# Copyright 2013 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
@@ -14,7 +14,9 @@ import jinja2
 
 
 def ApplyTemplate(mojo_generator, path_to_template, params, **kwargs):
-  loader = jinja2.ModuleLoader(mojo_generator.bytecode_path)
+  loader = jinja2.ModuleLoader(
+      os.path.join(mojo_generator.bytecode_path,
+                   "%s.zip" % mojo_generator.GetTemplatePrefix()))
   final_kwargs = dict(mojo_generator.GetJinjaParameters())
   final_kwargs.update(kwargs)
 
@@ -64,16 +66,17 @@ def UseJinjaForImportedTemplate(func):
   return wrapper
 
 
-def PrecompileTemplates(generator_modules, output_file, sample_precompile_template):
+def PrecompileTemplates(generator_modules, output_dir):
   for module in generator_modules.values():
     generator = module.Generator(None)
     jinja_env = jinja2.Environment(
         loader=jinja2.FileSystemLoader([
             os.path.join(
-                os.path.dirname(sample_precompile_template))
+                os.path.dirname(module.__file__), generator.GetTemplatePrefix())
         ]))
     jinja_env.filters.update(generator.GetFilters())
-    jinja_env.compile_templates(output_file,
+    jinja_env.compile_templates(os.path.join(
+        output_dir, "%s.zip" % generator.GetTemplatePrefix()),
                                 extensions=["tmpl"],
                                 zip="stored",
                                 ignore_errors=False)

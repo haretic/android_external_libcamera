@@ -5,6 +5,8 @@
 
 #pragma once
 
+#include <pybind11/pybind11.h>
+
 #include <libcamera/base/log.h>
 
 namespace libcamera {
@@ -12,3 +14,11 @@ namespace libcamera {
 LOG_DECLARE_CATEGORY(Python)
 
 }
+
+void init_py_color_space(pybind11::module &m);
+void init_py_controls_generated(pybind11::module &m);
+void init_py_enums(pybind11::module &m);
+void init_py_formats_generated(pybind11::module &m);
+void init_py_geometry(pybind11::module &m);
+void init_py_properties_generated(pybind11::module &m);
+void init_py_transform(pybind11::module &m);

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * exif.h - EXIF tag creator using libexif
+ * EXIF tag creator using libexif
  */
 
 #pragma once
@@ -79,6 +79,11 @@ public:
 	libcamera::Span<const uint8_t> data() const { return { exifData_, size_ }; }
 	[[nodiscard]] int generate();
 
+private:
+	ExifEntry *createEntry(ExifIfd ifd, ExifTag tag);
+	ExifEntry *createEntry(ExifIfd ifd, ExifTag tag, ExifFormat format,
+			       unsigned long components, unsigned int size);
+
 	void setByte(ExifIfd ifd, ExifTag tag, uint8_t item);
 	void setShort(ExifIfd ifd, ExifTag tag, uint16_t item);
 	void setLong(ExifIfd ifd, ExifTag tag, uint32_t item);
@@ -88,11 +93,6 @@ public:
 	void setRational(ExifIfd ifd, ExifTag tag, ExifRational item);
 	void setRational(ExifIfd ifd, ExifTag tag,
 			 libcamera::Span<const ExifRational> items);
-
-private:
-	ExifEntry *createEntry(ExifIfd ifd, ExifTag tag);
-	ExifEntry *createEntry(ExifIfd ifd, ExifTag tag, ExifFormat format,
-			       unsigned long components, unsigned int size);
 
 	std::tuple<int, int, int> degreesToDMS(double decimalDegrees);
 	void setGPSDMS(ExifIfd ifd, ExifTag tag, int deg, int min, int sec);

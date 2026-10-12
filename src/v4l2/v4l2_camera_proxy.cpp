@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * v4l2_camera_proxy.cpp - Proxy to V4L2 compatibility camera
+ * Proxy to V4L2 compatibility camera
  */
 
 #include "v4l2_camera_proxy.h"
 
 #include <algorithm>
-#include <array>
 #include <errno.h>
 #include <numeric>
 #include <set>
@@ -23,9 +22,11 @@
 #include <libcamera/base/utils.h>
 
 #include <libcamera/camera.h>
+#include <libcamera/control_ids.h>
+#include <libcamera/controls.h>
 #include <libcamera/formats.h>
 
-#include "libcamera/internal/formats.h"
+#include "libcamera/internal/v4l2_pixelformat.h"
 
 #include "v4l2_camera.h"
 #include "v4l2_camera_file.h"
@@ -34,6 +35,7 @@
 #define KERNEL_VERSION(a, b, c) (((a) << 16) + ((b) << 8) + (c))
 
 using namespace libcamera;
+using namespace std::literals::chrono_literals;
 
 LOG_DECLARE_CATEGORY(V4L2Compat)
 
@@ -193,6 +195,29 @@ void V4L2CameraProxy::setFmtFromConfig(const StreamConfiguration &streamConfig)
 	v4l2PixFormat_.xfer_func    = V4L2_XFER_FUNC_DEFAULT;
 
 	sizeimage_ = streamConfig.frameSize;
+
+	const ControlInfoMap &controls = vcam_->controlInfo();
+	const auto &it = controls.find(&controls::FrameDurationLimits);
+
+	if (it != controls.end()) {
+		Span<const int64_t, 2> duration = it->second.def().get<Span<const int64_t, 2>>();
+
+		v4l2TimePerFrame_.numerator = duration[0];
+		v4l2TimePerFrame_.denominator = 1000000;
+	} else {
+		/*
+		 * Default to 30fps if the camera doesn't expose the
+		 * FrameDurationLimits control.
+		 *
+		 * \todo Remove this once all pipeline handlers implement the
+		 * control
+		 */
+		LOG(V4L2Compat, Warning)
+			<< "Camera does not support FrameDurationLimits";
+
+		v4l2TimePerFrame_.numerator = 333333;
+		v4l2TimePerFrame_.denominator = 1000000;
+	}
 }
 
 void V4L2CameraProxy::querycap(std::shared_ptr<Camera> camera)
@@ -756,6 +781,55 @@ int V4L2CameraProxy::vidioc_streamoff(V4L2CameraFile *file, int *arg)
 	return ret;
 }
 
+int V4L2CameraProxy::vidioc_g_parm(V4L2CameraFile *file, struct v4l2_streamparm *arg)
+{
+	LOG(V4L2Compat, Debug)
+		<< "[" << file->description() << "] " << __func__ << "()";
+
+	if (!validateBufferType(arg->type))
+		return -EINVAL;
+
+	memset(&arg->parm, 0, sizeof(arg->parm));
+
+	arg->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+	arg->parm.capture.timeperframe = v4l2TimePerFrame_;
+
+	return 0;
+}
+
+int V4L2CameraProxy::vidioc_s_parm(V4L2CameraFile *file, struct v4l2_streamparm *arg)
+{
+	LOG(V4L2Compat, Debug)
+		<< "[" << file->description() << "] " << __func__ << "()";
+
+	if (!validateBufferType(arg->type))
+		return -EINVAL;
+
+	/*
+	 * Store the frame duration if it is valid, otherwise keep the current
+	 * value.
+	 *
+	 * \todo The provided value should be adjusted based on the camera
+	 * capabilities.
+	 */
+	if (arg->parm.capture.timeperframe.numerator &&
+	    arg->parm.capture.timeperframe.denominator)
+		v4l2TimePerFrame_ = arg->parm.capture.timeperframe;
+
+	memset(&arg->parm, 0, sizeof(arg->parm));
+
+	arg->parm.capture.capability = V4L2_CAP_TIMEPERFRAME;
+	arg->parm.capture.timeperframe = v4l2TimePerFrame_;
+
+	/* Apply the frame duration. */
+	utils::Duration frameDuration = 1.0s * v4l2TimePerFrame_.numerator
+				      / v4l2TimePerFrame_.denominator;
+	int64_t uDuration = frameDuration.get<std::micro>();
+	vcam_->controls().set(controls::FrameDurationLimits, { uDuration, uDuration });
+
+	return 0;
+}
+
 const std::set<unsigned long> V4L2CameraProxy::supportedIoctls_ = {
 	VIDIOC_QUERYCAP,
 	VIDIOC_ENUM_FRAMESIZES,
@@ -776,6 +850,8 @@ const std::set<unsigned long> V4L2CameraProxy::supportedIoctls_ = {
 	VIDIOC_EXPBUF,
 	VIDIOC_STREAMON,
 	VIDIOC_STREAMOFF,
+	VIDIOC_G_PARM,
+	VIDIOC_S_PARM,
 };
 
 int V4L2CameraProxy::ioctl(V4L2CameraFile *file, unsigned long longRequest, void *arg)
@@ -862,6 +938,12 @@ int V4L2CameraProxy::ioctl(V4L2CameraFile *file, unsigned long longRequest, void
 		break;
 	case VIDIOC_STREAMOFF:
 		ret = vidioc_streamoff(file, static_cast<int *>(arg));
+		break;
+	case VIDIOC_G_PARM:
+		ret = vidioc_g_parm(file, static_cast<struct v4l2_streamparm *>(arg));
+		break;
+	case VIDIOC_S_PARM:
+		ret = vidioc_s_parm(file, static_cast<struct v4l2_streamparm *>(arg));
 		break;
 	default:
 		ret = -ENOTTY;

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * generic_camera_buffer.cpp - Allocate FrameBuffer using gralloc API
+ * Allocate FrameBuffer using gralloc API
  */
 
 #include <dlfcn.h>
@@ -35,7 +35,7 @@ class GenericFrameBufferData : public FrameBuffer::Private
 public:
 	GenericFrameBufferData(struct alloc_device_t *allocDevice,
 			       buffer_handle_t handle,
-			       const std::vector<FrameBuffer::Plane> &planes)
+			       Span<const FrameBuffer::Plane> planes)
 		: FrameBuffer::Private(planes), allocDevice_(allocDevice),
 		  handle_(handle)
 	{

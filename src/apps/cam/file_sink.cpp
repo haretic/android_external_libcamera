@@ -2,9 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * file_sink.cpp - File Sink
+ * File Sink
  */
 
+#include "file_sink.h"
+
+#include <array>
 #include <assert.h>
 #include <fcntl.h>
 #include <iomanip>
@@ -12,29 +15,64 @@
 #include <sstream>
 #include <string.h>
 #include <unistd.h>
+#include <utility>
 
 #include <libcamera/camera.h>
 
 #include "../common/dng_writer.h"
 #include "../common/image.h"
-
-#include "file_sink.h"
+#include "../common/ppm_writer.h"
 
 using namespace libcamera;
 
 FileSink::FileSink([[maybe_unused]] const libcamera::Camera *camera,
-		   const std::map<const libcamera::Stream *, std::string> &streamNames,
-		   const std::string &pattern)
+		   const std::map<const libcamera::Stream *, std::string> &streamNames)
 	:
 #ifdef HAVE_TIFF
 	  camera_(camera),
 #endif
-	  streamNames_(streamNames), pattern_(pattern)
+	  pattern_(kDefaultFilePattern), fileType_(FileType::Binary),
+	  streamNames_(streamNames)
 {
 }
 
 FileSink::~FileSink()
 {
+}
+
+int FileSink::setFilePattern(const std::string &pattern)
+{
+	static const std::array<std::pair<std::string, FileType>, 2> types{{
+		{ ".dng", FileType::Dng },
+		{ ".ppm", FileType::Ppm },
+	}};
+
+	pattern_ = pattern;
+
+	if (pattern_.empty() || pattern_.back() == '/')
+		pattern_ += kDefaultFilePattern;
+
+	fileType_ = FileType::Binary;
+
+	for (const auto &type : types) {
+		if (pattern_.size() < type.first.size())
+			continue;
+
+		if (pattern_.find(type.first, pattern_.size() - type.first.size()) !=
+		    std::string::npos) {
+			fileType_ = type.second;
+			break;
+		}
+	}
+
+#ifndef HAVE_TIFF
+	if (fileType_ == FileType::Dng) {
+		std::cerr << "DNG support not available" << std::endl;
+		return -EINVAL;
+	}
+#endif /* HAVE_TIFF */
+
+	return 0;
 }
 
 int FileSink::configure(const libcamera::CameraConfiguration &config)
@@ -66,19 +104,9 @@ bool FileSink::processRequest(Request *request)
 void FileSink::writeBuffer(const Stream *stream, FrameBuffer *buffer,
 			   [[maybe_unused]] const ControlList &metadata)
 {
-	std::string filename;
+	std::string filename = pattern_;
 	size_t pos;
 	int fd, ret = 0;
-
-	if (!pattern_.empty())
-		filename = pattern_;
-
-#ifdef HAVE_TIFF
-	bool dng = filename.find(".dng", filename.size() - 4) != std::string::npos;
-#endif /* HAVE_TIFF */
-
-	if (filename.empty() || filename.back() == '/')
-		filename += "frame-#.bin";
 
 	pos = filename.find_first_of('#');
 	if (pos != std::string::npos) {
@@ -91,7 +119,7 @@ void FileSink::writeBuffer(const Stream *stream, FrameBuffer *buffer,
 	Image *image = mappedBuffers_[buffer].get();
 
 #ifdef HAVE_TIFF
-	if (dng) {
+	if (fileType_ == FileType::Dng) {
 		ret = DNGWriter::write(filename.c_str(), camera_,
 				       stream->configuration(), metadata,
 				       buffer, image->data(0).data());
@@ -102,6 +130,15 @@ void FileSink::writeBuffer(const Stream *stream, FrameBuffer *buffer,
 		return;
 	}
 #endif /* HAVE_TIFF */
+	if (fileType_ == FileType::Ppm) {
+		ret = PPMWriter::write(filename.c_str(), stream->configuration(),
+				       image->data(0));
+		if (ret < 0)
+			std::cerr << "failed to write PPM file `" << filename
+				  << "'" << std::endl;
+
+		return;
+	}
 
 	fd = open(filename.c_str(), O_CREAT | O_WRONLY |
 		  (pos == std::string::npos ? O_APPEND : O_TRUNC),

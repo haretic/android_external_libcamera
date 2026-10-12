@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * camera_hal_manager.h - libcamera Android Camera Manager
+ * libcamera Android Camera Manager
  */
 
 #pragma once
@@ -47,8 +47,6 @@ private:
 	static constexpr unsigned int firstExternalCameraId_ = 1000;
 
 	CameraHalManager();
-
-	static int32_t cameraLocation(const libcamera::Camera *cam);
 
 	void cameraAdded(std::shared_ptr<libcamera::Camera> cam);
 	void cameraRemoved(std::shared_ptr<libcamera::Camera> cam);

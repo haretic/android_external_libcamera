@@ -2,10 +2,12 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * rkisp1path.cpp - Rockchip ISP1 path helper
+ * Rockchip ISP1 path helper
  */
 
 #include "rkisp1_path.h"
+
+#include <array>
 
 #include <linux/media-bus-format.h>
 
@@ -62,16 +64,16 @@ RkISP1Path::RkISP1Path(const char *name, const Span<const PixelFormat> &formats,
 {
 }
 
-bool RkISP1Path::init(MediaDevice *media)
+bool RkISP1Path::init(std::shared_ptr<MediaDevice> media)
 {
 	std::string resizer = std::string("rkisp1_resizer_") + name_ + "path";
 	std::string video = std::string("rkisp1_") + name_ + "path";
 
-	resizer_ = V4L2Subdevice::fromEntityName(media, resizer);
+	resizer_ = V4L2Subdevice::fromEntityName(media.get(), resizer);
 	if (resizer_->open() < 0)
 		return false;
 
-	video_ = V4L2VideoDevice::fromEntityName(media, video);
+	video_ = V4L2VideoDevice::fromEntityName(media.get(), video);
 	if (video_->open() < 0)
 		return false;
 
@@ -126,12 +128,50 @@ void RkISP1Path::populateFormats()
 	}
 }
 
+/**
+ * \brief Filter the sensor resolutions that can be supported
+ * \param[in] sensor The camera sensor
+ *
+ * This function retrieves all the sizes supported by the sensor and
+ * filters all the resolutions that can be supported on the pipeline.
+ * It is possible that the sensor's maximum output resolution is higher
+ * than the ISP maximum input. In that case, this function filters out all
+ * the resolution incapable of being supported and returns the maximum
+ * sensor resolution that can be supported by the pipeline.
+ *
+ * \return Maximum sensor size supported on the pipeline
+ */
+Size RkISP1Path::filterSensorResolution(const CameraSensor *sensor)
+{
+	auto iter = sensorSizesMap_.find(sensor);
+	if (iter != sensorSizesMap_.end())
+		return iter->second.back();
+
+	std::vector<Size> &sizes = sensorSizesMap_[sensor];
+	for (unsigned int code : sensor->mbusCodes()) {
+		for (const Size &size : sensor->sizes(code)) {
+			if (size.width > maxResolution_.width ||
+			    size.height > maxResolution_.height)
+				continue;
+
+			sizes.push_back(size);
+		}
+	}
+
+	/* Sort in increasing order and remove duplicates. */
+	std::sort(sizes.begin(), sizes.end());
+	auto last = std::unique(sizes.begin(), sizes.end());
+	sizes.erase(last, sizes.end());
+
+	return sizes.back();
+}
+
 StreamConfiguration
 RkISP1Path::generateConfiguration(const CameraSensor *sensor, const Size &size,
 				  StreamRole role)
 {
 	const std::vector<unsigned int> &mbusCodes = sensor->mbusCodes();
-	const Size &resolution = sensor->resolution();
+	Size resolution = filterSensorResolution(sensor);
 
 	/* Min and max resolutions to populate the available stream formats. */
 	Size maxResolution = maxResolution_.boundedToAspectRatio(resolution)
@@ -211,16 +251,17 @@ RkISP1Path::generateConfiguration(const CameraSensor *sensor, const Size &size,
 	StreamConfiguration cfg(formats);
 	cfg.pixelFormat = format;
 	cfg.size = streamSize;
-	cfg.bufferCount = RKISP1_BUFFER_COUNT;
 
 	return cfg;
 }
 
-CameraConfiguration::Status RkISP1Path::validate(const CameraSensor *sensor,
-						 StreamConfiguration *cfg)
+CameraConfiguration::Status
+RkISP1Path::validate(const CameraSensor *sensor,
+		     const std::optional<SensorConfiguration> &sensorConfig,
+		     StreamConfiguration *cfg)
 {
 	const std::vector<unsigned int> &mbusCodes = sensor->mbusCodes();
-	const Size &resolution = sensor->resolution();
+	Size resolution = filterSensorResolution(sensor);
 
 	const StreamConfiguration reqCfg = *cfg;
 	CameraConfiguration::Status status = CameraConfiguration::Valid;
@@ -247,9 +288,14 @@ CameraConfiguration::Status RkISP1Path::validate(const CameraSensor *sensor,
 				continue;
 
 			/*
-			 * Store the raw format with the highest bits per pixel
-			 * for later usage.
+			 * If the bits per pixel is supplied from the sensor
+			 * configuration, choose a raw format that complies with
+			 * it. Otherwise, store the raw format with the highest
+			 * bits per pixel for later usage.
 			 */
+			if (sensorConfig && info.bitsPerPixel != sensorConfig->bitDepth)
+				continue;
+
 			if (info.bitsPerPixel > rawBitsPerPixel) {
 				rawBitsPerPixel = info.bitsPerPixel;
 				rawFormat = format;
@@ -261,6 +307,9 @@ CameraConfiguration::Status RkISP1Path::validate(const CameraSensor *sensor,
 			break;
 		}
 	}
+
+	if (sensorConfig && !rawFormat.isValid())
+		return CameraConfiguration::Invalid;
 
 	bool isRaw = PixelFormatInfo::info(cfg->pixelFormat).colourEncoding ==
 		     PixelFormatInfo::ColourEncodingRAW;
@@ -281,14 +330,48 @@ CameraConfiguration::Status RkISP1Path::validate(const CameraSensor *sensor,
 	if (isRaw) {
 		/*
 		 * Use the sensor output size closest to the requested stream
-		 * size.
+		 * size while ensuring the output size doesn't exceed ISP limits.
+		 *
+		 * As 'resolution' is the largest sensor resolution
+		 * supported by the ISP, CameraSensor::getFormat() will never
+		 * return a V4L2SubdeviceFormat with a larger size.
 		 */
 		uint32_t mbusCode = formatToMediaBus.at(cfg->pixelFormat);
+		cfg->size.boundTo(resolution);
+
+		Size rawSize = sensorConfig ? sensorConfig->outputSize
+					    : cfg->size;
+
 		V4L2SubdeviceFormat sensorFormat =
-			sensor->getFormat({ mbusCode }, cfg->size);
+			sensor->getFormat(std::array{ mbusCode }, rawSize);
+
+		if (sensorConfig &&
+		    sensorConfig->outputSize != sensorFormat.size)
+			return CameraConfiguration::Invalid;
 
 		minResolution = sensorFormat.size;
 		maxResolution = sensorFormat.size;
+	} else if (sensorConfig) {
+		/*
+		 * We have already ensured 'rawFormat' has the matching bit
+		 * depth with sensorConfig.bitDepth hence, only validate the
+		 * sensorConfig's output size here.
+		 */
+		Size sensorSize = sensorConfig->outputSize;
+
+		if (sensorSize > resolution)
+			return CameraConfiguration::Invalid;
+
+		uint32_t mbusCode = formatToMediaBus.at(rawFormat);
+		V4L2SubdeviceFormat sensorFormat =
+			sensor->getFormat(std::array{ mbusCode }, sensorSize);
+
+		if (sensorFormat.size != sensorSize)
+			return CameraConfiguration::Invalid;
+
+		minResolution = minResolution_.expandedToAspectRatio(sensorSize);
+		maxResolution = maxResolution_.boundedTo(sensorSize)
+					      .boundedToAspectRatio(sensorSize);
 	} else {
 		/*
 		 * Adjust the size based on the sensor resolution and absolute
@@ -301,7 +384,6 @@ CameraConfiguration::Status RkISP1Path::validate(const CameraSensor *sensor,
 
 	cfg->size.boundTo(maxResolution);
 	cfg->size.expandTo(minResolution);
-	cfg->bufferCount = RKISP1_BUFFER_COUNT;
 
 	V4L2DeviceFormat format;
 	format.fourcc = video_->toV4L2PixelFormat(cfg->pixelFormat);
@@ -338,11 +420,14 @@ int RkISP1Path::configure(const StreamConfiguration &config,
 	/*
 	 * Crop on the resizer input to maintain FOV before downscaling.
 	 *
-	 * \todo The alignment to a multiple of 2 pixels is required but may
-	 * change the aspect ratio very slightly. A more advanced algorithm to
-	 * compute the resizer input crop rectangle is needed, and it should
-	 * also take into account the need to crop away the edge pixels affected
-	 * by the ISP processing blocks.
+	 * Note that this does not apply to devices without DUAL_CROP support
+	 * (like imx8mp) , where the cropping needs to be done on the
+	 * ImageStabilizer block on the ISP source pad and therefore is
+	 * configured before this stage. For simplicity we still set the crop.
+	 * This gets ignored by the kernel driver because the hardware is
+	 * missing the capability.
+	 *
+	 * Alignment to a multiple of 2 pixels is required by the resizer.
 	 */
 	Size ispCrop = inputFormat.size.boundedToAspectRatio(config.size)
 				       .alignedUpTo(2, 2);
@@ -365,7 +450,7 @@ int RkISP1Path::configure(const StreamConfiguration &config,
 	 * The configuration has been validated, the pixel format is guaranteed
 	 * to be supported and thus found in formatToMediaBus.
 	 */
-	ispFormat.mbus_code = formatToMediaBus.at(config.pixelFormat);
+	ispFormat.code = formatToMediaBus.at(config.pixelFormat);
 
 	ret = resizer_->setFormat(1, &ispFormat);
 	if (ret < 0)
@@ -395,15 +480,14 @@ int RkISP1Path::configure(const StreamConfiguration &config,
 	return 0;
 }
 
-int RkISP1Path::start()
+int RkISP1Path::start(unsigned int bufferCount)
 {
 	int ret;
 
 	if (running_)
 		return -EBUSY;
 
-	/* \todo Make buffer count user configurable. */
-	ret = video_->importBuffers(RKISP1_BUFFER_COUNT);
+	ret = video_->importBuffers(bufferCount);
 	if (ret)
 		return ret;
 
@@ -435,8 +519,8 @@ void RkISP1Path::stop()
 }
 
 /*
- * \todo Remove the hardcoded resolutions and formats once all users will have
- * migrated to a recent enough kernel.
+ * \todo Remove the hardcoded resolutions and formats once kernels older than
+ * v6.4 will stop receiving LTS support (scheduled for December 2027 for v6.1).
  */
 namespace {
 constexpr Size RKISP1_RSZ_MP_SRC_MIN{ 32, 16 };

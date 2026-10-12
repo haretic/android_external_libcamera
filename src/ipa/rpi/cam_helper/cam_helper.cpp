@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Raspberry Pi Ltd
  *
- * cam_helper.cpp - helper information for different sensors
+ * helper information for different sensors
  */
 
 #include <linux/videodev2.h>
@@ -156,17 +156,9 @@ void CamHelper::setCameraMode(const CameraMode &mode)
 	}
 }
 
-void CamHelper::getDelays(int &exposureDelay, int &gainDelay,
-			  int &vblankDelay, int &hblankDelay) const
+void CamHelper::setHwConfig(const Controller::HardwareConfig &hwConfig)
 {
-	/*
-	 * These values are correct for many sensors. Other sensors will
-	 * need to over-ride this function.
-	 */
-	exposureDelay = 2;
-	gainDelay = 1;
-	vblankDelay = 2;
-	hblankDelay = 2;
+	hwConfig_ = hwConfig;
 }
 
 bool CamHelper::sensorEmbeddedDataPresent() const
@@ -212,6 +204,12 @@ unsigned int CamHelper::mistrustFramesModeSwitch() const
 	return 0;
 }
 
+unsigned int CamHelper::getMinDebinFactor() const
+{
+	/* Most cameras require debinning from 2x2 binning upwards. */
+	return 2;
+}
+
 void CamHelper::parseEmbeddedData(Span<const uint8_t> buffer,
 				  Metadata &metadata)
 {
@@ -241,7 +239,7 @@ void CamHelper::parseEmbeddedData(Span<const uint8_t> buffer,
 		return;
 	}
 
-	deviceStatus.shutterSpeed = parsedDeviceStatus.shutterSpeed;
+	deviceStatus.exposureTime = parsedDeviceStatus.exposureTime;
 	deviceStatus.analogueGain = parsedDeviceStatus.analogueGain;
 	deviceStatus.frameLength = parsedDeviceStatus.frameLength;
 	deviceStatus.lineLength = parsedDeviceStatus.lineLength;

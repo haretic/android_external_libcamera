@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * formats.h - libcamera image formats
+ * libcamera image formats
  */
 
 #pragma once
 
 #include <array>
-#include <map>
 #include <vector>
 
 #include <libcamera/geometry.h>
@@ -41,7 +40,7 @@ public:
 	unsigned int stride(unsigned int width, unsigned int plane,
 			    unsigned int align = 1) const;
 	unsigned int planeSize(const Size &size, unsigned int plane,
-			       unsigned int align = 1, unsigned scanAlign = 1) const;
+			       unsigned int align = 1) const;
 	unsigned int planeSize(unsigned int height, unsigned int plane,
 			       unsigned int stride) const;
 	unsigned int frameSize(const Size &size, unsigned int align = 1) const;

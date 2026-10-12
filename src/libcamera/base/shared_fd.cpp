@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * shared_fd.cpp - File descriptor wrapper with shared ownership
+ * File descriptor wrapper with shared ownership
  */
 
 #include <libcamera/base/shared_fd.h>
@@ -284,8 +284,11 @@ SharedFD::Descriptor::Descriptor(int fd, bool duplicate)
 
 SharedFD::Descriptor::~Descriptor()
 {
-	if (fd_ != -1)
-		close(fd_);
+	if (fd_ >= 0 && close(fd_) < 0) {
+		int ret = -errno;
+		LOG(SharedFD, Error) << "Failed to close file descriptor "
+				     << fd_ << ": " << strerror(-ret);
+	}
 }
 
 } /* namespace libcamera */

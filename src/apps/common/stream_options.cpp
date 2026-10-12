@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2020, Raspberry Pi Ltd
  *
- * stream_options.cpp - Helper to parse options for streams
+ * Helper to parse options for streams
  */
 #include "stream_options.h"
 
@@ -42,14 +42,13 @@ KeyValueParser::Options StreamKeyValueParser::parse(const char *arguments)
 
 std::vector<StreamRole> StreamKeyValueParser::roles(const OptionValue &values)
 {
-	/* If no configuration values to examine default to viewfinder. */
 	if (values.empty())
-		return { StreamRole::Viewfinder };
+		return {};
 
 	const std::vector<OptionValue> &streamParameters = values.toArray();
 
 	std::vector<StreamRole> roles;
-	for (auto const &value : streamParameters) {
+	for (const auto &value : streamParameters) {
 		/* If a role is invalid default it to viewfinder. */
 		roles.push_back(parseRole(value.toKeyValues()).value_or(StreamRole::Viewfinder));
 	}
@@ -82,7 +81,7 @@ int StreamKeyValueParser::updateConfiguration(CameraConfiguration *config,
 	}
 
 	unsigned int i = 0;
-	for (auto const &value : streamParameters) {
+	for (const auto &value : streamParameters) {
 		KeyValueParser::Options opts = value.toKeyValues();
 		StreamConfiguration &cfg = config->at(i++);
 

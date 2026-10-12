@@ -2,13 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * pixel_format.h - libcamera Pixel Format
+ * libcamera Pixel Format
  */
 
 #pragma once
 
 #include <ostream>
-#include <set>
 #include <stdint.h>
 #include <string>
 

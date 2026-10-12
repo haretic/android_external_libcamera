@@ -3,10 +3,16 @@
 conf_files = files([
     'imx219.json',
     'imx219_noir.json',
+    'imx283.json',
     'imx290.json',
     'imx296.json',
     'imx296_mono.json',
+    'imx327.json',
+    'imx335.json',
     'imx378.json',
+    'imx415.json',
+    'imx415_b0569.json',
+    'imx462.json',
     'imx477.json',
     'imx477_noir.json',
     'imx477_scientific.json',
@@ -17,10 +23,17 @@ conf_files = files([
     'imx708_wide_noir.json',
     'ov5647.json',
     'ov5647_noir.json',
+    'ov64a40.json',
+    'ov7251_mono.json',
     'ov9281_mono.json',
     'se327m12.json',
     'uncalibrated.json',
+    'vd55g1.json',
+    'vd55g1_mono.json',
+    'vd56g3.json',
+    'vd56g3_mono.json',
 ])
 
 install_data(conf_files,
-             install_dir : ipa_data_dir / 'rpi' / 'vc4')
+             install_dir : ipa_data_dir / 'rpi' / 'vc4',
+             install_tag : 'runtime')

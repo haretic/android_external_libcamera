@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * camera.h - Camera private data
+ * Camera private data
  */
 
 #pragma once
@@ -10,7 +10,9 @@
 #include <atomic>
 #include <list>
 #include <memory>
+#include <queue>
 #include <set>
+#include <stdint.h>
 #include <string>
 
 #include <libcamera/base/class.h>
@@ -32,21 +34,16 @@ public:
 	~Private();
 
 	PipelineHandler *pipe() { return pipe_.get(); }
-
-	void setRequestCompletionMode(RequestCompletionMode mode);
-	RequestCompletionMode requestCompletionMode() const;
-	void notifyDisconnection();
+	const PipelineHandler *pipe() const { return pipe_.get(); }
 
 	std::list<Request *> queuedRequests_;
+	std::queue<Request *> waitingRequests_;
 	ControlInfoMap controlInfo_;
 	ControlList properties_;
 
 	uint32_t requestSequence_;
 
 	const CameraControlValidator *validator() const { return validator_.get(); }
-
-protected:
-	bool isAcquired() const;
 
 private:
 	enum State {
@@ -57,6 +54,7 @@ private:
 		CameraRunning,
 	};
 
+	bool isAcquired() const;
 	bool isRunning() const;
 	int isAccessAllowed(State state, bool allowDisconnected = false,
 			    const char *from = __builtin_FUNCTION()) const;
@@ -74,7 +72,6 @@ private:
 
 	bool disconnected_;
 	std::atomic<State> state_;
-	RequestCompletionMode requestCompletionMode_;
 
 	std::unique_ptr<CameraControlValidator> validator_;
 };

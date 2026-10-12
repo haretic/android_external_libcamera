@@ -2,14 +2,12 @@
 /*
  * Copyright (C) 2019, Google Inc.
  *
- * geometry.h - Geometry-related classes
+ * Geometry-related classes
  */
 
 #pragma once
 
 #include <algorithm>
-#include <cassert>
-#include <cstdlib>
 #include <ostream>
 #include <string>
 
@@ -33,7 +31,7 @@ public:
 	int x;
 	int y;
 
-	const std::string toString() const;
+	std::string toString() const;
 
 	constexpr Point operator-() const
 	{
@@ -66,7 +64,7 @@ public:
 	unsigned int height;
 
 	bool isNull() const { return !width && !height; }
-	const std::string toString() const;
+	std::string toString() const;
 
 	Size &alignDownTo(unsigned int hAlignment, unsigned int vAlignment)
 	{
@@ -107,6 +105,12 @@ public:
 	{
 		width = width > margins.width ? width - margins.width : 0;
 		height = height > margins.height ? height - margins.height : 0;
+		return *this;
+	}
+
+	Size &transpose()
+	{
+		std::swap(width, height);
 		return *this;
 	}
 
@@ -265,9 +269,9 @@ public:
 	constexpr Rectangle(const Point &point1, const Point &point2)
 		: Rectangle(std::min(point1.x, point2.x), std::min(point1.y, point2.y),
 			    static_cast<unsigned int>(std::max(point1.x, point2.x)) -
-				    static_cast<unsigned int>(std::min(point1.x, point2.x)),
+			    static_cast<unsigned int>(std::min(point1.x, point2.x)),
 			    static_cast<unsigned int>(std::max(point1.y, point2.y)) -
-				    static_cast<unsigned int>(std::min(point1.y, point2.y)))
+			    static_cast<unsigned int>(std::min(point1.y, point2.y)))
 	{
 	}
 
@@ -277,7 +281,7 @@ public:
 	unsigned int height;
 
 	bool isNull() const { return !width && !height; }
-	const std::string toString() const;
+	std::string toString() const;
 
 	Point center() const;
 
@@ -299,6 +303,9 @@ public:
 	[[nodiscard]] Rectangle scaledBy(const Size &numerator,
 					 const Size &denominator) const;
 	[[nodiscard]] Rectangle translatedBy(const Point &point) const;
+
+	Rectangle transformedBetween(const Rectangle &source,
+				     const Rectangle &target) const;
 };
 
 bool operator==(const Rectangle &lhs, const Rectangle &rhs);

@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * mutex.h - Mutex classes with clang thread safety annotation
+ * Mutex classes with clang thread safety annotation
  */
 
 #pragma once
@@ -23,10 +23,6 @@ namespace libcamera {
 class LIBCAMERA_TSA_CAPABILITY("mutex") Mutex final
 {
 public:
-	constexpr Mutex()
-	{
-	}
-
 	void lock() LIBCAMERA_TSA_ACQUIRE()
 	{
 		mutex_.lock();
@@ -84,10 +80,6 @@ private:
 class ConditionVariable final
 {
 public:
-	ConditionVariable()
-	{
-	}
-
 	void notify_one() noexcept
 	{
 		cv_.notify_one();

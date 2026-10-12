@@ -2,14 +2,13 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * thumbnailer.h - Simple image thumbnailer
+ * Simple image thumbnailer
  */
 
 #pragma once
 
 #include <libcamera/framebuffer.h>
 #include <libcamera/geometry.h>
-#include <libcamera/stream.h>
 
 #include "libcamera/internal/formats.h"
 
@@ -18,7 +17,7 @@ class Thumbnailer
 public:
 	Thumbnailer();
 
-	void configure(const libcamera::StreamConfiguration &cfg,
+	void configure(const libcamera::Size &sourceSize,
 		       libcamera::PixelFormat pixelFormat);
 	void createThumbnail(const libcamera::FrameBuffer &source,
 			     const libcamera::Size &targetSize,
@@ -28,7 +27,6 @@ public:
 private:
 	libcamera::PixelFormat pixelFormat_;
 	libcamera::Size sourceSize_;
-	uint32_t stride_;
 
 	bool valid_;
 };

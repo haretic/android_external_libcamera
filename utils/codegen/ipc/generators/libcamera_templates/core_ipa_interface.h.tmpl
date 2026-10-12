@@ -7,7 +7,7 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * core_ipa_interface.h - libcamera core definitions for Image Processing Algorithms
+ * libcamera core definitions for Image Processing Algorithms
  *
  * This file is auto-generated. Do not edit.
  */
@@ -15,7 +15,14 @@
 #pragma once
 
 {% if has_map %}#include <map>{% endif %}
+{% if has_string %}#include <string>{% endif %}
+#include <type_traits>
+#include <utility>
 {% if has_array %}#include <vector>{% endif %}
+
+#include <libcamera/controls.h>
+#include <libcamera/framebuffer.h>
+#include <libcamera/geometry.h>
 
 #include <libcamera/ipa/ipa_interface.h>
 

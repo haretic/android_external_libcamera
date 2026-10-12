@@ -4,7 +4,7 @@
 #
 # Author: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
 #
-# gen-controls.py - Generate control definitions from YAML
+# Generate control definitions from YAML
 
 import argparse
 import jinja2
@@ -44,25 +44,25 @@ def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', '-m', type=str, required=True, choices=['controls', 'properties'],
                         help='Mode of operation')
-    parser.add_argument('--output', '-o', metavar='file', type=str,
+    parser.add_argument('--output', '-o', metavar='file', default=sys.stdout,
+                        type=argparse.FileType('w', encoding='utf-8'),
                         help='Output file name. Defaults to standard output if not specified.')
-    parser.add_argument('--ranges', '-r', type=str, required=True,
+    parser.add_argument('--ranges', '-r', required=True, type=argparse.FileType('rb'),
                         help='Control id range reservation file.')
-    parser.add_argument('--template', '-t', dest='template', type=str, required=True,
+    parser.add_argument('--template', '-t', dest='template', required=True,
+                        type=argparse.FileType('r', encoding='utf-8'),
                         help='Template file name.')
-    parser.add_argument('input', type=str, nargs='+',
+    parser.add_argument('input', nargs='+',
+                        type=argparse.FileType('rb'),
                         help='Input file name.')
 
     args = parser.parse_args(argv[1:])
 
-    ranges = {}
-    with open(args.ranges, 'rb') as f:
-        data = open(args.ranges, 'rb').read()
-        ranges = yaml.safe_load(data)['ranges']
+    ranges = yaml.safe_load(args.ranges)['ranges']
 
     controls = {}
     for input in args.input:
-        data = yaml.safe_load(open(input, 'rb').read())
+        data = yaml.safe_load(input)
 
         vendor = data['vendor']
         if vendor not in ranges.keys():
@@ -71,7 +71,7 @@ def main(argv):
         ctrls = controls.setdefault(vendor, [])
 
         for i, ctrl in enumerate(data['controls']):
-            ctrl = Control(*ctrl.popitem(), vendor)
+            ctrl = Control(*ctrl.popitem(), vendor, args.mode)
             ctrls.append(extend_control(ctrl, i, ranges))
 
     # Sort the vendors by range numerical value
@@ -92,15 +92,10 @@ def main(argv):
     env = jinja2.Environment()
     env.filters['format_description'] = format_description
     env.filters['snake_case'] = snake_case
-    template = env.from_string(open(args.template, 'r', encoding='utf-8').read())
+    template = env.from_string(args.template.read())
     string = template.render(data)
 
-    if args.output:
-        output = open(args.output, 'w', encoding='utf-8')
-        output.write(string)
-        output.close()
-    else:
-        sys.stdout.write(string)
+    args.output.write(string)
 
     return 0
 

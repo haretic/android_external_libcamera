@@ -2,17 +2,18 @@
 /*
  * Copyright (C) 2020, Google Inc.
  *
- * frames.cpp - Intel IPU3 Frames helper
+ * Intel IPU3 Frames helper
  */
 
 #include "frames.h"
+
+#include <libcamera/base/log.h>
 
 #include <libcamera/framebuffer.h>
 #include <libcamera/request.h>
 
 #include "libcamera/internal/framebuffer.h"
 #include "libcamera/internal/pipeline_handler.h"
-#include "libcamera/internal/v4l2_videodevice.h"
 
 namespace libcamera {
 
@@ -57,26 +58,23 @@ IPU3Frames::Info *IPU3Frames::create(Request *request)
 	FrameBuffer *paramBuffer = availableParamBuffers_.front();
 	FrameBuffer *statBuffer = availableStatBuffers_.front();
 
-	paramBuffer->_d()->setRequest(request);
-	statBuffer->_d()->setRequest(request);
-
 	availableParamBuffers_.pop();
 	availableStatBuffers_.pop();
 
-	/* \todo Remove the dynamic allocation of Info */
-	std::unique_ptr<Info> info = std::make_unique<Info>();
+	auto [it, inserted] = frameInfo_.try_emplace(id);
+	ASSERT(inserted);
 
-	info->id = id;
-	info->request = request;
-	info->rawBuffer = nullptr;
-	info->paramBuffer = paramBuffer;
-	info->statBuffer = statBuffer;
-	info->paramDequeued = false;
-	info->metadataProcessed = false;
+	auto &info = it->second;
 
-	frameInfo_[id] = std::move(info);
+	info.id = id;
+	info.request = request;
+	info.rawBuffer = nullptr;
+	info.paramBuffer = paramBuffer;
+	info.statBuffer = statBuffer;
+	info.paramDequeued = false;
+	info.metadataProcessed = false;
 
-	return frameInfo_[id].get();
+	return &info;
 }
 
 void IPU3Frames::remove(IPU3Frames::Info *info)
@@ -114,7 +112,7 @@ IPU3Frames::Info *IPU3Frames::find(unsigned int id)
 	const auto &itInfo = frameInfo_.find(id);
 
 	if (itInfo != frameInfo_.end())
-		return itInfo->second.get();
+		return &itInfo->second;
 
 	LOG(IPU3, Fatal) << "Can't find tracking information for frame " << id;
 
@@ -123,16 +121,14 @@ IPU3Frames::Info *IPU3Frames::find(unsigned int id)
 
 IPU3Frames::Info *IPU3Frames::find(FrameBuffer *buffer)
 {
-	for (auto const &itInfo : frameInfo_) {
-		Info *info = itInfo.second.get();
+	for (auto &[id, info] : frameInfo_) {
+		for (const auto &[stream, buf] : info.request->buffers())
+			if (buf == buffer)
+				return &info;
 
-		for (auto const itBuffers : info->request->buffers())
-			if (itBuffers.second == buffer)
-				return info;
-
-		if (info->rawBuffer == buffer || info->paramBuffer == buffer ||
-		    info->statBuffer == buffer)
-			return info;
+		if (info.rawBuffer == buffer || info.paramBuffer == buffer ||
+		    info.statBuffer == buffer)
+			return &info;
 	}
 
 	LOG(IPU3, Fatal) << "Can't find tracking information from buffer";

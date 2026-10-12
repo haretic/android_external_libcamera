@@ -2,15 +2,16 @@
 /*
  * Copyright (C) 2021, Google Inc.
  *
- * camera_sensor_helper.h - Helper class that performs sensor-specific parameter computations
+ * Helper class that performs sensor-specific parameter computations
  */
 
 #pragma once
 
-#include <stdint.h>
-
 #include <memory>
+#include <optional>
+#include <stdint.h>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include <libcamera/base/class.h>
@@ -25,34 +26,26 @@ public:
 	CameraSensorHelper() = default;
 	virtual ~CameraSensorHelper() = default;
 
+	std::optional<int16_t> blackLevel() const { return blackLevel_; }
 	virtual uint32_t gainCode(double gain) const;
 	virtual double gain(uint32_t gainCode) const;
+	double quantizeGain(double gain, double *quantizationGain) const;
 
 protected:
-	enum AnalogueGainType {
-		AnalogueGainLinear,
-		AnalogueGainExponential,
-	};
-
-	struct AnalogueGainLinearConstants {
+	struct AnalogueGainLinear {
 		int16_t m0;
 		int16_t c0;
 		int16_t m1;
 		int16_t c1;
 	};
 
-	struct AnalogueGainExpConstants {
+	struct AnalogueGainExp {
 		double a;
 		double m;
 	};
 
-	union AnalogueGainConstants {
-		AnalogueGainLinearConstants linear;
-		AnalogueGainExpConstants exp;
-	};
-
-	AnalogueGainType gainType_;
-	AnalogueGainConstants gainConstants_;
+	std::optional<int16_t> blackLevel_;
+	std::variant<std::monostate, AnalogueGainLinear, AnalogueGainExp> gain_;
 
 private:
 	LIBCAMERA_DISABLE_COPY_AND_MOVE(CameraSensorHelper)
@@ -88,7 +81,7 @@ public:
 	}
 
 private:
-	std::unique_ptr<CameraSensorHelper> createInstance() const
+	std::unique_ptr<CameraSensorHelper> createInstance() const override
 	{
 		return std::make_unique<_Helper>();
 	}

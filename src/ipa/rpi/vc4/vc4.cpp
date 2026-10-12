@@ -2,7 +2,7 @@
 /*
  * Copyright (C) 2019-2021, Raspberry Pi Ltd
  *
- * rpi.cpp - Raspberry Pi VC4/BCM2835 ISP IPA.
+ * Raspberry Pi VC4/BCM2835 ISP IPA.
  */
 
 #include <string.h>
@@ -43,6 +43,9 @@ public:
 	IpaVc4()
 		: IpaBase(), lsTable_(nullptr)
 	{
+		lastAwbStatus_.gainR = 1.0;
+		lastAwbStatus_.gainG = 1.0;
+		lastAwbStatus_.gainB = 1.0;
 	}
 
 	~IpaVc4()
@@ -53,16 +56,18 @@ public:
 
 private:
 	int32_t platformInit(const InitParams &params, InitResult *result) override;
+	int32_t platformStart(const ControlList &controls, StartResult *result) override;
 	int32_t platformConfigure(const ConfigParams &params, ConfigResult *result) override;
 
 	void platformPrepareIsp(const PrepareParams &params, RPiController::Metadata &rpiMetadata) override;
+	void platformPrepareAgc([[maybe_unused]] RPiController::Metadata &rpiMetadata) override;
 	RPiController::StatisticsPtr platformProcessStats(Span<uint8_t> mem) override;
 
 	void handleControls(const ControlList &controls) override;
 	bool validateIspControls();
 
 	void applyAWB(const struct AwbStatus *awbStatus, ControlList &ctrls);
-	void applyDG(const struct AgcPrepareStatus *dgStatus, ControlList &ctrls);
+	void applyDG(double digitalGain, const struct AwbStatus *awbStatus, ControlList &ctrls);
 	void applyCCM(const struct CcmStatus *ccmStatus, ControlList &ctrls);
 	void applyBlackLevel(const struct BlackLevelStatus *blackLevelStatus, ControlList &ctrls);
 	void applyGamma(const struct ContrastStatus *contrastStatus, ControlList &ctrls);
@@ -76,10 +81,14 @@ private:
 
 	/* VC4 ISP controls. */
 	ControlInfoMap ispCtrls_;
+	ControlList ctrls_;
 
 	/* LS table allocation passed in from the pipeline handler. */
 	SharedFD lsTableHandle_;
 	void *lsTable_;
+
+	/* Remember the most recent AWB values. */
+	AwbStatus lastAwbStatus_;
 };
 
 int32_t IpaVc4::platformInit([[maybe_unused]] const InitParams &params, [[maybe_unused]] InitResult *result)
@@ -96,9 +105,16 @@ int32_t IpaVc4::platformInit([[maybe_unused]] const InitParams &params, [[maybe_
 	return 0;
 }
 
+int32_t IpaVc4::platformStart([[maybe_unused]] const ControlList &controls,
+			      [[maybe_unused]] StartResult *result)
+{
+	return 0;
+}
+
 int32_t IpaVc4::platformConfigure(const ConfigParams &params, [[maybe_unused]] ConfigResult *result)
 {
 	ispCtrls_ = params.ispControls;
+	ctrls_ = ControlList(ispCtrls_);
 	if (!validateIspControls()) {
 		LOG(IPARPI, Error) << "ISP control validation failed.";
 		return -1;
@@ -131,22 +147,20 @@ int32_t IpaVc4::platformConfigure(const ConfigParams &params, [[maybe_unused]] C
 void IpaVc4::platformPrepareIsp([[maybe_unused]] const PrepareParams &params,
 				RPiController::Metadata &rpiMetadata)
 {
-	ControlList ctrls(ispCtrls_);
+	ControlList &ctrls = ctrls_;
 
 	/* Lock the metadata buffer to avoid constant locks/unlocks. */
 	std::unique_lock<RPiController::Metadata> lock(rpiMetadata);
 
 	AwbStatus *awbStatus = rpiMetadata.getLocked<AwbStatus>("awb.status");
-	if (awbStatus)
+	if (awbStatus) {
 		applyAWB(awbStatus, ctrls);
+		lastAwbStatus_ = *awbStatus;
+	}
 
 	CcmStatus *ccmStatus = rpiMetadata.getLocked<CcmStatus>("ccm.status");
 	if (ccmStatus)
 		applyCCM(ccmStatus, ctrls);
-
-	AgcPrepareStatus *dgStatus = rpiMetadata.getLocked<AgcPrepareStatus>("agc.prepare_status");
-	if (dgStatus)
-		applyDG(dgStatus, ctrls);
 
 	AlscStatus *lsStatus = rpiMetadata.getLocked<AlscStatus>("alsc.status");
 	if (lsStatus)
@@ -183,9 +197,18 @@ void IpaVc4::platformPrepareIsp([[maybe_unused]] const PrepareParams &params,
 		if (!lensctrls.empty())
 			setLensControls.emit(lensctrls);
 	}
+}
 
-	if (!ctrls.empty())
-		setIspControls.emit(ctrls);
+void IpaVc4::platformPrepareAgc(RPiController::Metadata &rpiMetadata)
+{
+	AgcStatus *delayedAgcStatus = rpiMetadata.getLocked<AgcStatus>("agc.delayed_status");
+	double digitalGain = delayedAgcStatus ? delayedAgcStatus->digitalGain : agcStatus_.digitalGain;
+	AwbStatus *awbStatus = rpiMetadata.getLocked<AwbStatus>("awb.status");
+
+	applyDG(digitalGain, awbStatus, ctrls_);
+
+	setIspControls.emit(ctrls_);
+	ctrls_ = ControlList(ispCtrls_);
 }
 
 RPiController::StatisticsPtr IpaVc4::platformProcessStats(Span<uint8_t> mem)
@@ -219,7 +242,13 @@ RPiController::StatisticsPtr IpaVc4::platformProcessStats(Span<uint8_t> mem)
 		LOG(IPARPI, Debug) << "No AGC algorithm - not copying statistics";
 		statistics->agcRegions.init(0);
 	} else {
-		statistics->agcRegions.init(hw.agcRegions);
+		RgbySums fullImage;
+		uint32_t countedSum = 0;
+		uint32_t notCountedSum = 0;
+		/* We're going to pretend there's a floating region where we will put a full image Y sum. */
+		const unsigned int numFloating = 1;
+
+		statistics->agcRegions.init(hw.agcRegions, numFloating);
 		const std::vector<double> &weights = agc->getWeights();
 		for (i = 0; i < statistics->agcRegions.numRegions(); i++) {
 			uint64_t rSum = (stats->agc_stats[i].r_sum << scale) * weights[i];
@@ -230,7 +259,20 @@ RPiController::StatisticsPtr IpaVc4::platformProcessStats(Span<uint8_t> mem)
 			statistics->agcRegions.set(i, { { rSum, gSum, bSum },
 							counted,
 							notcounted });
+
+			/* Accumulate values for the full image Y sum. */
+			fullImage.rSum += stats->agc_stats[i].r_sum << scale;
+			fullImage.gSum += stats->agc_stats[i].g_sum << scale;
+			fullImage.bSum += stats->agc_stats[i].b_sum << scale;
+			countedSum += stats->agc_stats[i].counted;
+			notCountedSum += stats->agc_stats[i].notcounted;
 		}
+
+		/* The "floating" region has the Y sum for the entire image. */
+		fullImage.ySum = fullImage.rSum * lastAwbStatus_.gainR * 0.299 +
+				 fullImage.gSum * lastAwbStatus_.gainG * 0.587 +
+				 fullImage.bSum * lastAwbStatus_.gainB * 0.114;
+		statistics->agcRegions.setFloating(0, { fullImage, countedSum, notCountedSum });
 	}
 
 	statistics->focusRegions.init(hw.focusRegions);
@@ -248,9 +290,39 @@ RPiController::StatisticsPtr IpaVc4::platformProcessStats(Span<uint8_t> mem)
 	return statistics;
 }
 
-void IpaVc4::handleControls([[maybe_unused]] const ControlList &controls)
+void IpaVc4::handleControls(const ControlList &controls)
 {
-	/* No controls require any special updates to the hardware configuration. */
+	static const std::map<int32_t, RPiController::DenoiseMode> DenoiseModeTable = {
+		{ controls::draft::NoiseReductionModeOff, RPiController::DenoiseMode::Off },
+		{ controls::draft::NoiseReductionModeFast, RPiController::DenoiseMode::ColourFast },
+		{ controls::draft::NoiseReductionModeHighQuality, RPiController::DenoiseMode::ColourHighQuality },
+		{ controls::draft::NoiseReductionModeMinimal, RPiController::DenoiseMode::ColourOff },
+		{ controls::draft::NoiseReductionModeZSL, RPiController::DenoiseMode::ColourHighQuality },
+	};
+
+	for (const auto &ctrl : controls) {
+		switch (ctrl.first) {
+		case controls::draft::NOISE_REDUCTION_MODE: {
+			RPiController::DenoiseAlgorithm *sdn = dynamic_cast<RPiController::DenoiseAlgorithm *>(
+				controller_.getAlgorithm("SDN"));
+			/* Some platforms may have a combined "denoise" algorithm instead. */
+			if (!sdn)
+				sdn = dynamic_cast<RPiController::DenoiseAlgorithm *>(
+					controller_.getAlgorithm("denoise"));
+			if (!sdn) {
+				LOG(IPARPI, Warning)
+					<< "Could not set NOISE_REDUCTION_MODE - no SDN algorithm";
+				return;
+			}
+
+			int32_t idx = ctrl.second.get<int32_t>();
+			auto mode = DenoiseModeTable.find(idx);
+			if (mode != DenoiseModeTable.end())
+				sdn->setMode(mode->second);
+			break;
+		}
+		}
+	}
 }
 
 bool IpaVc4::validateIspControls()
@@ -292,10 +364,24 @@ void IpaVc4::applyAWB(const struct AwbStatus *awbStatus, ControlList &ctrls)
 		  static_cast<int32_t>(awbStatus->gainB * 1000));
 }
 
-void IpaVc4::applyDG(const struct AgcPrepareStatus *dgStatus, ControlList &ctrls)
+void IpaVc4::applyDG(double digitalGain,
+		     const struct AwbStatus *awbStatus, ControlList &ctrls)
 {
+	if (awbStatus) {
+		/*
+		 * We must apply sufficient extra digital gain to stop any of the channel gains being
+		 * less than 1, which would cause saturation artifacts. Note that one of the colour
+		 * channels is still getting the minimum possible gain, so it's not a "real" gain
+		 * increase.
+		 */
+		double minColourGain = std::min({ awbStatus->gainR, awbStatus->gainG, awbStatus->gainB, 1.0 });
+		/* The 0.1 here doesn't mean much, but just stops arithmetic errors and extreme behaviour. */
+		double extraGain = 1.0 / std::max({ minColourGain, 0.1 });
+		digitalGain *= extraGain;
+	}
+
 	ctrls.set(V4L2_CID_DIGITAL_GAIN,
-		  static_cast<int32_t>(dgStatus->digitalGain * 1000));
+		  static_cast<int32_t>(digitalGain * 1000));
 }
 
 void IpaVc4::applyCCM(const struct CcmStatus *ccmStatus, ControlList &ctrls)
@@ -546,7 +632,7 @@ extern "C" {
 const struct IPAModuleInfo ipaModuleInfo = {
 	IPA_MODULE_API_VERSION,
 	1,
-	"PipelineHandlerVc4",
+	"rpi/vc4",
 	"rpi/vc4",
 };
 

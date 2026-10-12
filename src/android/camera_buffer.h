@@ -35,8 +35,13 @@ public:
 	unsigned int stride(unsigned int plane) const;
 	unsigned int offset(unsigned int plane) const;
 	unsigned int size(unsigned int plane) const;
+	bool swapsChroma() const;
 
 	size_t jpegBufferSize(size_t maxJpegBufferSize) const;
+
+	static bool matchesLayout(const camera3_stream_t *stream,
+				  libcamera::PixelFormat pixelFormat,
+				  const libcamera::Size &size);
 };
 
 #define PUBLIC_CAMERA_BUFFER_IMPLEMENTATION				\
@@ -82,6 +87,10 @@ unsigned int CameraBuffer::offset(unsigned int plane) const		\
 unsigned int CameraBuffer::size(unsigned int plane) const		\
 {									\
 	return _d()->size(plane);					\
+}									\
+bool CameraBuffer::swapsChroma() const					\
+{									\
+	return _d()->swapsChroma();					\
 }									\
 size_t CameraBuffer::jpegBufferSize(size_t maxJpegBufferSize) const	\
 {									\

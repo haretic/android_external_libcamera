@@ -853,11 +853,30 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 	}
 
 	sortCamera3StreamConfigs(streamConfigs, jpegStream);
-	for (const auto &streamConfig : streamConfigs) {
+	for (auto &streamConfig : streamConfigs) {
 		config->addConfiguration(streamConfig.config);
 
 		CameraStream *sourceStream = nullptr;
 		for (auto &stream : streamConfig.streams) {
+			/*
+			 * libcamera fills the buffers of a direct stream with
+			 * its own plane layout. Where gralloc picked another
+			 * one, as MediaTek's planar YUV for GPU textures,
+			 * capture to internal buffers and copy to the stream.
+			 */
+			if (stream.type == CameraStream::Type::Direct &&
+			    capabilities_.toPixelFormat(stream.stream->format) == formats::NV12 &&
+			    !CameraBuffer::matchesLayout(stream.stream,
+							 streamConfig.config.pixelFormat,
+							 streamConfig.config.size)) {
+				LOG(HAL, Info)
+					<< "Stream " << stream.stream->width << "x"
+					<< stream.stream->height
+					<< " buffers have another layout, copying to them";
+				stream.type = CameraStream::Type::Internal;
+				stream.stream->usage |= GRALLOC_USAGE_SW_WRITE_OFTEN;
+			}
+
 			streams_.emplace_back(this, config.get(), stream.type,
 					      stream.stream, sourceStream,
 					      config->size() - 1);

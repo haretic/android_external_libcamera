@@ -37,6 +37,7 @@ public:
 	unsigned int stride(unsigned int plane) const;
 	unsigned int offset(unsigned int plane) const;
 	unsigned int size(unsigned int plane) const;
+	bool swapsChroma() const { return false; }
 
 	size_t jpegBufferSize(size_t maxJpegBufferSize) const;
 
@@ -203,3 +204,14 @@ void CameraBuffer::Private::map()
 }
 
 PUBLIC_CAMERA_BUFFER_IMPLEMENTATION
+
+/*
+ * The buffers of a stream are assumed to have the layout libcamera computes
+ * for their format.
+ */
+bool CameraBuffer::matchesLayout([[maybe_unused]] const camera3_stream_t *stream,
+				 [[maybe_unused]] PixelFormat pixelFormat,
+				 [[maybe_unused]] const Size &size)
+{
+	return true;
+}

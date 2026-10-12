@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <aidl/android/hardware/graphics/common/PlaneLayoutComponentType.h>
+#include <ui/GraphicBufferAllocator.h>
 #include <ui/GraphicBufferMapper.h>
 
 #include <libcamera/base/log.h>
@@ -45,6 +46,7 @@ public:
 	unsigned int stride(unsigned int plane) const;
 	unsigned int offset(unsigned int plane) const;
 	unsigned int size(unsigned int plane) const;
+	bool swapsChroma() const { return swapsChroma_; }
 
 	size_t jpegBufferSize(size_t maxJpegBufferSize) const;
 
@@ -63,6 +65,7 @@ private:
 	off_t bufferLength_;
 	uint64_t width_;
 	bool mapped_;
+	bool swapsChroma_;
 	std::vector<PlaneInfo> planeInfo_;
 };
 
@@ -70,7 +73,8 @@ CameraBuffer::Private::Private([[maybe_unused]] CameraBuffer *cameraBuffer,
 			       buffer_handle_t camera3Buffer,
 			       PixelFormat pixelFormat,
 			       const Size &size, int flags)
-	: fd_(-1), flags_(flags), bufferLength_(-1), width_(0), mapped_(false)
+	: fd_(-1), flags_(flags), bufferLength_(-1), width_(0), mapped_(false),
+	  swapsChroma_(false)
 {
 	error_ = 0;
 
@@ -219,11 +223,16 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 			static_cast<unsigned int>(layouts[0].offsetInBytes),
 			static_cast<unsigned int>(layouts[0].totalSizeInBytes),
 		});
+		/*
+		 * MediaTek's mapper reports the size of a single chroma
+		 * component, short of the interleaved rows.
+		 */
 		planes.push_back({
 			static_cast<unsigned int>(cb.strideInBytes),
 			static_cast<unsigned int>(first),
-			static_cast<unsigned int>(std::max(cb.totalSizeInBytes,
-							   cr.totalSizeInBytes)),
+			static_cast<unsigned int>(std::max({ cb.totalSizeInBytes,
+							     cr.totalSizeInBytes,
+							     cb.strideInBytes * cb.heightInSamples })),
 		});
 	} else {
 		return false;
@@ -239,7 +248,10 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 		}
 	}
 
-	/* Report a semi-planar chroma order libcamera won't produce. */
+	/*
+	 * Note a semi-planar chroma order opposite to the pixel format's, as
+	 * NV21 for an NV12 stream. The YUV post-processor swaps it.
+	 */
 	if (planes.size() == 2 &&
 	    (pixelFormat == formats::NV12 || pixelFormat == formats::NV21)) {
 		int64_t cb = -1;
@@ -250,9 +262,8 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 			cr = std::max(cr, componentOffset(layout, PlaneLayoutComponentType::CR));
 		}
 
-		if (cb >= 0 && cr >= 0 && (cr < cb) != (pixelFormat == formats::NV21))
-			LOG(HAL, Error)
-				<< "Gralloc chroma order doesn't match " << pixelFormat;
+		swapsChroma_ = cb >= 0 && cr >= 0 &&
+			       (cr < cb) != (pixelFormat == formats::NV21);
 	}
 
 	planeInfo_ = std::move(planes);
@@ -342,3 +353,45 @@ void CameraBuffer::Private::map()
 }
 
 PUBLIC_CAMERA_BUFFER_IMPLEMENTATION
+
+/*
+ * Tell whether gralloc lays out the buffers of \a stream the way libcamera
+ * fills \a pixelFormat buffers of \a size, with the same planes, strides and
+ * chroma order.
+ * For implementation defined formats gralloc picks the layout from the usage,
+ * so allocate a buffer the way the camera service will and look at it.
+ */
+bool CameraBuffer::matchesLayout(const camera3_stream_t *stream,
+				 PixelFormat pixelFormat, const Size &size)
+{
+	android::GraphicBufferAllocator &allocator =
+		android::GraphicBufferAllocator::get();
+	buffer_handle_t handle = nullptr;
+	uint32_t stride;
+
+	android::status_t ret =
+		allocator.allocate(stream->width, stream->height, stream->format,
+				   1, stream->usage, &handle, &stride,
+				   "libcamera layout probe");
+	if (ret != android::OK) {
+		LOG(HAL, Warning)
+			<< "Can't allocate a " << stream->width << "x"
+			<< stream->height << " buffer to check its layout";
+		return true;
+	}
+
+	bool matches;
+	{
+		const CameraBuffer buffer(handle, pixelFormat, size, PROT_READ);
+		const PixelFormatInfo &info = PixelFormatInfo::info(pixelFormat);
+
+		matches = buffer.isValid() && !buffer.swapsChroma() &&
+			  buffer.numPlanes() == info.numPlanes();
+		for (unsigned int i = 0; matches && i < buffer.numPlanes(); ++i)
+			matches = buffer.stride(i) == info.stride(size.width, i, 1);
+	}
+
+	allocator.free(handle);
+
+	return matches;
+}

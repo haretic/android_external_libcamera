@@ -69,8 +69,9 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
 	}
 
 	/*
-	 * The destination is NV12, or planar when gralloc picked that for an
-	 * implementation defined format (CameraBuffer then reports Y, Cb, Cr).
+	 * The destination is NV12 or NV21, or planar when gralloc picked that
+	 * for an implementation defined format (CameraBuffer then reports Y,
+	 * Cb, Cr).
 	 */
 	const Size chroma((destinationSize_.width + 1) / 2,
 			  (destinationSize_.height + 1) / 2);
@@ -89,6 +90,13 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
 					destinationSize_.width,
 					destinationSize_.height,
 					libyuv::FilterMode::kFilterBilinear);
+		/* Swap the chroma in place for NV21 buffers. */
+		if (!ret && destination->swapsChroma())
+			libyuv::SwapUVPlane(destination->plane(1).data(),
+					    destination->stride(1),
+					    destination->plane(1).data(),
+					    destination->stride(1),
+					    chroma.width, chroma.height);
 	} else {
 		ret = libyuv::ScalePlane(sourceMapped.planes()[0].data(),
 					 sourceStride_[0],

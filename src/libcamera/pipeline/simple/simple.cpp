@@ -7,6 +7,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <list>
 #include <map>
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include <linux/media-bus-format.h>
+#include <linux/v4l2-controls.h>
 
 #include <libcamera/base/log.h>
 
@@ -293,6 +295,7 @@ public:
 			 Transform transform = Transform::Identity);
 	void imageBufferReady(FrameBuffer *buffer);
 	void clearIncompleteRequests();
+	void updateFrameDurationLimits();
 
 	unsigned int streamIndex(const Stream *stream) const
 	{
@@ -665,6 +668,8 @@ int SimpleCameraData::init()
 
 	properties_ = sensor_->properties();
 
+	updateFrameDurationLimits();
+
 	/* Find the first subdev that can generate a frame start signal, if any. */
 	frameStartEmitter_ = nullptr;
 	for (const Entity &entity : entities_) {
@@ -874,6 +879,42 @@ int SimpleCameraData::setupFormats(V4L2SubdeviceFormat *format,
 	}
 
 	return 0;
+}
+
+/*
+ * Report the frame duration of the current sensor configuration in the
+ * FrameDurationLimits control, which applications such as the Android camera
+ * HAL require. The pipeline doesn't control the sensor blanking, the sensor
+ * runs with the frame duration of the configured mode, so report it as the
+ * only supported value.
+ */
+void SimpleCameraData::updateFrameDurationLimits()
+{
+	ControlInfoMap::Map ctrlMap(controlInfo_.begin(), controlInfo_.end());
+	ctrlMap.erase(&controls::FrameDurationLimits);
+
+	IPACameraSensorInfo sensorInfo;
+	const std::array<uint32_t, 2> blankingIds{ V4L2_CID_HBLANK, V4L2_CID_VBLANK };
+	ControlList blanking = sensor_->getControls(blankingIds);
+
+	if (!sensor_->sensorInfo(&sensorInfo) && sensorInfo.pixelRate &&
+	    blanking.contains(V4L2_CID_HBLANK) && blanking.contains(V4L2_CID_VBLANK)) {
+		uint64_t lineLength = sensorInfo.outputSize.width +
+				      blanking.get(V4L2_CID_HBLANK).get<int32_t>();
+		uint64_t frameLength = sensorInfo.outputSize.height +
+				       blanking.get(V4L2_CID_VBLANK).get<int32_t>();
+		int64_t duration = lineLength * frameLength * 1000000 /
+				   sensorInfo.pixelRate;
+
+		ctrlMap[&controls::FrameDurationLimits] =
+			ControlInfo(duration, duration,
+				    ControlValue(Span<const int64_t, 2>{ { duration, duration } }));
+
+		LOG(SimplePipeline, Debug)
+			<< "Frame duration " << duration << " us";
+	}
+
+	controlInfo_ = ControlInfoMap(std::move(ctrlMap), controls::controls);
 }
 
 void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
@@ -1523,6 +1564,8 @@ int SimplePipelineHandler::configure(Camera *camera, CameraConfiguration *c)
 				 config->combinedTransform());
 	if (ret < 0)
 		return ret;
+
+	data->updateFrameDurationLimits();
 
 	/* Configure the video node, taking into account any Bayer pattern change. */
 	V4L2PixelFormat videoFormat;

@@ -312,6 +312,14 @@ bool IPAManager::isSignatureValid([[maybe_unused]] IPAModule *ipa) const
 		<< (valid ? "valid" : "not valid");
 
 	return valid;
+#elif defined(__ANDROID__)
+	/*
+	 * IPA modules can't be verified without a public key. On Android the
+	 * modules installed in IPA_MODULE_DIR come from the read-only, verified
+	 * vendor partition, trust them instead of isolating them in a separate
+	 * process.
+	 */
+	return ipa->path().rfind(IPA_MODULE_DIR "/", 0) == 0;
 #else
 	return false;
 #endif

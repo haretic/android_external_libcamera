@@ -9,6 +9,8 @@
 
 #include "../post_processor.h"
 
+#include <vector>
+
 #include <libcamera/geometry.h>
 
 class PostProcessorYuv : public PostProcessor
@@ -29,7 +31,6 @@ private:
 	libcamera::Size sourceSize_;
 	libcamera::Size destinationSize_;
 	unsigned int sourceLength_[2] = {};
-	unsigned int destinationLength_[2] = {};
 	unsigned int sourceStride_[2] = {};
-	unsigned int destinationStride_[2] = {};
+	std::vector<uint8_t> chroma_;
 };

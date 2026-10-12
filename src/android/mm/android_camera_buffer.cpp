@@ -61,6 +61,7 @@ private:
 	int fd_;
 	int flags_;
 	off_t bufferLength_;
+	uint64_t width_;
 	bool mapped_;
 	std::vector<PlaneInfo> planeInfo_;
 };
@@ -69,7 +70,7 @@ CameraBuffer::Private::Private([[maybe_unused]] CameraBuffer *cameraBuffer,
 			       buffer_handle_t camera3Buffer,
 			       PixelFormat pixelFormat,
 			       const Size &size, int flags)
-	: fd_(-1), flags_(flags), bufferLength_(-1), mapped_(false)
+	: fd_(-1), flags_(flags), bufferLength_(-1), width_(0), mapped_(false)
 {
 	error_ = 0;
 
@@ -81,24 +82,28 @@ CameraBuffer::Private::Private([[maybe_unused]] CameraBuffer *cameraBuffer,
 	}
 
 	/*
-	 * Gralloc stores the buffer data in the first file descriptor of the
-	 * handle, additional file descriptors, if any, are implementation
-	 * specific (for instance buffer metadata).
+	 * The buffer data is a dma-buf in the handle, not necessarily the
+	 * first file descriptor: MediaTek gralloc puts a gralloc_extra object
+	 * first and a metadata dma-buf last. Use the largest dma-buf.
 	 */
-	if (camera3Buffer->numFds < 1 || camera3Buffer->data[0] < 0) {
+	for (int i = 0; i < camera3Buffer->numFds; ++i) {
+		const int fd = camera3Buffer->data[i];
+		const off_t length = fd < 0 ? -1 : lseek(fd, 0, SEEK_END);
+		if (length > bufferLength_) {
+			fd_ = fd;
+			bufferLength_ = length;
+		}
+	}
+
+	if (fd_ < 0) {
 		error_ = -EINVAL;
-		LOG(HAL, Error) << "No valid file descriptor";
+		LOG(HAL, Error) << "No dma-buf in the buffer handle";
 		return;
 	}
 
-	fd_ = camera3Buffer->data[0];
-
-	bufferLength_ = lseek(fd_, 0, SEEK_END);
-	if (bufferLength_ < 0) {
-		error_ = -errno;
-		LOG(HAL, Error) << "Failed to get buffer length";
-		return;
-	}
+	/* The size of a BLOB buffer, which the JPEG blob trailer ends. */
+	if (android::GraphicBufferMapper::get().getWidth(camera3Buffer, &width_) != android::OK)
+		width_ = 0;
 
 	if (queryLayout(camera3Buffer, pixelFormat))
 		return;
@@ -177,6 +182,24 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 				static_cast<unsigned int>(layout.offsetInBytes),
 				static_cast<unsigned int>(layout.totalSizeInBytes),
 			});
+	} else if (layouts.size() == 3 && info.numPlanes() == 2 &&
+		   layouts[1].sampleIncrementInBits == 8 &&
+		   layouts[2].sampleIncrementInBits == 8) {
+		/*
+		 * Planar YUV, which gralloc can pick for an implementation
+		 * defined format (MediaTek does for GPU texture usage). Report
+		 * the Y, Cb and Cr planes in that order; the YUV post-processor
+		 * writes them.
+		 */
+		const bool crFirst =
+			componentOffset(layouts[1], PlaneLayoutComponentType::CR) >= 0;
+
+		for (unsigned int i : { 0u, crFirst ? 2u : 1u, crFirst ? 1u : 2u })
+			planes.push_back({
+				static_cast<unsigned int>(layouts[i].strideInBytes),
+				static_cast<unsigned int>(layouts[i].offsetInBytes),
+				static_cast<unsigned int>(layouts[i].totalSizeInBytes),
+			});
 	} else if (layouts.size() == 3 && info.numPlanes() == 2) {
 		/*
 		 * Semi-planar YUV described with separate, interleaved Cb and
@@ -216,8 +239,9 @@ bool CameraBuffer::Private::queryLayout(buffer_handle_t camera3Buffer,
 		}
 	}
 
-	/* Report a chroma order libcamera won't produce. */
-	if (pixelFormat == formats::NV12 || pixelFormat == formats::NV21) {
+	/* Report a semi-planar chroma order libcamera won't produce. */
+	if (planes.size() == 2 &&
+	    (pixelFormat == formats::NV12 || pixelFormat == formats::NV21)) {
 		int64_t cb = -1;
 		int64_t cr = -1;
 
@@ -283,6 +307,14 @@ unsigned int CameraBuffer::Private::size(unsigned int plane) const
 size_t CameraBuffer::Private::jpegBufferSize(size_t maxJpegBufferSize) const
 {
 	ASSERT(bufferLength_ >= 0);
+
+	/*
+	 * The framework looks for the blob trailer at the end of the gralloc
+	 * width, which it sizes itself and which can exceed the maximum JPEG
+	 * size we report.
+	 */
+	if (width_)
+		return std::min<uint64_t>(bufferLength_, width_);
 
 	return std::min<unsigned int>(bufferLength_, maxJpegBufferSize);
 }

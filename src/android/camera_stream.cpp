@@ -182,9 +182,11 @@ int CameraStream::process(Camera3RequestDescriptor::StreamBuffer *streamBuffer)
 		streamBuffer->fence.reset();
 	}
 
+	/* Mapped streams can be smaller than the source they're scaled from. */
 	const StreamConfiguration &output = configuration();
+	const Size size(camera3Stream_->width, camera3Stream_->height);
 	streamBuffer->dstBuffer = std::make_unique<CameraBuffer>(
-		*streamBuffer->camera3Buffer, output.pixelFormat, output.size,
+		*streamBuffer->camera3Buffer, output.pixelFormat, size,
 		PROT_READ | PROT_WRITE);
 	if (!streamBuffer->dstBuffer->isValid()) {
 		LOG(HAL, Error) << "Failed to create destination buffer";

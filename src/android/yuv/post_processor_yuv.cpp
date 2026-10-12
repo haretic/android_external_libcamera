@@ -7,7 +7,9 @@
 
 #include "post_processor_yuv.h"
 
+#include <libyuv/planar_functions.h>
 #include <libyuv/scale.h>
+#include <libyuv/scale_uv.h>
 
 #include <libcamera/base/log.h>
 
@@ -66,18 +68,53 @@ void PostProcessorYuv::process(Camera3RequestDescriptor::StreamBuffer *streamBuf
 		return;
 	}
 
-	int ret = libyuv::NV12Scale(sourceMapped.planes()[0].data(),
-				    sourceStride_[0],
-				    sourceMapped.planes()[1].data(),
-				    sourceStride_[1],
-				    sourceSize_.width, sourceSize_.height,
-				    destination->plane(0).data(),
-				    destinationStride_[0],
-				    destination->plane(1).data(),
-				    destinationStride_[1],
-				    destinationSize_.width,
-				    destinationSize_.height,
-				    libyuv::FilterMode::kFilterBilinear);
+	/*
+	 * The destination is NV12, or planar when gralloc picked that for an
+	 * implementation defined format (CameraBuffer then reports Y, Cb, Cr).
+	 */
+	const Size chroma((destinationSize_.width + 1) / 2,
+			  (destinationSize_.height + 1) / 2);
+	int ret;
+
+	if (destination->numPlanes() == 2) {
+		ret = libyuv::NV12Scale(sourceMapped.planes()[0].data(),
+					sourceStride_[0],
+					sourceMapped.planes()[1].data(),
+					sourceStride_[1],
+					sourceSize_.width, sourceSize_.height,
+					destination->plane(0).data(),
+					destination->stride(0),
+					destination->plane(1).data(),
+					destination->stride(1),
+					destinationSize_.width,
+					destinationSize_.height,
+					libyuv::FilterMode::kFilterBilinear);
+	} else {
+		ret = libyuv::ScalePlane(sourceMapped.planes()[0].data(),
+					 sourceStride_[0],
+					 sourceSize_.width, sourceSize_.height,
+					 destination->plane(0).data(),
+					 destination->stride(0),
+					 destinationSize_.width,
+					 destinationSize_.height,
+					 libyuv::FilterMode::kFilterBilinear);
+		if (!ret)
+			ret = libyuv::UVScale(sourceMapped.planes()[1].data(),
+					      sourceStride_[1],
+					      (sourceSize_.width + 1) / 2,
+					      (sourceSize_.height + 1) / 2,
+					      chroma_.data(), chroma.width * 2,
+					      chroma.width, chroma.height,
+					      libyuv::FilterMode::kFilterBilinear);
+		if (!ret)
+			libyuv::SplitUVPlane(chroma_.data(), chroma.width * 2,
+					     destination->plane(1).data(),
+					     destination->stride(1),
+					     destination->plane(2).data(),
+					     destination->stride(2),
+					     chroma.width, chroma.height);
+	}
+
 	if (ret) {
 		LOG(YUV, Error) << "Failed NV12 scaling: " << ret;
 		processComplete.emit(streamBuffer, PostProcessor::Status::Error);
@@ -95,7 +132,7 @@ bool PostProcessorYuv::isValidBuffers(const FrameBuffer &source,
 				<< source.planes().size();
 		return false;
 	}
-	if (destination.numPlanes() != 2) {
+	if (destination.numPlanes() != 2 && destination.numPlanes() != 3) {
 		LOG(YUV, Error) << "Invalid number of destination planes: "
 				<< destination.numPlanes();
 		return false;
@@ -112,16 +149,26 @@ bool PostProcessorYuv::isValidBuffers(const FrameBuffer &source,
 			<< sourceLength_[1] << "}";
 		return false;
 	}
-	if (destination.plane(0).size() < destinationLength_[0] ||
-	    destination.plane(1).size() < destinationLength_[1]) {
-		LOG(YUV, Error)
-			<< "The destination planes lengths are too small, actual size: {"
-			<< destination.plane(0).size() << ", "
-			<< destination.plane(1).size()
-			<< "}, expected size: {"
-			<< sourceLength_[0] << ", "
-			<< sourceLength_[1] << "}";
-		return false;
+
+	/* Each destination plane must hold its rows at the gralloc stride. */
+	const unsigned int chromaWidth = (destinationSize_.width + 1) / 2;
+	const unsigned int chromaHeight = (destinationSize_.height + 1) / 2;
+	const bool planar = destination.numPlanes() == 3;
+
+	for (unsigned int i = 0; i < destination.numPlanes(); i++) {
+		const unsigned int rows = i ? chromaHeight : destinationSize_.height;
+		const unsigned int rowBytes = !i ? destinationSize_.width
+					    : planar ? chromaWidth : chromaWidth * 2;
+		const unsigned int stride = destination.stride(i);
+		const size_t needed = static_cast<size_t>(stride) * (rows - 1) + rowBytes;
+
+		if (stride < rowBytes || destination.plane(i).size() < needed) {
+			LOG(YUV, Error)
+				<< "Destination plane " << i << " too small: stride "
+				<< stride << ", size " << destination.plane(i).size()
+				<< ", need " << needed;
+			return false;
+		}
 	}
 
 	return true;
@@ -136,11 +183,11 @@ void PostProcessorYuv::calculateLengths(const StreamConfiguration &inCfg,
 	const PixelFormatInfo &nv12Info = PixelFormatInfo::info(formats::NV12);
 	for (unsigned int i = 0; i < 2; i++) {
 		sourceStride_[i] = inCfg.stride;
-		destinationStride_[i] = nv12Info.stride(destinationSize_.width, i, 1);
-
 		sourceLength_[i] = nv12Info.planeSize(sourceSize_.height, i,
 						      sourceStride_[i]);
-		destinationLength_[i] = nv12Info.planeSize(destinationSize_.height, i,
-							   destinationStride_[i]);
 	}
+
+	/* Interleaved chroma at the destination size, for planar outputs. */
+	chroma_.resize(static_cast<size_t>((destinationSize_.width + 1) / 2) * 2 *
+		       ((destinationSize_.height + 1) / 2));
 }

@@ -8,9 +8,11 @@
 #include "camera_device.h"
 
 #include <algorithm>
+#include <chrono>
 #include <fstream>
 #include <set>
 #include <sys/mman.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -316,10 +318,9 @@ bool validateCropRotate(const camera3_stream_configuration_t &streamList)
 
 CameraDevice::CameraDevice(unsigned int id, std::shared_ptr<Camera> camera)
 	: id_(id), state_(State::Stopped), camera_(std::move(camera)),
-	  facing_(CAMERA_FACING_FRONT), orientation_(0)
+	  facing_(CAMERA_FACING_FRONT), orientation_(0), position_(-1),
+	  parkPosition_(-1)
 {
-	camera_->requestCompleted.connect(this, &CameraDevice::requestComplete);
-
 	maker_ = "libcamera";
 	model_ = "cameraModel";
 
@@ -363,6 +364,24 @@ std::unique_ptr<CameraDevice> CameraDevice::create(unsigned int id,
  */
 int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
 {
+	/*
+	 * A view of a camera module that turns: the facing and orientation
+	 * depend on the position it turns to, which the sensor properties
+	 * can't describe, so they come from the configuration file.
+	 */
+	if (cameraConfigData && cameraConfigData->position >= 0) {
+		facing_ = cameraConfigData->facing;
+		orientation_ = cameraConfigData->rotation;
+		positionControl_ = cameraConfigData->positionControl;
+		position_ = cameraConfigData->position;
+		parkPosition_ = cameraConfigData->parkPosition;
+
+		/* Hide the sensor, also after the HAL restarted with it out. */
+		turnTo(parkPosition_);
+
+		return capabilities_.initialize(camera_, orientation_, facing_);
+	}
+
 	/*
 	 * Initialize orientation and facing side of the camera.
 	 *
@@ -451,6 +470,38 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
  * Open a camera device. The static information on the camera shall have been
  * initialized with a call to CameraDevice::initialize().
  */
+/*
+ * Turn a camera module to \a position through its position control, and wait
+ * for it to get there: the control reads back the new position once the move
+ * completes.
+ */
+void CameraDevice::turnTo(int position) const
+{
+	if (positionControl_.empty() || position < 0)
+		return;
+
+	std::ofstream control(positionControl_);
+	control << position << std::endl;
+	if (!control) {
+		LOG(HAL, Error) << "Failed to turn the camera to " << position
+				<< " with " << positionControl_;
+		return;
+	}
+	control.close();
+
+	for (unsigned int i = 0; i < 100; i++) {
+		std::ifstream current(positionControl_);
+		int value = -1;
+		current >> value;
+		if (value == position)
+			return;
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+
+	LOG(HAL, Warning) << "Camera didn't reach position " << position;
+}
+
 int CameraDevice::open(const hw_module_t *hardwareModule)
 {
 	int ret = camera_->acquire();
@@ -458,6 +509,14 @@ int CameraDevice::open(const hw_module_t *hardwareModule)
 		LOG(HAL, Error) << "Failed to acquire the camera";
 		return ret;
 	}
+
+	/*
+	 * Several views of a turning camera share the libcamera camera, take
+	 * its completed requests only while open.
+	 */
+	camera_->requestCompleted.connect(this, &CameraDevice::requestComplete);
+
+	turnTo(position_);
 
 	/* Initialize the hw_device_t in the instance camera3_module_t. */
 	camera3Device_.common.tag = HARDWARE_DEVICE_TAG;
@@ -479,7 +538,10 @@ void CameraDevice::close()
 {
 	stop();
 
+	camera_->requestCompleted.disconnect(this, &CameraDevice::requestComplete);
 	camera_->release();
+
+	turnTo(parkPosition_);
 }
 
 void CameraDevice::flush()

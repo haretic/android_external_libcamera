@@ -7,8 +7,10 @@
 
 #pragma once
 
+#include <list>
 #include <map>
 #include <stddef.h>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -59,6 +61,9 @@ private:
 	const camera_module_callbacks_t *callbacks_;
 	std::vector<std::unique_ptr<CameraDevice>> cameras_ LIBCAMERA_TSA_GUARDED_BY(mutex_);
 	std::map<std::string, unsigned int> cameraIdsMap_ LIBCAMERA_TSA_GUARDED_BY(mutex_);
+	/* The IDs of the other views of a turning camera, for getCameraInfo(). */
+	std::list<std::string> conflictIds_ LIBCAMERA_TSA_GUARDED_BY(mutex_);
+	std::map<unsigned int, std::vector<char *>> conflictingDevices_ LIBCAMERA_TSA_GUARDED_BY(mutex_);
 	libcamera::Mutex mutex_;
 
 	unsigned int numInternalCameras_;

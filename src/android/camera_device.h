@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <string>
 #include <vector>
 
 #include <hardware/camera3.h>
@@ -77,6 +78,8 @@ private:
 
 	CameraDevice(unsigned int id, std::shared_ptr<libcamera::Camera> camera);
 
+	void turnTo(int position) const;
+
 	enum class State {
 		Stopped,
 		Flushing,
@@ -127,6 +130,11 @@ private:
 
 	int facing_;
 	int orientation_;
+
+	/* The position control of a turning camera module, see CameraConfigData. */
+	std::string positionControl_;
+	int position_;
+	int parkPosition_;
 
 	CameraMetadata lastSettings_;
 };

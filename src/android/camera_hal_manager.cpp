@@ -145,7 +145,13 @@ void CameraHalManager::cameraAdded(std::shared_ptr<Camera> cam)
 		return;
 	}
 
-	const CameraConfigData *cameraConfigData = halConfig_.cameraConfigData(cam->id());
+	/*
+	 * A camera module that turns has several views, each an Android
+	 * camera with consecutive IDs.
+	 */
+	const std::vector<CameraConfigData> *views = halConfig_.cameraConfigData(cam->id());
+	const CameraConfigData *cameraConfigData = views ? &views->front() : nullptr;
+	const unsigned int numViews = views ? views->size() : 1;
 
 	/*
 	 * Some cameras whose location is reported by libcamera as external may
@@ -170,61 +176,71 @@ void CameraHalManager::cameraAdded(std::shared_ptr<Camera> cam)
 		return;
 	}
 
-	/* Create a CameraDevice instance to wrap the libcamera Camera. */
-	std::unique_ptr<CameraDevice> camera = CameraDevice::create(id, cam);
+	/* Create a CameraDevice instance per view to wrap the libcamera Camera. */
+	std::vector<std::unique_ptr<CameraDevice>> cameras;
+	for (unsigned int i = 0; i < numViews; i++) {
+		std::unique_ptr<CameraDevice> camera = CameraDevice::create(id + i, cam);
 
-	int ret = camera->initialize(cameraConfigData);
-	if (ret) {
-		LOG(HAL, Error) << "Failed to initialize camera: " << cam->id();
-		return;
+		int ret = camera->initialize(views ? &(*views)[i] : nullptr);
+		if (ret) {
+			LOG(HAL, Error) << "Failed to initialize camera: " << cam->id();
+			return;
+		}
+
+		cameras.push_back(std::move(camera));
 	}
 
 	if (isCameraNew) {
 		cameraIdsMap_.emplace(cam->id(), id);
 
 		if (isCameraExternal)
-			nextExternalCameraId_++;
+			nextExternalCameraId_ += numViews;
 		else
-			numInternalCameras_++;
+			numInternalCameras_ += numViews;
 	}
 
-	cameras_.emplace_back(std::move(camera));
+	for (std::unique_ptr<CameraDevice> &camera : cameras) {
+		const unsigned int cameraId = camera->id();
 
-	if (callbacks_)
-		callbacks_->camera_device_status_change(callbacks_, id,
-							CAMERA_DEVICE_STATUS_PRESENT);
+		cameras_.emplace_back(std::move(camera));
 
-	LOG(HAL, Debug) << "Camera ID: " << id << " added successfully.";
+		if (callbacks_)
+			callbacks_->camera_device_status_change(callbacks_, cameraId,
+								CAMERA_DEVICE_STATUS_PRESENT);
+
+		LOG(HAL, Debug) << "Camera ID: " << cameraId << " added successfully.";
+	}
 }
 
 void CameraHalManager::cameraRemoved(std::shared_ptr<Camera> cam)
 {
 	MutexLocker locker(mutex_);
 
-	auto iter = std::find_if(cameras_.begin(), cameras_.end(),
-				 [&cam](const std::unique_ptr<CameraDevice> &camera) {
-					 return cam == camera->camera();
-				 });
-	if (iter == cameras_.end())
-		return;
+	/* Remove every view of the camera. */
+	for (auto iter = cameras_.begin(); iter != cameras_.end();) {
+		if ((*iter)->camera() != cam) {
+			++iter;
+			continue;
+		}
 
-	/*
-	 * CAMERA_DEVICE_STATUS_NOT_PRESENT should be set for external cameras
-	 * only.
-	 */
-	unsigned int id = (*iter)->id();
-	if (id >= firstExternalCameraId_)
-		callbacks_->camera_device_status_change(callbacks_, id,
-							CAMERA_DEVICE_STATUS_NOT_PRESENT);
+		/*
+		 * CAMERA_DEVICE_STATUS_NOT_PRESENT should be set for external
+		 * cameras only.
+		 */
+		unsigned int id = (*iter)->id();
+		if (id >= firstExternalCameraId_)
+			callbacks_->camera_device_status_change(callbacks_, id,
+								CAMERA_DEVICE_STATUS_NOT_PRESENT);
 
-	/*
-	 * \todo Check if the camera is already open and running.
-	 * Inform the framework about its absence before deleting its
-	 * reference here.
-	 */
-	cameras_.erase(iter);
+		/*
+		 * \todo Check if the camera is already open and running.
+		 * Inform the framework about its absence before deleting its
+		 * reference here.
+		 */
+		iter = cameras_.erase(iter);
 
-	LOG(HAL, Debug) << "Camera ID: " << id << " removed successfully.";
+		LOG(HAL, Debug) << "Camera ID: " << id << " removed successfully.";
+	}
 }
 
 CameraDevice *CameraHalManager::cameraDeviceFromHalId(unsigned int id)
@@ -260,10 +276,26 @@ int CameraHalManager::getCameraInfo(unsigned int id, struct camera_info *info)
 	info->facing = camera->facing();
 	info->orientation = camera->orientation();
 	info->device_version = CAMERA_DEVICE_API_VERSION_3_3;
-	info->resource_cost = 0;
 	info->static_camera_characteristics = camera->getStaticMetadata();
-	info->conflicting_devices = nullptr;
-	info->conflicting_devices_length = 0;
+
+	/*
+	 * The views of a camera module that turns share the sensor, opening
+	 * one makes the others unavailable.
+	 */
+	std::vector<char *> &conflicts = conflictingDevices_[id];
+	if (conflicts.empty()) {
+		for (const std::unique_ptr<CameraDevice> &other : cameras_) {
+			if (other.get() == camera || other->camera() != camera->camera())
+				continue;
+
+			conflictIds_.push_back(std::to_string(other->id()));
+			conflicts.push_back(conflictIds_.back().data());
+		}
+	}
+
+	info->resource_cost = conflicts.empty() ? 0 : 100;
+	info->conflicting_devices = conflicts.empty() ? nullptr : conflicts.data();
+	info->conflicting_devices_length = conflicts.size();
 
 	return 0;
 }

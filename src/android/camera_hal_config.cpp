@@ -27,14 +27,15 @@ class CameraHalConfig::Private : public Extensible::Private
 public:
 	Private();
 
-	int parseConfigFile(File &file, std::map<std::string, CameraConfigData> *cameras);
+	int parseConfigFile(File &file, std::map<std::string, std::vector<CameraConfigData>> *cameras);
 
 private:
 	int parseCameraConfigData(const std::string &cameraId, const ValueNode &);
+	int parseView(const ValueNode &, CameraConfigData &cameraConfigData);
 	int parseLocation(const ValueNode &, CameraConfigData &cameraConfigData);
 	int parseRotation(const ValueNode &, CameraConfigData &cameraConfigData);
 
-	std::map<std::string, CameraConfigData> *cameras_;
+	std::map<std::string, std::vector<CameraConfigData>> *cameras_;
 };
 
 CameraHalConfig::Private::Private()
@@ -42,7 +43,7 @@ CameraHalConfig::Private::Private()
 }
 
 int CameraHalConfig::Private::parseConfigFile(File &file,
-					      std::map<std::string, CameraConfigData> *cameras)
+					      std::map<std::string, std::vector<CameraConfigData>> *cameras)
 {
 	/*
 	 * Parse the HAL properties.
@@ -61,6 +62,19 @@ int CameraHalConfig::Private::parseConfigFile(File &file,
 	 *     location: value
 	 *     rotation: value
 	 *     ...
+	 *
+	 * A camera module that turns to face several directions lists them as
+	 * views, each an Android camera, with the position (in the units of the
+	 * position control) that faces that way:
+	 *
+	 *   "camera2 id":
+	 *     position_control: /sys/.../position
+	 *     park_position: value
+	 *     views:
+	 *       - location: value
+	 *         rotation: value
+	 *         position: value
+	 *       ...
 	 */
 
 	cameras_ = cameras;
@@ -96,8 +110,48 @@ int CameraHalConfig::Private::parseCameraConfigData(const std::string &cameraId,
 	if (!cameraObject.isDictionary())
 		return -EINVAL;
 
-	CameraConfigData &cameraConfigData = (*cameras_)[cameraId];
+	std::vector<CameraConfigData> &views = (*cameras_)[cameraId];
 
+	if (!cameraObject.contains("views")) {
+		CameraConfigData &cameraConfigData = views.emplace_back();
+		return parseView(cameraObject, cameraConfigData);
+	}
+
+	const ValueNode &viewsNode = cameraObject["views"];
+	std::string positionControl =
+		cameraObject["position_control"].get<std::string>("");
+	int32_t parkPosition = cameraObject["park_position"].get<int32_t>(-1);
+
+	if (!viewsNode.isList() || !viewsNode.size() || positionControl.empty()) {
+		LOG(HALConfig, Error)
+			<< "Camera '" << cameraId
+			<< "' needs a list of views and a position_control";
+		return -EINVAL;
+	}
+
+	for (const ValueNode &viewNode : viewsNode.asList()) {
+		CameraConfigData &cameraConfigData = views.emplace_back();
+
+		if (!viewNode.isDictionary() || parseView(viewNode, cameraConfigData))
+			return -EINVAL;
+
+		cameraConfigData.position = viewNode["position"].get<int32_t>(-1);
+		if (cameraConfigData.position < 0) {
+			LOG(HALConfig, Error)
+				<< "Camera '" << cameraId << "' view has no position";
+			return -EINVAL;
+		}
+
+		cameraConfigData.positionControl = positionControl;
+		cameraConfigData.parkPosition = parkPosition;
+	}
+
+	return 0;
+}
+
+int CameraHalConfig::Private::parseView(const ValueNode &cameraObject,
+					CameraConfigData &cameraConfigData)
+{
 	/* Parse property "location" */
 	if (parseLocation(cameraObject, cameraConfigData))
 		return -EINVAL;
@@ -183,18 +237,18 @@ int CameraHalConfig::parseConfigurationFile()
 
 	valid_ = true;
 
-	for (const auto &c : cameras_) {
-		const std::string &cameraId = c.first;
-		const CameraConfigData &camera = c.second;
-		LOG(HALConfig, Debug) << "'" << cameraId << "' "
-				      << "(" << camera.facing << ")["
-				      << camera.rotation << "]";
+	for (const auto &[cameraId, views] : cameras_) {
+		for (const CameraConfigData &camera : views)
+			LOG(HALConfig, Debug) << "'" << cameraId << "' "
+					      << "(" << camera.facing << ")["
+					      << camera.rotation << "]@"
+					      << camera.position;
 	}
 
 	return 0;
 }
 
-const CameraConfigData *CameraHalConfig::cameraConfigData(const std::string &cameraId) const
+const std::vector<CameraConfigData> *CameraHalConfig::cameraConfigData(const std::string &cameraId) const
 {
 	const auto &it = cameras_.find(cameraId);
 	if (it == cameras_.end()) {

@@ -31,6 +31,7 @@ public:
 
 	Span<uint8_t> plane(unsigned int plane);
 
+	int fd(unsigned int plane) const;
 	unsigned int stride(unsigned int plane) const;
 	unsigned int offset(unsigned int plane) const;
 	unsigned int size(unsigned int plane) const;
@@ -128,6 +129,11 @@ Span<uint8_t> CameraBuffer::Private::plane(unsigned int plane)
 
 	return { static_cast<uint8_t *>(addr),
 		 bufferManager_->GetPlaneSize(handle_, plane) };
+}
+
+int CameraBuffer::Private::fd(unsigned int plane) const
+{
+	return handle_->data[plane];
 }
 
 unsigned int CameraBuffer::Private::stride(unsigned int plane) const

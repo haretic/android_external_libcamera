@@ -33,6 +33,7 @@ public:
 
 	Span<uint8_t> plane(unsigned int plane);
 
+	int fd(unsigned int plane) const;
 	unsigned int stride(unsigned int plane) const;
 	unsigned int offset(unsigned int plane) const;
 	unsigned int size(unsigned int plane) const;
@@ -141,6 +142,11 @@ Span<uint8_t> CameraBuffer::Private::plane(unsigned int plane)
 		return {};
 
 	return planes_[plane];
+}
+
+int CameraBuffer::Private::fd([[maybe_unused]] unsigned int plane) const
+{
+	return fd_;
 }
 
 unsigned int CameraBuffer::Private::stride(unsigned int plane) const

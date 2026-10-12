@@ -25,6 +25,8 @@
 #include <libcamera/geometry.h>
 #include <libcamera/property_ids.h>
 
+#include "libcamera/internal/formats.h"
+
 #include "system/graphics.h"
 
 #include "camera_buffer.h"
@@ -781,9 +783,28 @@ CameraDevice::createFrameBuffer(const buffer_handle_t camera3buffer,
 		return nullptr;
 	}
 
+	/*
+	 * The buffer is filled by libcamera with the strides it computes, which
+	 * have to match the ones gralloc used to allocate the buffer.
+	 */
+	const PixelFormatInfo &info = PixelFormatInfo::info(pixelFormat);
+	for (size_t i = 0; i < buf.numPlanes(); ++i) {
+		static bool warned = false;
+
+		if (warned || !buf.stride(i) ||
+		    buf.stride(i) == info.stride(size.width, i, 1))
+			continue;
+
+		LOG(HAL, Warning)
+			<< "Plane " << i << " stride " << buf.stride(i)
+			<< " of " << size << " " << pixelFormat
+			<< " buffers differs from " << info.stride(size.width, i, 1);
+		warned = true;
+	}
+
 	std::vector<FrameBuffer::Plane> planes(buf.numPlanes());
 	for (size_t i = 0; i < buf.numPlanes(); ++i) {
-		SharedFD fd{ camera3buffer->data[i] };
+		SharedFD fd{ buf.fd(i) };
 		if (!fd.isValid()) {
 			LOG(HAL, Fatal) << "No valid fd";
 			return nullptr;

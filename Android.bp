@@ -628,7 +628,10 @@ prebuilt_etc {
 
 cc_library_shared {
     name: "camera.libcamera",
-    defaults: ["libcamera_private_defaults"],
+    defaults: [
+        "android.hardware.graphics.common-ndk_shared",
+        "libcamera_private_defaults",
+    ],
     relative_install_path: "hw",
     header_libs: [
         "libhardware_headers",
@@ -642,6 +645,8 @@ cc_library_shared {
         "libhardware",
         "libjpeg",
         "liblog",
+        "libui",
+        "libutils",
     ],
     static_libs: [
         "libyaml",
@@ -663,8 +668,8 @@ cc_library_shared {
         "src/android/jpeg/exif.cpp",
         "src/android/jpeg/post_processor_jpeg.cpp",
         "src/android/jpeg/thumbnailer.cpp",
-        "src/android/mm/generic_camera_buffer.cpp",
-        "src/android/mm/generic_frame_buffer_allocator.cpp",
+        "src/android/mm/android_camera_buffer.cpp",
+        "src/android/mm/dmabuf_frame_buffer_allocator.cpp",
         "src/android/yuv/post_processor_yuv.cpp",
     ],
 }

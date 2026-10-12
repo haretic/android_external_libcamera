@@ -42,6 +42,7 @@
 #include "libcamera/internal/delayed_controls.h"
 #include "libcamera/internal/device_enumerator.h"
 #include "libcamera/internal/formats.h"
+#include "libcamera/internal/framebuffer.h"
 #include "libcamera/internal/global_configuration.h"
 #include "libcamera/internal/media_device.h"
 #include "libcamera/internal/pipeline_handler.h"
@@ -208,6 +209,7 @@ public:
 	void create(Request *request, bool metadataRequested);
 	void destroy(uint32_t frame);
 	void clear();
+	std::vector<Request *> requests() const;
 
 	SimpleFrameInfo *find(uint32_t frame);
 
@@ -230,6 +232,14 @@ void SimpleFrames::destroy(uint32_t frame)
 void SimpleFrames::clear()
 {
 	frameInfo_.clear();
+}
+
+std::vector<Request *> SimpleFrames::requests() const
+{
+	std::vector<Request *> requests;
+	for (const auto &[frame, info] : frameInfo_)
+		requests.push_back(info.request);
+	return requests;
 }
 
 SimpleFrameInfo *SimpleFrames::find(uint32_t frame)
@@ -949,9 +959,15 @@ void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
 		if (conversionQueue_.empty())
 			return;
 
+		/*
+		 * The user-facing buffers got no frame: mark them cancelled, or
+		 * the request would complete as successful without one.
+		 */
 		const RequestOutputs &outputs = conversionQueue_.front();
-		for (auto &[stream, buf] : outputs.outputs)
+		for (auto &[stream, buf] : outputs.outputs) {
+			buf->_d()->cancel();
 			pipe->completeBuffer(outputs.request, buf);
+		}
 		SimpleFrameInfo *info = frameInfo_.find(outputs.request->sequence());
 		if (info)
 			info->metadataRequired = false;
@@ -1019,10 +1035,16 @@ void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
 
 void SimpleCameraData::clearIncompleteRequests()
 {
-	while (!conversionQueue_.empty()) {
-		pipe()->cancelRequest(conversionQueue_.front().request);
-		conversionQueue_.pop();
-	}
+	/*
+	 * Every request has frame info until it completes. Besides those
+	 * waiting for conversion, that includes requests whose buffers are
+	 * done but whose metadata the stopped IPA won't deliver anymore.
+	 * Cancel them all, in order.
+	 */
+	for (Request *request : frameInfo_.requests())
+		pipe()->cancelRequest(request);
+	frameInfo_.clear();
+	conversionQueue_ = {};
 }
 
 void SimpleCameraData::tryCompleteRequest(Request *request)
@@ -1794,7 +1816,6 @@ void SimplePipelineHandler::stopDevice(Camera *camera)
 
 	video->bufferReady.disconnect(data, &SimpleCameraData::imageBufferReady);
 
-	data->frameInfo_.clear();
 	data->clearIncompleteRequests();
 	data->conversionBuffers_.clear();
 

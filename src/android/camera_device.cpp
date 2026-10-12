@@ -613,7 +613,7 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 	 * Generate an empty configuration, and construct a StreamConfiguration
 	 * for each camera3_stream to add to it.
 	 */
-	std::unique_ptr<CameraConfiguration> config = camera_->generateConfiguration();
+	std::unique_ptr<CameraConfiguration> config = capabilities_.generateConfiguration();
 	if (!config) {
 		LOG(HAL, Error) << "Failed to generate camera configuration";
 		return -EINVAL;
@@ -782,7 +782,7 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 	 */
 	if (streamConfigs.size() > 1) {
 		std::unique_ptr<CameraConfiguration> trial =
-			camera_->generateConfiguration();
+			capabilities_.generateConfiguration();
 		for (const auto &streamConfig : streamConfigs)
 			trial->addConfiguration(streamConfig.config);
 		trial->validate();

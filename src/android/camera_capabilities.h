@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <set>
@@ -32,6 +33,13 @@ public:
 	libcamera::PixelFormat toPixelFormat(int format) const;
 	unsigned int maxJpegBufferSize() const { return maxJpegBufferSize_; }
 	size_t jpegBufferSize(const libcamera::Size &size) const;
+	std::unique_ptr<libcamera::CameraConfiguration>
+	generateConfiguration(libcamera::Span<const libcamera::StreamRole> roles = {}) const;
+	std::unique_ptr<libcamera::CameraConfiguration>
+	generateConfiguration(std::initializer_list<libcamera::StreamRole> roles) const
+	{
+		return generateConfiguration(libcamera::Span(roles.begin(), roles.end()));
+	}
 
 	std::unique_ptr<CameraMetadata> requestTemplateManual() const;
 	std::unique_ptr<CameraMetadata> requestTemplatePreview() const;

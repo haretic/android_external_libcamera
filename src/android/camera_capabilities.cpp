@@ -21,6 +21,7 @@
 
 #include <libcamera/control_ids.h>
 #include <libcamera/controls.h>
+#include <libcamera/orientation.h>
 #include <libcamera/property_ids.h>
 
 #include "libcamera/internal/formats.h"
@@ -427,13 +428,37 @@ int CameraCapabilities::initialize(std::shared_ptr<Camera> camera,
 	return ret;
 }
 
+/*
+ * Generate a configuration for \a roles that captures images in the sensor's
+ * mounting orientation. Android rotates them itself, by the orientation the
+ * HAL reports, and a quarter turn can't be done by the sensor flips anyway.
+ */
+std::unique_ptr<CameraConfiguration>
+CameraCapabilities::generateConfiguration(Span<const StreamRole> roles) const
+{
+	std::unique_ptr<CameraConfiguration> config =
+		camera_->generateConfiguration(roles);
+	if (!config)
+		return nullptr;
+
+	const auto &rotation = camera_->properties().get(properties::Rotation);
+	if (rotation) {
+		bool success;
+		Orientation orientation = orientationFromRotation(*rotation, &success);
+		if (success)
+			config->orientation = orientation;
+	}
+
+	return config;
+}
+
 std::vector<Size>
 CameraCapabilities::initializeYUVResolutions(const PixelFormat &pixelFormat,
 					     const std::vector<Size> &resolutions)
 {
 	std::vector<Size> supportedResolutions;
 	std::unique_ptr<CameraConfiguration> cameraConfig =
-		camera_->generateConfiguration({ StreamRole::Viewfinder });
+		generateConfiguration({ StreamRole::Viewfinder });
 	if (!cameraConfig) {
 		LOG(HAL, Error) << "Failed to get supported YUV resolutions";
 		return supportedResolutions;
@@ -464,7 +489,7 @@ CameraCapabilities::initializeRawResolutions(const PixelFormat &pixelFormat)
 {
 	std::vector<Size> supportedResolutions;
 	std::unique_ptr<CameraConfiguration> cameraConfig =
-		camera_->generateConfiguration({ StreamRole::Raw });
+		generateConfiguration({ StreamRole::Raw });
 	if (!cameraConfig) {
 		LOG(HAL, Error) << "Failed to get supported Raw resolutions";
 		return supportedResolutions;
@@ -490,7 +515,7 @@ int CameraCapabilities::initializeStreamConfigurations()
 	 * \todo Get this from the camera properties once defined
 	 */
 	std::unique_ptr<CameraConfiguration> cameraConfig =
-		camera_->generateConfiguration({ StreamRole::StillCapture });
+		generateConfiguration({ StreamRole::StillCapture });
 	if (!cameraConfig) {
 		LOG(HAL, Error) << "Failed to get maximum resolution";
 		return -EINVAL;
@@ -773,7 +798,7 @@ int CameraCapabilities::initializeStaticMetadata()
 	 * collect control limits and properties from a known state.
 	 */
 	std::unique_ptr<CameraConfiguration> cameraConfig =
-		camera_->generateConfiguration({ StreamRole::Viewfinder });
+		generateConfiguration({ StreamRole::Viewfinder });
 	if (!cameraConfig) {
 		LOG(HAL, Error) << "Failed to generate camera configuration";
 		staticMetadata_.reset();

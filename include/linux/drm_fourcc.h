@@ -1859,6 +1859,17 @@ drm_fourcc_canonicalize_nvidia_format_mod(__u64 modifier)
 #define PISP_FORMAT_MOD_COMPRESS_MODE1 fourcc_mod_code(RPI, 1)
 #define PISP_FORMAT_MOD_COMPRESS_MODE2 fourcc_mod_code(RPI, 2)
 
+/*
+ * MediaTek ISP packed raw layout
+ *
+ * The MediaTek camera ISP stores 10-bit RAW samples as a little-endian bit
+ * stream without padding: every four consecutive samples are packed into 5
+ * bytes, the first sample occupying the 10 least-significant bits of the first
+ * two bytes. The value is outside of the bit fields used by the MediaTek DRM
+ * modifiers above.
+ */
+#define MTISP_FORMAT_MOD_PACKED fourcc_mod_code(MTK, 0x100000000)
+
 #if defined(__cplusplus)
 }
 #endif

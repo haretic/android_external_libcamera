@@ -65,6 +65,8 @@ namespace libcamera {
  * \brief Format uses PISP mode 1 compression
  * \var BayerFormat::Packing::PISP2
  * \brief Format uses PISP mode 2 compression
+ * \var BayerFormat::Packing::MTISP
+ * \brief Format uses MediaTek ISP style packing
  */
 
 namespace {
@@ -128,6 +130,14 @@ const std::map<BayerFormat, Formats, BayerFormatComparator> bayerToFormat{
 		{ formats::SGRBG10_IPU3, V4L2PixelFormat(V4L2_PIX_FMT_IPU3_SGRBG10) } },
 	{ { BayerFormat::RGGB, 10, BayerFormat::Packing::IPU3 },
 		{ formats::SRGGB10_IPU3, V4L2PixelFormat(V4L2_PIX_FMT_IPU3_SRGGB10) } },
+	{ { BayerFormat::BGGR, 10, BayerFormat::Packing::MTISP },
+		{ formats::SBGGR10_MTISP, V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SBGGR10) } },
+	{ { BayerFormat::GBRG, 10, BayerFormat::Packing::MTISP },
+		{ formats::SGBRG10_MTISP, V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SGBRG10) } },
+	{ { BayerFormat::GRBG, 10, BayerFormat::Packing::MTISP },
+		{ formats::SGRBG10_MTISP, V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SGRBG10) } },
+	{ { BayerFormat::RGGB, 10, BayerFormat::Packing::MTISP },
+		{ formats::SRGGB10_MTISP, V4L2PixelFormat(V4L2_PIX_FMT_MTISP_SRGGB10) } },
 	{ { BayerFormat::BGGR, 12, BayerFormat::Packing::None },
 		{ formats::SBGGR12, V4L2PixelFormat(V4L2_PIX_FMT_SBGGR12) } },
 	{ { BayerFormat::GBRG, 12, BayerFormat::Packing::None },
@@ -327,6 +337,8 @@ std::ostream &operator<<(std::ostream &out, const BayerFormat &f)
 		out << "-PISP1";
 	else if (f.packing == BayerFormat::Packing::PISP2)
 		out << "-PISP2";
+	else if (f.packing == BayerFormat::Packing::MTISP)
+		out << "-MTISP";
 
 	return out;
 }

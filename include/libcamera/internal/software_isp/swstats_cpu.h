@@ -103,6 +103,7 @@ private:
 	void statsGBRG12PLine0(const uint8_t *src[], SwIspStats &stats);
 
 	void processBayerFrame2(MappedFrameBuffer &in);
+	void processMtisp10Frame2(MappedFrameBuffer &in);
 
 	processFrameFn processFrame_;
 

@@ -18,6 +18,8 @@
 #include "libcamera/internal/bayer_format.h"
 #include "libcamera/internal/mapped_framebuffer.h"
 
+#include "mtisp.h"
+
 namespace libcamera {
 
 /**
@@ -494,6 +496,20 @@ int SwStatsCpu::configure(const StreamConfiguration &inputCfg, unsigned int stat
 
 	uint8_t bitDepth = bayerFormat.bitDepth;
 
+	/*
+	 * The line based statistics are gathered on the lines unpacked to 16
+	 * bits per sample by the debayer, only the pattern width differs from
+	 * the unpacked 10-bit format.
+	 */
+	if (bitDepth == 10 && bayerFormat.packing == BayerFormat::Packing::MTISP &&
+	    setupStandardBayerOrder(bayerFormat.order) == 0) {
+		patternSize_.width = 4; /* 5 bytes per *4* pixels */
+		processFrame_ = &SwStatsCpu::processMtisp10Frame2;
+		stats0_ = &SwStatsCpu::statsBGGR10Line0;
+		sumShift_ = 2;
+		return 0;
+	}
+
 	if ((bitDepth == 10 || bitDepth == 12) &&
 	    bayerFormat.packing == BayerFormat::Packing::CSI2) {
 		if (bitDepth == 10)
@@ -589,6 +605,37 @@ void SwStatsCpu::processBayerFrame2(MappedFrameBuffer &in)
 		/* linePointers[0] is not used by any stats0_ functions */
 		linePointers[1] = src;
 		linePointers[2] = src + stride_;
+		(this->*stats0_)(linePointers, stats_[0]);
+		src += stride_ * 2;
+	}
+}
+
+void SwStatsCpu::processMtisp10Frame2(MappedFrameBuffer &in)
+{
+	const uint8_t *src = in.planes()[0].data();
+	const unsigned int width = window_.x + window_.width;
+	std::vector<uint16_t> lines[2];
+	const uint8_t *linePointers[3];
+
+	/* Unpack from the start of the line, rounded up to complete groups. */
+	for (std::vector<uint16_t> &line : lines)
+		line.resize((width + 3) & ~3);
+
+	/* Adjust src for starting at window_.y */
+	src += window_.y * stride_;
+
+	for (unsigned int y = 0; y < window_.height; y += 2) {
+		if (y & ySkipMask_) {
+			src += stride_ * 2;
+			continue;
+		}
+
+		unpackMtisp10(lines[0].data(), src, lines[0].size());
+		unpackMtisp10(lines[1].data(), src + stride_, lines[1].size());
+
+		/* linePointers[0] is not used by any stats0_ functions */
+		linePointers[1] = reinterpret_cast<const uint8_t *>(lines[0].data());
+		linePointers[2] = reinterpret_cast<const uint8_t *>(lines[1].data());
 		(this->*stats0_)(linePointers, stats_[0]);
 		src += stride_ * 2;
 	}

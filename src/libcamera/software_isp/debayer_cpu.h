@@ -147,6 +147,9 @@ private:
 	std::array<double, kGammaLookupSize> gammaTable_;
 	LookupTable gammaLut_;
 	bool ccmEnabled_;
+	bool unpackMtisp_;
+	bool yuvOutput_;
+	bool swapUV_;
 	DebayerParams params_;
 
 	debayerFn debayer0_;

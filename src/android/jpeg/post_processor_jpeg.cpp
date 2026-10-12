@@ -211,7 +211,7 @@ void PostProcessorJpeg::process(Camera3RequestDescriptor::StreamBuffer *streamBu
 
 	/* Fill in the JPEG blob header. */
 	uint8_t *resultPtr = destination->plane(0).data()
-			   + destination->jpegBufferSize(cameraDevice_->maxJpegBufferSize())
+			   + destination->jpegBufferSize(cameraDevice_->jpegBufferSize(streamSize_))
 			   - sizeof(struct camera3_jpeg_blob);
 	auto *blob = reinterpret_cast<struct camera3_jpeg_blob *>(resultPtr);
 	blob->jpeg_blob_id = CAMERA3_JPEG_BLOB_ID;

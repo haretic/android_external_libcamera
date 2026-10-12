@@ -748,6 +748,7 @@ int CameraCapabilities::initializeStreamConfigurations()
 		 * encoder giving the maximum frame size required.
 		 */
 		maxJpegBufferSize_ = maxJpegSize.width * maxJpegSize.height * 1.5;
+		maxJpegSize_ = maxJpegSize;
 	}
 
 	LOG(HAL, Debug) << "Collected stream configuration map: ";
@@ -1492,6 +1493,28 @@ PixelFormat CameraCapabilities::toPixelFormat(int format) const
 	}
 
 	return it->second;
+}
+
+/*
+ * The size cameraserver allocates for a BLOB buffer of a JPEG stream of \a size
+ * (Camera3Device::getJpegBufferSize()). The blob trailer goes at its end.
+ */
+size_t CameraCapabilities::jpegBufferSize(const Size &size) const
+{
+	/* kMinJpegBufferSize: 256 KiB and an 8 byte CameraBlob. */
+	const ssize_t minJpegBufferSize = 256 * 1024 + 8;
+	const ssize_t maxJpegBufferSize = maxJpegBufferSize_;
+
+	if (maxJpegSize_.isNull() || maxJpegBufferSize <= minJpegBufferSize)
+		return maxJpegBufferSize_;
+
+	/* Same float arithmetic as cameraserver, to get the same rounding. */
+	float scaleFactor = static_cast<float>(size.width * size.height) /
+			    (maxJpegSize_.width * maxJpegSize_.height);
+	ssize_t jpegBufferSize = scaleFactor * (maxJpegBufferSize - minJpegBufferSize) +
+				 minJpegBufferSize;
+
+	return std::min(jpegBufferSize, maxJpegBufferSize);
 }
 
 std::unique_ptr<CameraMetadata> CameraCapabilities::requestTemplateManual() const

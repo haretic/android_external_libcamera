@@ -58,6 +58,7 @@ public:
 	int facing() const { return facing_; }
 	int orientation() const { return orientation_; }
 	unsigned int maxJpegBufferSize() const;
+	size_t jpegBufferSize(const libcamera::Size &size) const;
 
 	void setCallbacks(const camera3_callback_ops_t *callbacks);
 	const camera_metadata_t *getStaticMetadata();

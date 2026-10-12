@@ -31,6 +31,7 @@ public:
 	CameraMetadata *staticMetadata() const { return staticMetadata_.get(); }
 	libcamera::PixelFormat toPixelFormat(int format) const;
 	unsigned int maxJpegBufferSize() const { return maxJpegBufferSize_; }
+	size_t jpegBufferSize(const libcamera::Size &size) const;
 
 	std::unique_ptr<CameraMetadata> requestTemplateManual() const;
 	std::unique_ptr<CameraMetadata> requestTemplatePreview() const;
@@ -79,6 +80,7 @@ private:
 	std::map<int, libcamera::PixelFormat> formatsMap_;
 	std::unique_ptr<CameraMetadata> staticMetadata_;
 	unsigned int maxJpegBufferSize_;
+	libcamera::Size maxJpegSize_;
 
 	std::set<int32_t> availableCharacteristicsKeys_;
 	std::set<int32_t> availableRequestKeys_;

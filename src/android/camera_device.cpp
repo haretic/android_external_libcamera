@@ -519,6 +519,11 @@ unsigned int CameraDevice::maxJpegBufferSize() const
 	return capabilities_.maxJpegBufferSize();
 }
 
+size_t CameraDevice::jpegBufferSize(const Size &size) const
+{
+	return capabilities_.jpegBufferSize(size);
+}
+
 void CameraDevice::setCallbacks(const camera3_callback_ops_t *callbacks)
 {
 	callbacks_ = callbacks;

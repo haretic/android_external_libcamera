@@ -395,6 +395,14 @@ int SoftwareIsp::start()
  */
 void SoftwareIsp::stop()
 {
+	/*
+	 * Pipeline handlers also stop when starting fails before the ISP was
+	 * started. A blocking call to the worker thread that is not running
+	 * would then never return, and there is nothing to stop.
+	 */
+	if (!ispWorkerThread_.isRunning())
+		return;
+
 	debayer_->invokeMethod(&Debayer::stop,
 			       ConnectionTypeBlocking);
 

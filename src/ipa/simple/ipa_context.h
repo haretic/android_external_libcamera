@@ -45,6 +45,8 @@ struct IPAActiveState {
 	struct {
 		int32_t exposure;
 		double again;
+		/* Gain the ISP applies once the sensor gain is at its maximum. */
+		double digitalGain;
 		bool valid;
 		/* The longest exposure the frame duration limits allow. */
 		int32_t exposureMax;
@@ -83,6 +85,7 @@ struct IPAFrameContext : public FrameContext {
 	} sensor;
 
 	RGB<float> gains;
+	double digitalGain;
 
 	float gamma;
 	std::optional<float> contrast;

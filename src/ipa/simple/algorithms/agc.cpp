@@ -45,24 +45,53 @@ static constexpr float kExposureSatisfactory = 0.2;
  *
  *   factor = 1.0 + kExpProportionalGain * error
  *
- * With kExpProportionalGain = 0.04:
- *   - max error ~2.5 -> factor 1.10 (~10% step, same as before)
- *   - error 1.0      -> factor 1.04 (~4% step)
- *   - error 0.3      -> factor 1.012 (~1.2% step)
+ * The MSV runs from 1 to kExposureBinsCount, so a dark scene's error is at
+ * most 1.5 and a saturated one's -2.5. Each correction scales the exposure
+ * and gain the statistics frame was taken with, so the sensor's control
+ * delay doesn't accumulate, and a large gain stays stable:
+ *   - error 1.5 (dark)   -> factor 1.375
+ *   - error 0.3          -> factor 1.075
+ *   - error -2.5 (white) -> factor 0.6 (kExpMaxStep)
  *
- * This replaces the fixed 10% bang-bang step with a proportional correction
- * that converges smoothly and avoids overshooting near the target.
+ * In low light the exposure and gain then reach their limits in a few
+ * seconds; with 0.04 it took half a minute.
  */
-static constexpr float kExpProportionalGain = 0.04;
+static constexpr float kExpProportionalGain = 0.25;
 
 /*
- * Maximum multiplicative step per frame, to bound the correction when the
+ * Maximum multiplicative step per statistics frame, to bound the correction when the
  * scene changes dramatically.
  */
-static constexpr float kExpMaxStep = 0.15;
+static constexpr float kExpMaxStep = 0.4;
+
+/*
+ * Gain the ISP applies once exposure and analogue gain are at their limits,
+ * for scenes too dark for the sensor alone.
+ */
+static constexpr double kDigitalGainMax = 4.0;
 
 Agc::Agc()
 {
+}
+
+int Agc::configure(IPAContext &context,
+		   [[maybe_unused]] const IPAConfigInfo &configInfo)
+{
+	context.activeState.agc.digitalGain = 1.0;
+
+	return 0;
+}
+
+void Agc::prepare(IPAContext &context,
+		  [[maybe_unused]] const uint32_t frame,
+		  IPAFrameContext &frameContext,
+		  DebayerParams *params)
+{
+	/* Awb, earlier in the tuning file, has set the colour gains. */
+	const double digitalGain = context.activeState.agc.digitalGain;
+
+	frameContext.digitalGain = digitalGain;
+	params->gains = params->gains * static_cast<float>(digitalGain);
 }
 
 void Agc::queueRequest(IPAContext &context,
@@ -102,6 +131,7 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
 {
 	int32_t &exposure = frameContext.sensor.exposure;
 	double &again = frameContext.sensor.gain;
+	double digitalGain = frameContext.digitalGain;
 
 	const int32_t exposureMax = context.activeState.agc.exposureMax;
 	double error = kExposureOptimal - exposureMSV;
@@ -119,10 +149,15 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
 	float factor = 1.0f + step;
 
 	if (factor > 1.0f) {
-		/* Scene too dark: increase exposure first, then gain. */
+		/*
+		 * Scene too dark: increase exposure first, then gain, then the
+		 * ISP digital gain.
+		 */
 		if (exposure < exposureMax) {
 			int32_t next = static_cast<int32_t>(exposure * factor);
 			exposure = std::max(next, exposure + 1);
+		} else if (again >= context.configuration.agc.againMax) {
+			digitalGain = std::min(digitalGain * factor, kDigitalGainMax);
 		} else {
 			double next = again * factor;
 			if (next - again < context.configuration.agc.againMinStep)
@@ -131,8 +166,13 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
 				again = next;
 		}
 	} else {
-		/* Scene too bright: decrease gain first, then exposure. */
-		if (again > context.configuration.agc.again10) {
+		/*
+		 * Scene too bright: decrease the digital gain first, then the
+		 * gain, then exposure.
+		 */
+		if (digitalGain > 1.0) {
+			digitalGain = std::max(digitalGain * factor, 1.0);
+		} else if (again > context.configuration.agc.again10) {
 			double next = again * factor;
 			if (again - next < context.configuration.agc.againMinStep)
 				again -= context.configuration.agc.againMinStep;
@@ -151,11 +191,13 @@ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, dou
 
 	context.activeState.agc.exposure = exposure;
 	context.activeState.agc.again = again;
+	context.activeState.agc.digitalGain = digitalGain;
 
 	LOG(IPASoftExposure, Debug)
 		<< "exposureMSV " << exposureMSV
 		<< " error " << error << " factor " << factor
-		<< " exp " << exposure << " again " << again;
+		<< " exp " << exposure << " again " << again
+		<< " dgain " << digitalGain;
 }
 
 void Agc::process(IPAContext &context,
@@ -168,6 +210,7 @@ void Agc::process(IPAContext &context,
 		context.configuration.agc.lineDuration * frameContext.sensor.exposure;
 	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
 	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
+	metadata.set(controls::DigitalGain, frameContext.digitalGain);
 	if (context.configuration.agc.vblankMax) {
 		utils::Duration frameDuration = context.configuration.agc.lineDuration *
 			(context.sensorInfo.outputSize.height + frameContext.sensor.vblank);
@@ -216,8 +259,15 @@ void Agc::process(IPAContext &context,
 		return;
 	}
 
+	/*
+	 * The statistics come from the raw frame: place each value where the
+	 * digital gain the frame was processed with puts it.
+	 */
 	for (unsigned int i = 0; i < histogramSize; i++) {
-		unsigned int idx = (i - (i / yHistValsPerBinMod)) / yHistValsPerBin;
+		const unsigned int j =
+			std::min<unsigned int>(i * frameContext.digitalGain,
+					       histogramSize - 1);
+		unsigned int idx = (j - (j / yHistValsPerBinMod)) / yHistValsPerBin;
 		exposureBins[idx] += histogram[blackLevelHistIdx + i];
 	}
 

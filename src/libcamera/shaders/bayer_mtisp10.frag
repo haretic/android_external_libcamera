@@ -26,8 +26,13 @@ uniform sampler2D tex_y;
 uniform vec3 awb;
 uniform mat3 ccm;
 uniform vec3 blacklevel;
-/* The contrast S-curve and the gamma, 1024 steps */
+/*
+ * The tone curve, the contrast S-curve and the gamma, 1024 steps over 0 to
+ * TONE_RANGE indexed by the square root, for finer steps in the shadows
+ * (DebayerEGL::updateLut() has the same range).
+ */
 uniform sampler2D tex_lut;
+#define TONE_RANGE 16.0
 
 /*
  * The texture holds four bytes of a line in each texel, in r, g, b and a,
@@ -102,16 +107,19 @@ vec3 demosaic(vec2 center, vec3 top, vec3 mid, vec3 bot)
 
 vec3 process(vec3 rgb)
 {
-	rgb = (rgb - blacklevel) / (1.0 - blacklevel);
-
-	/* Apply AWB gains, and saturate each channel at sensor range */
-	rgb = clamp(rgb * awb, vec3(0.0), vec3(1.0));
+	/*
+	 * Saturate at the sensor's range, then apply the gains: what they
+	 * push past white keeps its detail for the tone curve's shoulder.
+	 * Negative values from noise around the black level go on through
+	 * the colour correction rather than being cut, which would make the
+	 * shadows the colour of the channels with the highest gains.
+	 */
+	rgb = min((rgb - blacklevel) / (1.0 - blacklevel), 1.0) * awb;
 
 	/* Colour Correction Matrix */
 	rgb = ccm * rgb;
 
-	/* Contrast and gamma after colour correction, from their table */
-	rgb = clamp(rgb, 0.0, 1.0) * (1023.0 / 1024.0) + 0.5 / 1024.0;
+	rgb = sqrt(clamp(rgb / TONE_RANGE, 0.0, 1.0)) * (1023.0 / 1024.0) + 0.5 / 1024.0;
 	return vec3(texture2D(tex_lut, vec2(rgb.r, 0.5)).r,
 		    texture2D(tex_lut, vec2(rgb.g, 0.5)).r,
 		    texture2D(tex_lut, vec2(rgb.b, 0.5)).r);
@@ -200,10 +208,16 @@ float luma(vec3 rgb)
 	return dot(rgb, vec3(0.299, 0.587, 0.114));
 }
 
+/*
+ * The colour of the darkest shadows is the noise of the channels with the
+ * highest gains after colour correction, purple under warm light: it fades
+ * out below a luma of 0.15, gone at 0.03.
+ */
 vec2 chroma(vec3 rgb)
 {
 	return vec2(dot(rgb, vec3(-0.168736, -0.331264, 0.5)),
-		    dot(rgb, vec3(0.5, -0.418688, -0.081312))) + 0.5;
+		    dot(rgb, vec3(0.5, -0.418688, -0.081312))) *
+	       smoothstep(0.03, 0.15, luma(rgb)) + 0.5;
 }
 #endif
 
@@ -218,11 +232,48 @@ void main(void)
 	gl_FragColor = vec4(luma(process(c0)), luma(process(c1)),
 			    luma(process(c2)), luma(process(c3)));
 #elif defined (OUTPUT_UV)
-	/* The chroma of two 2x2 blocks, sited at their top left pixels */
+	/*
+	 * The chroma of two 2x2 blocks, each from the mean colour of the 4x4
+	 * samples around it: four red, eight green and four blue, which takes
+	 * most of the colour noise out of dark scenes. The blocks' boxes start
+	 * a column before them, at x - 1 and x + 1, and a line above.
+	 */
 	vec2 p = floor(gl_FragCoord.xy) * vec2(4.0, 2.0) + out_origin;
-	group_colours(p.x * 0.25, p.y, stride, c0, c1, c2, c3);
-	vec2 a = chroma(process(c0));
-	vec2 b = chroma(process(c2));
+	float g = p.x * 0.25;
+	vec4 s0, s1, s2, s3;
+	vec2 e0, e1, e2, e3;
+	group_line(g, p.y - 1.0, stride, s0, e0);
+	group_line(g, p.y, stride, s1, e1);
+	group_line(g, p.y + 1.0, stride, s2, e2);
+	group_line(g, p.y + 2.0, stride, s3, e3);
+
+	/* Lines 0 and 2 of a box have one colour pair, 1 and 3 the other */
+	vec4 a02 = vec4(e0.x, s0.xyz) + vec4(e2.x, s2.xyz);
+	vec4 a13 = vec4(e1.x, s1.xyz) + vec4(e3.x, s3.xyz);
+	vec4 b02 = vec4(s0.yzw, e0.y) + vec4(s2.yzw, e2.y);
+	vec4 b13 = vec4(s1.yzw, e1.y) + vec4(s3.yzw, e3.y);
+
+	/*
+	 * Red sits on even columns of even lines, blue on odd columns of odd
+	 * ones, counted from the first red; the same for every fragment.
+	 */
+	vec2 alternate = mod(p - 1.0 + tex_bayer_first_red, 2.0);
+	vec4 even = alternate.x < 1.0 ? vec4(1.0, 0.0, 1.0, 0.0) : vec4(0.0, 1.0, 0.0, 1.0);
+	vec4 odd = 1.0 - even;
+	if (alternate.y >= 1.0) {
+		vec4 t = a02;
+		a02 = a13;
+		a13 = t;
+		t = b02;
+		b02 = b13;
+		b13 = t;
+	}
+	vec3 boxA = vec3(dot(a02, even), dot(a02, odd) + dot(a13, even), dot(a13, odd)) *
+		    vec3(0.25, 0.125, 0.25);
+	vec3 boxB = vec3(dot(b02, even), dot(b02, odd) + dot(b13, even), dot(b13, odd)) *
+		    vec3(0.25, 0.125, 0.25);
+	vec2 a = chroma(process(boxA));
+	vec2 b = chroma(process(boxB));
 #if defined (SWAP_UV)
 	gl_FragColor = vec4(a.yx, b.yx);
 #else

@@ -587,8 +587,11 @@ void DebayerEGL::setShaderVariableValues(eGLImage &eglImageIn, const DebayerPara
 }
 
 /*
- * The contrast curve and the gamma of shaders that take them from a table
- * rather than computing them for every pixel: 1024 steps, interpolated.
+ * The tone curve, contrast and gamma of shaders that take them from a table
+ * rather than computing them for every pixel: 1024 steps, interpolated, over
+ * 0 to kToneRange indexed by the square root (TONE_RANGE in the shader). The
+ * tone curve is straight to kToneKnee, then rolls off towards white, so the
+ * highlights the gains push past it keep their detail.
  */
 void DebayerEGL::updateLut(float gamma, float contrastExp)
 {
@@ -597,7 +600,11 @@ void DebayerEGL::updateLut(float gamma, float contrastExp)
 
 	std::array<uint8_t, kLutSize> table;
 	for (unsigned int i = 0; i < kLutSize; i++) {
-		float v = static_cast<float>(i) / (kLutSize - 1);
+		const float u = static_cast<float>(i) / (kLutSize - 1);
+		float v = kToneRange * u * u;
+		if (v > kToneKnee)
+			v = kToneKnee + (1.0f - kToneKnee) *
+					(1.0f - std::exp(-(v - kToneKnee) / (1.0f - kToneKnee)));
 		v = v < 0.5f ? 0.5f * std::pow(v / 0.5f, contrastExp)
 			     : 1.0f - 0.5f * std::pow((1.0f - v) / 0.5f, contrastExp);
 		table[i] = std::clamp(std::lround(std::pow(v, gamma) * 255.0f), 0L, 255L);

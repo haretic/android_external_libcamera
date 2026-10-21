@@ -109,6 +109,8 @@ private:
 	std::vector<uint8_t> readback_;
 
 	static constexpr unsigned int kLutSize = 1024;
+	static constexpr float kToneRange = 16.0f;
+	static constexpr float kToneKnee = 0.6f;
 	std::unique_ptr<eGLImage> lut_;
 	float lutGamma_;
 	float lutContrastExp_;

@@ -10,6 +10,7 @@
 #include "libcamera/internal/egl.h"
 
 #include <fcntl.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -189,6 +190,8 @@ int eGL::createDMABufTexture2D(eGLImage &eglImage, int fd, bool output)
 		LOG(eGL, Error) << "unhandled GL format";
 		return -ENODEV;
 	}
+	if (eglImage.drmFormat_)
+		drm_format = eglImage.drmFormat_;
 
 	// clang-format off
 	EGLint image_attrs[] = {
@@ -196,7 +199,7 @@ int eGL::createDMABufTexture2D(eGLImage &eglImage, int fd, bool output)
 		EGL_HEIGHT, (EGLint)eglImage.height_,
 		EGL_LINUX_DRM_FOURCC_EXT, drm_format,
 		EGL_DMA_BUF_PLANE0_FD_EXT, fd,
-		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+		EGL_DMA_BUF_PLANE0_OFFSET_EXT, (EGLint)eglImage.offset_,
 		EGL_DMA_BUF_PLANE0_PITCH_EXT, (EGLint)eglImage.stride_,
 		EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, 0,
 		EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, 0,
@@ -308,9 +311,20 @@ EGLDisplay eGL::probeDisplay()
 		return EGL_NO_DISPLAY;
 	}
 
-	display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
-					EGL_DEFAULT_DISPLAY,
-					nullptr);
+	/*
+	 * Mesa renders without a window system on its surfaceless platform.
+	 * Other drivers, such as Android's, have no such platform but render
+	 * to a framebuffer object from a surfaceless context of their default
+	 * display (EGL_KHR_surfaceless_context, checked once initialised).
+	 */
+	const char *clientExtensions = eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS);
+	if (clientExtensions &&
+	    strstr(clientExtensions, "EGL_MESA_platform_surfaceless"))
+		display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
+						EGL_DEFAULT_DISPLAY,
+						nullptr);
+	else
+		display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
 
 	if (display == EGL_NO_DISPLAY) {
 		LOG(eGL, Info) << "Unable to get EGL display";
@@ -319,6 +333,13 @@ EGLDisplay eGL::probeDisplay()
 
 	if (eglInitialize(display, nullptr, nullptr) != EGL_TRUE) {
 		LOG(eGL, Error) << "eglInitialize fail";
+		return EGL_NO_DISPLAY;
+	}
+
+	const char *extensions = eglQueryString(display, EGL_EXTENSIONS);
+	if (!extensions || !strstr(extensions, "EGL_KHR_surfaceless_context")) {
+		LOG(eGL, Info) << "EGL display can't render without a surface";
+		eglTerminate(display);
 		return EGL_NO_DISPLAY;
 	}
 

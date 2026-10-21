@@ -84,7 +84,8 @@ public:
 	uint32_t width_; /**< Image width in pixels */
 	uint32_t height_; /**< Image height in pixels */
 	uint32_t stride_; /**< Row stride in bytes */
-	uint32_t offset_; /**< Buffer offset (reserved for future use) */
+	uint32_t offset_ = 0; /**< Offset of a DMA-BUF image in its buffer in bytes */
+	uint32_t drmFormat_ = 0; /**< DRM format of a DMA-BUF, 0 for that of format_ */
 	uint32_t framesize_; /**< Total frame size in bytes (stride * height) */
 	uint32_t texture_unit_uniform_id_; /**< Shader uniform id for texture unit */
 	GLenum texture_unit_; /**< Texture unit associated with this image eg (GL_TEXTURE0) */

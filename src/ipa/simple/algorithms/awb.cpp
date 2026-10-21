@@ -7,6 +7,7 @@
 
 #include "awb.h"
 
+#include <algorithm>
 #include <numeric>
 #include <stdint.h>
 
@@ -23,11 +24,24 @@ LOG_DEFINE_CATEGORY(IPASoftAwb)
 
 namespace ipa::soft::algorithms {
 
+/*
+ * Grey world takes every cast out, but warm light that looks grey looks
+ * wrong: the tuning's warmth keeps some of it, a red over blue tint that
+ * fades in from 5000 K down to 2500 K.
+ */
+int Awb::init([[maybe_unused]] IPAContext &context, const ValueNode &tuningData)
+{
+	warmth_ = tuningData["warmth"].get<float>(0.0f);
+	return 0;
+}
+
 int Awb::configure(IPAContext &context,
 		   [[maybe_unused]] const IPAConfigInfo &configInfo)
 {
 	auto &gains = context.activeState.awb.gains;
 	gains = { { 1.0, 1.0, 1.0 } };
+	/* Neutral, no warmth, until the first statistics */
+	context.activeState.awb.temperatureK = 5000;
 
 	return 0;
 }
@@ -40,7 +54,10 @@ void Awb::prepare(IPAContext &context,
 	auto &gains = context.activeState.awb.gains;
 
 	frameContext.gains = gains;
-	params->gains = gains;
+
+	const float ct = context.activeState.awb.temperatureK;
+	const float warmth = warmth_ * std::clamp((5000.0f - ct) / 2500.0f, 0.0f, 1.0f);
+	params->gains = gains * RGB<float>({ 1.0f + warmth, 1.0f, 1.0f - warmth });
 }
 
 void Awb::process(IPAContext &context,

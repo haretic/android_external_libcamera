@@ -19,6 +19,7 @@ public:
 	Awb() = default;
 	~Awb() = default;
 
+	int init(IPAContext &context, const ValueNode &tuningData) override;
 	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
 	void prepare(IPAContext &context,
 		     const uint32_t frame,
@@ -29,6 +30,9 @@ public:
 		     IPAFrameContext &frameContext,
 		     const SwIspStats *stats,
 		     ControlList &metadata) override;
+
+private:
+	float warmth_;
 };
 
 } /* namespace ipa::soft::algorithms */

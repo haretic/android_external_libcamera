@@ -212,7 +212,8 @@ public:
 	int setSelection(unsigned int target, Rectangle *rect);
 
 	int allocateBuffers(unsigned int count,
-			    std::vector<std::unique_ptr<FrameBuffer>> *buffers);
+			    std::vector<std::unique_ptr<FrameBuffer>> *buffers,
+			    bool cached = false);
 	int exportBuffers(unsigned int count,
 			  std::vector<std::unique_ptr<FrameBuffer>> *buffers);
 	int importBuffers(unsigned int count);
@@ -258,9 +259,11 @@ private:
 	std::vector<V4L2PixelFormat> enumPixelformats(uint32_t code);
 	std::vector<SizeRange> enumSizes(V4L2PixelFormat pixelFormat);
 
-	int requestBuffers(unsigned int count, enum v4l2_memory memoryType);
+	int requestBuffers(unsigned int count, enum v4l2_memory memoryType,
+			   bool cached = false);
 	int createBuffers(unsigned int count,
-			  std::vector<std::unique_ptr<FrameBuffer>> *buffers);
+			  std::vector<std::unique_ptr<FrameBuffer>> *buffers,
+			  bool cached = false);
 	std::unique_ptr<FrameBuffer> createBuffer(unsigned int index);
 	UniqueFD exportDmabufFd(unsigned int index, unsigned int plane);
 

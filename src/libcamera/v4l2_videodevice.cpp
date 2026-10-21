@@ -1308,7 +1308,7 @@ int V4L2VideoDevice::setSelection(unsigned int target, Rectangle *rect)
 }
 
 int V4L2VideoDevice::requestBuffers(unsigned int count,
-				    enum v4l2_memory memoryType)
+				    enum v4l2_memory memoryType, bool cached)
 {
 	struct v4l2_requestbuffers rb = {};
 	int ret;
@@ -1316,6 +1316,9 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
 	rb.count = count;
 	rb.type = bufferType_;
 	rb.memory = memoryType;
+	/* Drivers without cache hints clear the flag and allocate coherently */
+	if (cached)
+		rb.flags = V4L2_MEMORY_FLAG_NON_COHERENT;
 
 	ret = ioctl(VIDIOC_REQBUFS, &rb);
 	if (ret < 0) {
@@ -1333,7 +1336,9 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
 		return -ENOMEM;
 	}
 
-	LOG(V4L2, Debug) << rb.count << " buffers requested.";
+	LOG(V4L2, Debug)
+		<< rb.count << " buffers requested"
+		<< (rb.flags & V4L2_MEMORY_FLAG_NON_COHERENT ? ", cached" : "");
 
 	return 0;
 }
@@ -1342,6 +1347,7 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
  * \brief Allocate and export buffers from the video device
  * \param[in] count Number of buffers to allocate
  * \param[out] buffers Vector to store allocated buffers
+ * \param[in] cached Ask for memory the CPU caches
  *
  * This function wraps buffer allocation with the V4L2 MMAP memory type. It
  * requests \a count buffers from the driver, allocating the corresponding
@@ -1357,6 +1363,10 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
  * regardless of whether the device uses V4L2_PIX_FMT_NV12 or
  * V4L2_PIX_FMT_NV12M.
  *
+ * With \a cached, drivers that support it allocate memory the CPU caches,
+ * which it reads several times as fast. Its readers shall then synchronise
+ * their access with DMA_BUF_IOCTL_SYNC, as DmaSyncer does.
+ *
  * Buffers allocated with this function shall later be free with
  * releaseBuffers(). If buffers have already been allocated with
  * allocateBuffers() or imported with importBuffers(), this function returns
@@ -1367,9 +1377,10 @@ int V4L2VideoDevice::requestBuffers(unsigned int count,
  * \retval -EBUSY buffers have already been allocated or imported
  */
 int V4L2VideoDevice::allocateBuffers(unsigned int count,
-				     std::vector<std::unique_ptr<FrameBuffer>> *buffers)
+				     std::vector<std::unique_ptr<FrameBuffer>> *buffers,
+				     bool cached)
 {
-	int ret = createBuffers(count, buffers);
+	int ret = createBuffers(count, buffers, cached);
 	if (ret < 0)
 		return ret;
 
@@ -1428,14 +1439,15 @@ int V4L2VideoDevice::exportBuffers(unsigned int count,
 }
 
 int V4L2VideoDevice::createBuffers(unsigned int count,
-				   std::vector<std::unique_ptr<FrameBuffer>> *buffers)
+				   std::vector<std::unique_ptr<FrameBuffer>> *buffers,
+				   bool cached)
 {
 	if (cache_) {
 		LOG(V4L2, Error) << "Buffers already allocated";
 		return -EINVAL;
 	}
 
-	int ret = requestBuffers(count, V4L2_MEMORY_MMAP);
+	int ret = requestBuffers(count, V4L2_MEMORY_MMAP, cached);
 	if (ret < 0)
 		return ret;
 

@@ -1761,10 +1761,12 @@ int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlL
 	if (data->useConversion_ && !data->rawStream_) {
 		/*
 		 * When using the converter allocate a fixed number of internal
-		 * buffers.
+		 * buffers. The software ISP reads them on the CPU, or uploads
+		 * them to the GPU from there, so it wants them cached.
 		 */
 		ret = video->allocateBuffers(kNumInternalBuffers,
-					     &data->conversionBuffers_);
+					     &data->conversionBuffers_,
+					     data->swIsp_ != nullptr);
 	} else {
 		/*
 		 * Otherwise, prepare for using buffers from either the raw stream, if

@@ -112,12 +112,21 @@ Debayer::~Debayer()
  */
 
 /**
- * \fn void Debayer::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output, DebayerParams params)
+ * \fn unsigned int Debayer::maxOutputs() const
+ * \brief Get the number of outputs the debayer can render from one input
+ * \return The maximum number of output configurations configure() takes
+ */
+
+/**
+ * \fn void Debayer::process(uint32_t frame, FrameBuffer *input, const std::vector<FrameBuffer *> &outputs, const DebayerParams &params)
  * \brief Process the bayer data into the requested format
  * \param[in] frame The frame number
  * \param[in] input The input buffer
- * \param[in] output The output buffer
+ * \param[in] outputs The output buffers, one for each configured output in
+ * the order of the configuration, null for those the frame doesn't render
  * \param[in] params The parameters to be used in debayering
+ *
+ * The output buffers are signalled ready in the order of \a outputs.
  *
  * \note DebayerParams is passed by value deliberately so that a copy is passed
  * when this is run in another thread by invokeMethod().
@@ -143,11 +152,12 @@ Debayer::~Debayer()
  */
 
 /**
- * \fn unsigned int Debayer::frameSize()
- * \brief Get the output frame size
+ * \fn unsigned int Debayer::frameSize(unsigned int output)
+ * \brief Get the frame size of an output
+ * \param[in] output The index of the output in the configuration
  *
  * \return The total output frame size in bytes as configured for the
- * current stream.
+ * output.
  */
 
 /**

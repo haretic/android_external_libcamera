@@ -12,6 +12,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <vector>
 
 #include <libcamera/base/log.h>
 #include <libcamera/base/object.h>
@@ -48,7 +49,10 @@ public:
 	strideAndFrameSize(const PixelFormat &outputFormat, const Size &size) = 0;
 	virtual uint32_t preferredInputStride([[maybe_unused]] const PixelFormat &inputFormat, [[maybe_unused]] const Size &size) { return 0; }
 
-	virtual void process(uint32_t frame, FrameBuffer *input, FrameBuffer *output, const DebayerParams &params) = 0;
+	virtual unsigned int maxOutputs() const { return 1; }
+	virtual void process(uint32_t frame, FrameBuffer *input,
+			     const std::vector<FrameBuffer *> &outputs,
+			     const DebayerParams &params) = 0;
 	virtual int start() { return 0; }
 	virtual void stop() {}
 
@@ -56,7 +60,10 @@ public:
 
 	virtual const SharedFD &getStatsFD() = 0;
 
-	unsigned int frameSize() { return outputConfig_.frameSize; }
+	virtual unsigned int frameSize([[maybe_unused]] unsigned int output)
+	{
+		return outputConfig_.frameSize;
+	}
 
 	Signal<FrameBuffer *> inputBufferReady;
 	Signal<FrameBuffer *> outputBufferReady;

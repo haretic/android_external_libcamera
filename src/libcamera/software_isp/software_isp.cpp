@@ -7,6 +7,7 @@
 
 #include "libcamera/internal/software_isp/software_isp.h"
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <stdint.h>
@@ -247,6 +248,17 @@ SizeRange SoftwareIsp::sizes(PixelFormat inputFormat, const Size &inputSize)
 }
 
 /**
+ * \brief Get the number of processed streams the software ISP renders
+ * \return The maximum number of output configurations configure() takes
+ */
+unsigned int SoftwareIsp::maxOutputs() const
+{
+	ASSERT(debayer_);
+
+	return debayer_->maxOutputs();
+}
+
+/**
  * Get the output stride and the frame size in bytes for the given output format and size
  * \param[in] outputFormat The output format
  * \param[in] size The output size (width and height in pixels)
@@ -288,6 +300,17 @@ int SoftwareIsp::configure(const StreamConfiguration &inputCfg,
 {
 	ASSERT(ipa_ && debayer_);
 
+	if (outputCfgs.size() > debayer_->maxOutputs()) {
+		LOG(SoftwareIsp, Error)
+			<< outputCfgs.size() << " outputs, the debayer renders "
+			<< debayer_->maxOutputs();
+		return -EINVAL;
+	}
+
+	outputs_.clear();
+	for (const StreamConfiguration &cfg : outputCfgs)
+		outputs_.push_back(cfg.stream());
+
 	int ret = ipa_->configure(configInfo);
 	if (ret < 0)
 		return ret;
@@ -317,11 +340,12 @@ int SoftwareIsp::exportBuffers(const Stream *stream, unsigned int count,
 {
 	ASSERT(debayer_ != nullptr);
 
-	/* single output for now */
-	if (stream == nullptr)
+	auto it = std::find(outputs_.begin(), outputs_.end(), stream);
+	if (stream == nullptr || it == outputs_.end())
 		return -EINVAL;
 
-	return dmaHeap_.exportBuffers(count, { debayer_->frameSize() }, buffers);
+	return dmaHeap_.exportBuffers(count, { debayer_->frameSize(it - outputs_.begin()) },
+				      buffers);
 }
 
 /**
@@ -352,21 +376,22 @@ int SoftwareIsp::queueBuffers(uint32_t frame, FrameBuffer *input,
 	if (outputs.empty())
 		return -EINVAL;
 
-	/* We only support a single stream for now. */
-	if (outputs.size() != 1)
-		return -EINVAL;
-
+	/* The buffers in the order of the outputs, which they are done in */
+	std::vector<FrameBuffer *> buffers(outputs_.size(), nullptr);
 	for (auto [stream, buffer] : outputs) {
-		if (!buffer)
+		auto it = std::find(outputs_.begin(), outputs_.end(), stream);
+		if (!buffer || it == outputs_.end())
 			return -EINVAL;
+		buffers[it - outputs_.begin()] = buffer;
 	}
 
 	queuedInputBuffers_.push_back(input);
 
-	for (const auto &[stream, buffer] : outputs) {
-		queuedOutputBuffers_.push_back(buffer);
-		process(frame, input, buffer);
+	for (FrameBuffer *buffer : buffers) {
+		if (buffer)
+			queuedOutputBuffers_.push_back(buffer);
 	}
+	process(frame, input, buffers);
 
 	return 0;
 }
@@ -430,13 +455,15 @@ void SoftwareIsp::stop()
  * \brief Passes the input framebuffer to the ISP worker to process
  * \param[in] frame The frame number
  * \param[in] input The input framebuffer
- * \param[out] output The framebuffer to write the processed frame to
+ * \param[out] outputs The framebuffers to write the processed frame to, in
+ * the order of the configured outputs, null for those the frame doesn't render
  */
-void SoftwareIsp::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output)
+void SoftwareIsp::process(uint32_t frame, FrameBuffer *input,
+			  const std::vector<FrameBuffer *> &outputs)
 {
 	ipa_->computeParams(frame);
 	debayer_->invokeMethod(&Debayer::process,
-			       ConnectionTypeQueued, frame, input, output, debayerParams_);
+			       ConnectionTypeQueued, frame, input, outputs, debayerParams_);
 }
 
 void SoftwareIsp::saveIspParams()

@@ -1240,19 +1240,20 @@ CameraConfiguration::Status SimpleCameraConfiguration::validate()
 		status = Adjusted;
 	}
 
-	/* The software ISP produces a single processed stream. */
+	/* The software ISP produces as many processed streams as its debayer. */
 	if (data_->swIsp_) {
-		bool processed = false;
+		const unsigned int maxProcessed = data_->swIsp_->maxOutputs();
+		unsigned int processed = 0;
 		for (auto it = config_.begin(); it != config_.end();) {
-			if (isRaw(*it) || !processed) {
-				processed |= !isRaw(*it);
+			if (isRaw(*it) || processed < maxProcessed) {
+				processed += !isRaw(*it);
 				++it;
 				continue;
 			}
 
 			LOG(SimplePipeline, Debug)
 				<< "Dropping processed stream " << it->toString()
-				<< ", the software ISP has a single output";
+				<< ", the software ISP has " << maxProcessed << " outputs";
 			it = config_.erase(it);
 			status = Adjusted;
 		}
@@ -2000,10 +2001,12 @@ bool SimplePipelineHandler::matchDevice(std::shared_ptr<MediaDevice> media,
 	if (info.swIspEnabled && !converter_) {
 		/*
 		 * When the software ISP is enabled, the simple pipeline handler
-		 * exposes the raw stream, giving a total of two streams. This
-		 * is mutually exclusive with the presence of a converter.
+		 * exposes the raw stream besides the processed ones, up to two
+		 * with the GPU debayer, giving a total of three streams.
+		 * Validation drops those of them the debayer doesn't render.
+		 * This is mutually exclusive with the presence of a converter.
 		 */
-		numStreams = 2;
+		numStreams = 3;
 	}
 
 	swIspEnabled_ = info.swIspEnabled && !converter_;

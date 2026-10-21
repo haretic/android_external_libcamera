@@ -80,7 +80,9 @@ public:
 	int queueBuffers(uint32_t frame, FrameBuffer *input,
 			 const std::map<const Stream *, FrameBuffer *> &outputs);
 
-	void process(uint32_t frame, FrameBuffer *input, FrameBuffer *output);
+	void process(uint32_t frame, FrameBuffer *input,
+		     const std::vector<FrameBuffer *> &outputs);
+	unsigned int maxOutputs() const;
 
 	Signal<FrameBuffer *> inputBufferReady;
 	Signal<FrameBuffer *> outputBufferReady;
@@ -104,6 +106,7 @@ private:
 	std::unique_ptr<ipa::soft::IPAProxySoft> ipa_;
 	std::deque<FrameBuffer *> queuedInputBuffers_;
 	std::deque<FrameBuffer *> queuedOutputBuffers_;
+	std::vector<const Stream *> outputs_;
 };
 
 } /* namespace libcamera */

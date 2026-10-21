@@ -12,6 +12,7 @@
 #include <deque>
 #include <memory>
 #include <stdint.h>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -53,7 +54,11 @@ public:
 	std::tuple<unsigned int, unsigned int> strideAndFrameSize(const PixelFormat &outputFormat, const Size &size) override;
 	uint32_t preferredInputStride(const PixelFormat &inputFormat, const Size &size) override;
 
-	void process(uint32_t frame, FrameBuffer *input, FrameBuffer *output, const DebayerParams &params) override;
+	unsigned int maxOutputs() const override { return kMaxOutputs; }
+	unsigned int frameSize(unsigned int output) override;
+	void process(uint32_t frame, FrameBuffer *input,
+		     const std::vector<FrameBuffer *> &outputs,
+		     const DebayerParams &params) override;
 	int start() override;
 	void stop() override;
 
@@ -62,50 +67,88 @@ public:
 	SizeRange sizes(PixelFormat inputFormat, const Size &inputSize) override;
 
 private:
-	static int getInputConfig(PixelFormat inputFormat, DebayerInputConfig &config);
-	static int getOutputConfig(PixelFormat outputFormat, DebayerOutputConfig &config);
-	int initBayerShaders(PixelFormat inputFormat, PixelFormat outputFormat,
-			     const char *pass);
-	int usePass(GLuint program);
-	int getShaderVariableLocations();
-	void setShaderVariableValues(eGLImage &eGLImageIn, const DebayerParams &params);
-	int debayerGPU(FrameBuffer *input, FrameBuffer *output, const DebayerParams &params, std::optional<MappedFrameBuffer> *mappedInputBuffer, std::optional<DmaSyncer> *inputBufferDmaSyncer);
+	/*
+	 * The outputs rendered from one input: a preview and a still capture,
+	 * say, from the sensor's full resolution.
+	 */
+	static constexpr unsigned int kMaxOutputs = 2;
+	/*
+	 * Outputs of NV12 and NV21 more than this much smaller than the image
+	 * are scaled down to it rather than cropped from it.
+	 */
+	static constexpr float kMaxCropScale = 1.05f;
 
-	eGLImage *getCachedInputFrameBuffer(FrameBuffer *input, std::optional<MappedFrameBuffer> *inMapped, std::optional<DmaSyncer> *inDmaSyncer);
-	eGLImage *getCachedOutputFrameBuffer(FrameBuffer *output);
 	struct YuvTargets {
 		std::unique_ptr<eGLImage> y;
 		std::unique_ptr<eGLImage> uv;
 	};
-	YuvTargets *getCachedOutputYuvFrameBuffer(FrameBuffer *output);
-	void readPlane(eGLImage &target, uint8_t *dst, unsigned int rows);
+
+	struct Output {
+		PixelFormat format;
+		Size size;
+		DebayerOutputConfig config;
+		unsigned int bufferCount;
+		bool yuv;
+		/*
+		 * The part of the image the output shows. Cropped outputs are
+		 * as large as it, scaled ones average quads Bayer quads of it
+		 * to a side for a pixel of luma and chromaQuads for one of
+		 * chroma.
+		 */
+		Rectangle window;
+		unsigned int quads;
+		unsigned int chromaQuads;
+
+		/*
+		 * NV12 and NV21 take two passes, each its own program: the
+		 * luma plane at the full size, then the chroma plane at half
+		 * of it.
+		 */
+		GLuint program = 0;
+		GLuint programY = 0;
+		GLuint programUV = 0;
+
+		std::deque<std::pair<SharedFD, std::unique_ptr<eGLImage>>> rgbCache;
+		std::deque<std::pair<SharedFD, YuvTargets>> yuvCache;
+		/*
+		 * The targets of the NV12 and NV21 planes when the output
+		 * can't be.
+		 */
+		std::unique_ptr<eGLImage> yTarget;
+		std::unique_ptr<eGLImage> uvTarget;
+	};
+
+	static int getInputConfig(PixelFormat inputFormat, DebayerInputConfig &config);
+	static int getOutputConfig(PixelFormat outputFormat, DebayerOutputConfig &config);
+	int initBayerShaders(PixelFormat inputFormat, PixelFormat outputFormat,
+			     const std::vector<std::string> &defines);
+	int usePass(GLuint program);
+	int getShaderVariableLocations();
+	void setShaderVariableValues(eGLImage &eGLImageIn, const Output &out,
+				     const DebayerParams &params);
+	int render(eGLImage &eglImageIn, FrameBuffer *buffer, Output &out,
+		   const DebayerParams &params);
+	void deletePrograms(Output &out);
+
+	eGLImage *getCachedInputFrameBuffer(FrameBuffer *input, std::optional<MappedFrameBuffer> *inMapped, std::optional<DmaSyncer> *inDmaSyncer);
+	eGLImage *getCachedOutputFrameBuffer(FrameBuffer *buffer, Output &out);
+	YuvTargets *getCachedOutputYuvFrameBuffer(FrameBuffer *buffer, Output &out);
+	void readPlane(eGLImage &target, const Output &out, uint8_t *dst, unsigned int rows);
 	void updateLut(float gamma, float contrastExp);
-	int draw(eGLImage &eglImageIn, eGLImage &eglImageOut, const DebayerParams &params,
-		 GLsizei width, GLsizei height);
+	int draw(eGLImage &eglImageIn, eGLImage &eglImageOut, const Output &out,
+		 const DebayerParams &params, GLsizei width, GLsizei height);
 
 	/* Shader program identifiers */
 	GLuint vertexShaderId_ = 0;
 	GLuint fragmentShaderId_ = 0;
+	/* The program in use */
 	GLuint programId_ = 0;
-	/*
-	 * NV12 and NV21 take two passes, each its own program: the luma plane
-	 * at the full size, then the chroma plane at half of it. programId_
-	 * is the program in use.
-	 */
-	bool yuvOutput_ = false;
-	GLuint programY_ = 0;
-	GLuint programUV_ = 0;
+
+	std::vector<Output> outputs_;
 
 	/* Pointer to object representing input texture */
 	std::deque<std::pair<SharedFD, std::unique_ptr<eGLImage>>> eglImageInCache_;
-	std::deque<std::pair<SharedFD, std::unique_ptr<eGLImage>>> eglImageOutCache_;
-	std::deque<std::pair<SharedFD, YuvTargets>> eglYuvOutCache_;
-	/*
-	 * The targets of the NV12 and NV21 planes when the output can't be,
-	 * and a line copy for widths not a multiple of four.
-	 */
-	std::unique_ptr<eGLImage> yTarget_;
-	std::unique_ptr<eGLImage> uvTarget_;
+	/* A line copy for widths not a multiple of four */
 	std::vector<uint8_t> readback_;
 
 	static constexpr unsigned int kLutSize = 1024;
@@ -115,7 +158,6 @@ private:
 	float lutGamma_;
 	float lutContrastExp_;
 	unsigned int inputBufferCount_;
-	unsigned int outputBufferCount_;
 
 	/* Shader parameters */
 	float firstRed_x_;
@@ -128,6 +170,7 @@ private:
 	GLint textureUniformBayerFirstRed_;
 	GLint textureUniformProjMatrix_;
 	GLint textureUniformOutOrigin_;
+	GLint textureUniformOutScale_;
 	GLint textureUniformLut_;
 
 	GLint textureUniformBayerDataIn_;
@@ -148,7 +191,6 @@ private:
 	GLint contrastExpUniformDataIn_;
 
 	Size nativeOutputSize_;
-	Rectangle window_;
 	std::unique_ptr<SwStatsCpu> stats_;
 	eGL egl_;
 	uint32_t width_;

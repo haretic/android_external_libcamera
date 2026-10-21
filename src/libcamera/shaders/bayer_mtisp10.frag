@@ -221,12 +221,92 @@ vec2 chroma(vec3 rgb)
 }
 #endif
 
+#if defined (SCALED)
+/*
+ * Outputs much smaller than the image are scaled from the window at
+ * out_origin, out_scale samples to a pixel: each pixel is the mean colour
+ * of the QUADS x QUADS Bayer quads around where it falls, which bins the
+ * noise of small previews of a large image rather than aliasing it.
+ */
+uniform vec2 out_scale;
+
+/*
+ * Samples x and x + 1 of line y, x even: k = 0 or 2 in their group, the
+ * three bytes from byte k of the group's five on, in at most two texels.
+ */
+vec2 pair_at(float x, float y, float stride)
+{
+	x = clamp(x, 0.0, tex_size.x - 2.0);
+	y = clamp(y, 0.0, tex_size.y - 1.0);
+	float g = floor(x * 0.25 + 0.01);
+	float k = x - 4.0 * g;
+	float first = 5.0 * g + k;
+	float t = floor(first * 0.25);
+	float o = first - 4.0 * t;
+	float v = (y + 0.5) / tex_size.y;
+	vec4 ta = texture2D(tex_y, vec2((t + 0.5) / stride, v));
+	vec4 tb = texture2D(tex_y, vec2((t + 1.5) / stride, v));
+
+	vec4 w = vec4(equal(vec4(o), vec4(0.0, 1.0, 2.0, 3.0)));
+	vec3 b = ta.xyz * w.x + ta.yzw * w.y + vec3(ta.zw, tb.x) * w.z +
+		 vec3(ta.w, tb.xy) * w.w;
+	b = floor(b * 255.0 + 0.5);
+
+	float s0 = exp2(2.0 * k);
+	float s1 = 4.0 * s0;
+	return vec2(floor(b.x / s0 + 0.001) + mod(b.y, 4.0 * s0) * (256.0 / s0),
+		    floor(b.y / s1 + 0.001) + mod(b.z, 4.0 * s1) * (256.0 / s1)) / 1023.0;
+}
+
+/* The colour of the quad at q, both even: red where first red has it */
+vec3 quad(vec2 q, float stride)
+{
+	q.y = min(q.y, tex_size.y - 2.0);
+	vec2 top = pair_at(q.x, q.y, stride);
+	vec2 bot = pair_at(q.x, q.y + 1.0, stride);
+	vec2 red_line = tex_bayer_first_red.y < 0.5 ? top : bot;
+	vec2 blue_line = tex_bayer_first_red.y < 0.5 ? bot : top;
+	float r = tex_bayer_first_red.x < 0.5 ? red_line.x : red_line.y;
+	float b = tex_bayer_first_red.x < 0.5 ? blue_line.y : blue_line.x;
+	return vec3(r, (red_line.x + red_line.y + blue_line.x + blue_line.y - r - b) * 0.5, b);
+}
+
+/* The mean colour of the QUADS x QUADS quads around c, in samples */
+vec3 area(vec2 c, float stride)
+{
+	vec2 q0 = 2.0 * floor((c - float(QUADS)) * 0.5 + 0.5);
+	vec3 sum = vec3(0.0);
+	for (int j = 0; j < QUADS; j++) {
+		for (int i = 0; i < QUADS; i++)
+			sum += quad(q0 + 2.0 * vec2(float(i), float(j)), stride);
+	}
+	return sum / float(QUADS * QUADS);
+}
+#endif
+
 void main(void)
 {
 	float stride = texels();
 	vec3 c0, c1, c2, c3;
 
-#if defined (OUTPUT_Y)
+#if defined (OUTPUT_Y) && defined (SCALED)
+	vec2 o = floor(gl_FragCoord.xy) * vec2(4.0, 1.0) + 0.5;
+	gl_FragColor = vec4(
+		luma(process(area(out_origin + o * out_scale, stride))),
+		luma(process(area(out_origin + (o + vec2(1.0, 0.0)) * out_scale, stride))),
+		luma(process(area(out_origin + (o + vec2(2.0, 0.0)) * out_scale, stride))),
+		luma(process(area(out_origin + (o + vec2(3.0, 0.0)) * out_scale, stride))));
+#elif defined (OUTPUT_UV) && defined (SCALED)
+	/* Two 2x2 blocks of pixels, each about their centre */
+	vec2 o = floor(gl_FragCoord.xy) * vec2(4.0, 2.0) + 1.0;
+	vec2 a = chroma(process(area(out_origin + o * out_scale, stride)));
+	vec2 b = chroma(process(area(out_origin + (o + vec2(2.0, 0.0)) * out_scale, stride)));
+#if defined (SWAP_UV)
+	gl_FragColor = vec4(a.yx, b.yx);
+#else
+	gl_FragColor = vec4(a, b);
+#endif
+#elif defined (OUTPUT_Y)
 	vec2 p = floor(gl_FragCoord.xy) * vec2(4.0, 1.0) + out_origin;
 	group_colours(p.x * 0.25, p.y, stride, c0, c1, c2, c3);
 	gl_FragColor = vec4(luma(process(c0)), luma(process(c1)),

@@ -1223,8 +1223,12 @@ void DebayerCpu::updateLookupTables(const DebayerParams &params)
 	params_ = params;
 }
 
-void DebayerCpu::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output, const DebayerParams &params)
+void DebayerCpu::process(uint32_t frame, FrameBuffer *input,
+			 const std::vector<FrameBuffer *> &outputs,
+			 const DebayerParams &params)
 {
+	FrameBuffer *output = outputs[0];
+
 	bench_.startFrame();
 
 	std::vector<DmaSyncer> dmaSyncers;

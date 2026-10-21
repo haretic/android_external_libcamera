@@ -64,22 +64,54 @@ public:
 private:
 	static int getInputConfig(PixelFormat inputFormat, DebayerInputConfig &config);
 	static int getOutputConfig(PixelFormat outputFormat, DebayerOutputConfig &config);
-	int initBayerShaders(PixelFormat inputFormat, PixelFormat outputFormat);
+	int initBayerShaders(PixelFormat inputFormat, PixelFormat outputFormat,
+			     const char *pass);
+	int usePass(GLuint program);
 	int getShaderVariableLocations();
 	void setShaderVariableValues(eGLImage &eGLImageIn, const DebayerParams &params);
 	int debayerGPU(FrameBuffer *input, FrameBuffer *output, const DebayerParams &params, std::optional<MappedFrameBuffer> *mappedInputBuffer, std::optional<DmaSyncer> *inputBufferDmaSyncer);
 
 	eGLImage *getCachedInputFrameBuffer(FrameBuffer *input, std::optional<MappedFrameBuffer> *inMapped, std::optional<DmaSyncer> *inDmaSyncer);
 	eGLImage *getCachedOutputFrameBuffer(FrameBuffer *output);
+	struct YuvTargets {
+		std::unique_ptr<eGLImage> y;
+		std::unique_ptr<eGLImage> uv;
+	};
+	YuvTargets *getCachedOutputYuvFrameBuffer(FrameBuffer *output);
+	void readPlane(eGLImage &target, uint8_t *dst, unsigned int rows);
+	void updateLut(float gamma, float contrastExp);
+	int draw(eGLImage &eglImageIn, eGLImage &eglImageOut, const DebayerParams &params,
+		 GLsizei width, GLsizei height);
 
 	/* Shader program identifiers */
 	GLuint vertexShaderId_ = 0;
 	GLuint fragmentShaderId_ = 0;
 	GLuint programId_ = 0;
+	/*
+	 * NV12 and NV21 take two passes, each its own program: the luma plane
+	 * at the full size, then the chroma plane at half of it. programId_
+	 * is the program in use.
+	 */
+	bool yuvOutput_ = false;
+	GLuint programY_ = 0;
+	GLuint programUV_ = 0;
 
 	/* Pointer to object representing input texture */
 	std::deque<std::pair<SharedFD, std::unique_ptr<eGLImage>>> eglImageInCache_;
 	std::deque<std::pair<SharedFD, std::unique_ptr<eGLImage>>> eglImageOutCache_;
+	std::deque<std::pair<SharedFD, YuvTargets>> eglYuvOutCache_;
+	/*
+	 * The targets of the NV12 and NV21 planes when the output can't be,
+	 * and a line copy for widths not a multiple of four.
+	 */
+	std::unique_ptr<eGLImage> yTarget_;
+	std::unique_ptr<eGLImage> uvTarget_;
+	std::vector<uint8_t> readback_;
+
+	static constexpr unsigned int kLutSize = 1024;
+	std::unique_ptr<eGLImage> lut_;
+	float lutGamma_;
+	float lutContrastExp_;
 	unsigned int inputBufferCount_;
 	unsigned int outputBufferCount_;
 
@@ -93,6 +125,8 @@ private:
 	GLint textureUniformStrideFactor_;
 	GLint textureUniformBayerFirstRed_;
 	GLint textureUniformProjMatrix_;
+	GLint textureUniformOutOrigin_;
+	GLint textureUniformLut_;
 
 	GLint textureUniformBayerDataIn_;
 

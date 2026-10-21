@@ -80,7 +80,8 @@ float apply_contrast(float value)
 		return 1.0 - 0.5 * pow((1.0 - value) / 0.5, contrastExp);
 }
 
-void main(void)
+/* The colour of the pixel at texture coordinate \a coord */
+vec3 debayer(vec2 coord)
 {
 	vec3 rgb;
 
@@ -100,14 +101,14 @@ void main(void)
 	vec2 ycoords;
 
 	/*
-	 * The coordinates passed to the shader in textureOut may point
+	 * The coordinates passed to the shader in coord may point
 	 * to a place in between the pixels if the texture format doesn't
 	 * match the image format. In particular, MIPI packed raw Bayer
 	 * formats don't have a matching texture format.
 	 * In this case align the coordinates to the left nearest pixel
 	 * by hand.
 	 */
-	center_pixel = floor(textureOut * tex_size);
+	center_pixel = floor(coord * tex_size);
 	center_bytes.y = center_pixel.y;
 
 	/*
@@ -250,9 +251,57 @@ void main(void)
 	/* Apply gamma after colour correction */
 	rgb = pow(rgb, vec3(gamma));
 
-#if defined (SWAP_BLUE)
-	gl_FragColor = vec4(rgb.bgr, 1.0);
+	return rgb;
+}
+
+#if defined (OUTPUT_Y) || defined (OUTPUT_UV)
+/*
+ * The planes of NV12 and NV21 are rendered as RGBA images a quarter as wide
+ * as the image, four bytes of the plane in a fragment. out_origin is where the
+ * output starts in the image.
+ */
+uniform vec2 out_origin;
+
+vec3 debayer_pixel(vec2 p)
+{
+	return debayer((p + out_origin + 0.5) / tex_size);
+}
+
+/* Full range BT.601, as the CPU debayer has it */
+float luma(vec3 rgb)
+{
+	return dot(rgb, vec3(0.299, 0.587, 0.114));
+}
+
+vec2 chroma(vec3 rgb)
+{
+	return vec2(dot(rgb, vec3(-0.168736, -0.331264, 0.5)),
+		    dot(rgb, vec3(0.5, -0.418688, -0.081312))) + 0.5;
+}
+#endif
+
+void main(void)
+{
+#if defined (OUTPUT_Y)
+	/* Four pixels of a line */
+	vec2 p = floor(gl_FragCoord.xy) * vec2(4.0, 1.0);
+	gl_FragColor = vec4(luma(debayer_pixel(p)),
+			    luma(debayer_pixel(p + vec2(1.0, 0.0))),
+			    luma(debayer_pixel(p + vec2(2.0, 0.0))),
+			    luma(debayer_pixel(p + vec2(3.0, 0.0))));
+#elif defined (OUTPUT_UV)
+	/* The chroma of two 2x2 blocks, sited at their top left pixels */
+	vec2 p = floor(gl_FragCoord.xy) * vec2(4.0, 2.0);
+	vec2 a = chroma(debayer_pixel(p));
+	vec2 b = chroma(debayer_pixel(p + vec2(2.0, 0.0)));
+#if defined (SWAP_UV)
+	gl_FragColor = vec4(a.yx, b.yx);
 #else
-	gl_FragColor = vec4(rgb, 1.0);
+	gl_FragColor = vec4(a, b);
+#endif
+#elif defined (SWAP_BLUE)
+	gl_FragColor = vec4(debayer(textureOut).bgr, 1.0);
+#else
+	gl_FragColor = vec4(debayer(textureOut), 1.0);
 #endif
 }

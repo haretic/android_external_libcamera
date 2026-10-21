@@ -10,12 +10,17 @@
 #include "debayer_egl.h"
 
 #include <algorithm>
+#include <array>
 #include <assert.h>
+#include <cmath>
 #include <memory>
 #include <stdlib.h>
+#include <string.h>
 #include <string>
 #include <tuple>
 #include <vector>
+
+#include <linux/drm_fourcc.h>
 
 #include <libcamera/base/span.h>
 #include <libcamera/base/utils.h>
@@ -70,8 +75,22 @@ int DebayerEGL::getInputConfig(PixelFormat inputFormat, DebayerInputConfig &conf
 		return 0;
 	}
 
+	/* The shaders of packed formats also render the planes of NV12 and NV21 */
+	outputFormats.push_back(formats::NV12);
+	outputFormats.push_back(formats::NV21);
+
 	if (bayerFormat.bitDepth == 10 &&
 	    bayerFormat.packing == BayerFormat::Packing::CSI2 &&
+	    isStandardBayerOrder(bayerFormat.order)) {
+		config.bpp = 10;
+		config.patternSize.width = 4; /* 5 bytes per *4* pixels */
+		config.patternSize.height = 2;
+		config.outputFormats = outputFormats;
+		return 0;
+	}
+
+	if (bayerFormat.bitDepth == 10 &&
+	    bayerFormat.packing == BayerFormat::Packing::MTISP &&
 	    isStandardBayerOrder(bayerFormat.order)) {
 		config.bpp = 10;
 		config.patternSize.width = 4; /* 5 bytes per *4* pixels */
@@ -104,6 +123,11 @@ int DebayerEGL::getOutputConfig(PixelFormat outputFormat, DebayerOutputConfig &c
 		return 0;
 	}
 
+	if (outputFormat == formats::NV12 || outputFormat == formats::NV21) {
+		config.bpp = 8;
+		return 0;
+	}
+
 	LOG(Debayer, Info)
 		<< "Unsupported output format " << outputFormat;
 
@@ -127,6 +151,8 @@ int DebayerEGL::getShaderVariableLocations(void)
 	textureUniformStrideFactor_ = glGetUniformLocation(programId_, "stride_factor");
 	textureUniformBayerFirstRed_ = glGetUniformLocation(programId_, "tex_bayer_first_red");
 	textureUniformProjMatrix_ = glGetUniformLocation(programId_, "proj_matrix");
+	textureUniformOutOrigin_ = glGetUniformLocation(programId_, "out_origin");
+	textureUniformLut_ = glGetUniformLocation(programId_, "tex_lut");
 
 	LOG(Debayer, Debug) << "vertexIn " << attributeVertex_ << " textureIn " << attributeTexture_
 			    << " tex_y " << textureUniformBayerDataIn_
@@ -143,7 +169,12 @@ int DebayerEGL::getShaderVariableLocations(void)
 	return 0;
 }
 
-int DebayerEGL::initBayerShaders(PixelFormat inputFormat, PixelFormat outputFormat)
+/*
+ * Builds the program of a pass into programId_: \a pass is the define of the
+ * NV12/NV21 plane it renders, null for an RGB output.
+ */
+int DebayerEGL::initBayerShaders(PixelFormat inputFormat, PixelFormat outputFormat,
+				 const char *pass)
 {
 	std::vector<std::string> shaderEnv;
 	Span<const unsigned char> fragmentShaderData;
@@ -168,10 +199,17 @@ int DebayerEGL::initBayerShaders(PixelFormat inputFormat, PixelFormat outputForm
 	case formats::XBGR8888:
 		egl_.pushEnv(shaderEnv, "#define SWAP_BLUE");
 		break;
+	case formats::NV12:
+		break;
+	case formats::NV21:
+		egl_.pushEnv(shaderEnv, "#define SWAP_UV");
+		break;
 	default:
 		LOG(Debayer, Error) << "Unsupported output format";
 		return -EINVAL;
 	}
+	if (pass)
+		egl_.pushEnv(shaderEnv, pass);
 
 	/* Pixel location parameters */
 	glFormat_ = GL_LUMINANCE;
@@ -221,6 +259,25 @@ int DebayerEGL::initBayerShaders(PixelFormat inputFormat, PixelFormat outputForm
 	case libcamera::formats::SGBRG10_CSI2P:
 	case libcamera::formats::SGRBG10_CSI2P:
 	case libcamera::formats::SRGGB10_CSI2P:
+		if (BayerFormat::fromPixelFormat(inputFormat).packing == BayerFormat::Packing::MTISP) {
+			/*
+			 * The fourcc of CSI-2 packing with the MediaTek modifier:
+			 * its own shader puts each sample together from two bytes,
+			 * four bytes to a texel for fewer fetches and uploads.
+			 */
+			if (inputConfig_.stride % 4) {
+				LOG(Debayer, Error) << "Stride " << inputConfig_.stride
+						    << " not a multiple of 4";
+				return -EINVAL;
+			}
+			fragmentShaderData = bayer_mtisp10_frag;
+			vertexShaderData = identity_vert;
+			glFormat_ = GL_RGBA;
+			bytesPerPixel_ = 4;
+			/* textureOut spans the width in pixels */
+			shaderStridePixels_ = width_ * bytesPerPixel_;
+			break;
+		}
 		egl_.pushEnv(shaderEnv, "#define RAW10P");
 		if (BayerFormat::fromPixelFormat(inputFormat).packing == BayerFormat::Packing::None) {
 			fragmentShaderData = bayer_unpacked_frag;
@@ -379,6 +436,10 @@ DebayerEGL::strideAndFrameSize(const PixelFormat &outputFormat, const Size &size
 	if (getOutputConfig(outputFormat, config) != 0)
 		return std::make_tuple(0, 0);
 
+	/* The chroma plane follows the luma plane, with the same stride */
+	if (outputFormat == formats::NV12 || outputFormat == formats::NV21)
+		return std::make_tuple(size.width, size.width * size.height * 3 / 2);
+
 	/* Align stride to 256 bytes as a generic GPU memory access alignment */
 	unsigned int stride = libcamera::utils::alignUp(size.width * config.bpp / 8, 256);
 
@@ -418,6 +479,17 @@ void DebayerEGL::setShaderVariableValues(eGLImage &eglImageIn, const DebayerPara
 		0, 0, 1, 0,
 		trans, trans, 0, 1
 	};
+	/*
+	 * The planes of NV12 and NV21 cover their whole targets and find their
+	 * pixels themselves, cropped from the image as the CPU debayer does it
+	 * rather than scaled: sharper, and each fragment of a packed format
+	 * gets the samples of whole groups.
+	 */
+	GLfloat outOrigin[] = { (GLfloat)window_.x, (GLfloat)window_.y };
+	if (yuvOutput_) {
+		projMatrix[0] = projMatrix[5] = 1;
+		projMatrix[12] = projMatrix[13] = 0;
+	}
 	/* Static const coordinates */
 	static const GLfloat vcoordinates[4][2] = {
 		{ -1.0f, -1.0f },
@@ -462,6 +534,13 @@ void DebayerEGL::setShaderVariableValues(eGLImage &eglImageIn, const DebayerPara
 	glUniform2fv(textureUniformStep_, 1, Step);
 	glUniform1f(textureUniformStrideFactor_, Stride);
 	glUniformMatrix4fv(textureUniformProjMatrix_, 1, GL_FALSE, projMatrix);
+	glUniform2fv(textureUniformOutOrigin_, 1, outOrigin);
+
+	if (textureUniformLut_ >= 0) {
+		updateLut(params.gamma, params.contrastExp);
+		egl_.activateBindTexture(*lut_);
+		glUniform1i(textureUniformLut_, lut_->texture_unit_uniform_id_);
+	}
 
 	LOG(Debayer, Debug) << "vertexIn " << attributeVertex_ << " textureIn " << attributeTexture_
 			    << " tex_y " << textureUniformBayerDataIn_
@@ -507,6 +586,37 @@ void DebayerEGL::setShaderVariableValues(eGLImage &eglImageIn, const DebayerPara
 	return;
 }
 
+/*
+ * The contrast curve and the gamma of shaders that take them from a table
+ * rather than computing them for every pixel: 1024 steps, interpolated.
+ */
+void DebayerEGL::updateLut(float gamma, float contrastExp)
+{
+	if (lut_ && gamma == lutGamma_ && contrastExp == lutContrastExp_)
+		return;
+
+	std::array<uint8_t, kLutSize> table;
+	for (unsigned int i = 0; i < kLutSize; i++) {
+		float v = static_cast<float>(i) / (kLutSize - 1);
+		v = v < 0.5f ? 0.5f * std::pow(v / 0.5f, contrastExp)
+			     : 1.0f - 0.5f * std::pow((1.0f - v) / 0.5f, contrastExp);
+		table[i] = std::clamp(std::lround(std::pow(v, gamma) * 255.0f), 0L, 255L);
+	}
+
+	if (!lut_) {
+		lut_ = std::make_unique<eGLImage>(GL_LUMINANCE, kLutSize, 1, kLutSize,
+						  GL_TEXTURE2, 2);
+		egl_.createTexture2D(*lut_, table.data());
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	} else {
+		egl_.updateTexture2D(*lut_, table.data());
+	}
+
+	lutGamma_ = gamma;
+	lutContrastExp_ = contrastExp;
+}
+
 eGLImage *DebayerEGL::getCachedInputFrameBuffer(FrameBuffer *input, std::optional<MappedFrameBuffer> *inMapped, std::optional<DmaSyncer> *inDmaSyncer)
 {
 	const SharedFD &fd = input->planes()[0].fd;
@@ -529,6 +639,9 @@ eGLImage *DebayerEGL::getCachedInputFrameBuffer(FrameBuffer *input, std::optiona
 
 		eglImageInCache_.emplace_back(fd, std::make_unique<eGLImage>(glFormat_, inputConfig_.stride / bytesPerPixel_, height_, inputConfig_.stride, GL_TEXTURE0, 0));
 		eglImageIn = eglImageInCache_.back().second.get();
+		/* Raw bytes in texels keep their order: r, g, b, a */
+		if (glFormat_ == GL_RGBA)
+			eglImageIn->drmFormat_ = DRM_FORMAT_ABGR8888;
 
 		if (egl_.createInputDMABufTexture2D(*eglImageIn, input->planes()[0].fd.get()) == 0)
 			return eglImageIn;
@@ -589,6 +702,101 @@ eGLImage *DebayerEGL::getCachedOutputFrameBuffer(FrameBuffer *output)
 	return eglImageOut;
 }
 
+/*
+ * Reads a plane of an NV12 or NV21 output back from its target, \a rows lines
+ * of the output's width at \a dst. The target is a quarter as wide in RGBA,
+ * rounded up, so a width that isn't a multiple of four goes through a copy.
+ */
+void DebayerEGL::readPlane(eGLImage &target, uint8_t *dst, unsigned int rows)
+{
+	const unsigned int width = outputSize_.width;
+
+	glBindFramebuffer(GL_FRAMEBUFFER, target.fbo_);
+	if (width == target.width_ * 4 && outputConfig_.stride == width) {
+		glReadPixels(0, 0, target.width_, rows, GL_RGBA, GL_UNSIGNED_BYTE, dst);
+		return;
+	}
+
+	readback_.resize(target.width_ * 4 * rows);
+	glReadPixels(0, 0, target.width_, rows, GL_RGBA, GL_UNSIGNED_BYTE, readback_.data());
+	for (unsigned int y = 0; y < rows; y++)
+		memcpy(dst + y * outputConfig_.stride, &readback_[y * target.width_ * 4], width);
+}
+
+/*
+ * The planes of an NV12 or NV21 output as targets four bytes to a texel, or
+ * null if the EGL can't import them or the width isn't a multiple of four.
+ */
+DebayerEGL::YuvTargets *DebayerEGL::getCachedOutputYuvFrameBuffer(FrameBuffer *output)
+{
+	Span<const FrameBuffer::Plane> planes = output->planes();
+	const SharedFD &fd = planes[0].fd;
+
+	for (auto &[ofd, targets] : eglYuvOutCache_) {
+		if (ofd == fd)
+			return targets.y ? &targets : nullptr;
+	}
+
+	if (eglYuvOutCache_.size() >= outputBufferCount_)
+		eglYuvOutCache_.pop_front();
+	eglYuvOutCache_.emplace_back(fd, YuvTargets{});
+	YuvTargets &targets = eglYuvOutCache_.back().second;
+
+	if (outputSize_.width % 4)
+		return nullptr;
+
+	const unsigned int stride = outputConfig_.stride;
+	const FrameBuffer::Plane &chroma = planes.size() > 1 ? planes[1] : planes[0];
+	auto y = std::make_unique<eGLImage>(GL_RGBA, outputSize_.width / 4, outputSize_.height,
+					    stride, GL_TEXTURE1, 1);
+	auto uv = std::make_unique<eGLImage>(GL_RGBA, outputSize_.width / 4, outputSize_.height / 2,
+					     stride, GL_TEXTURE1, 1);
+	/* Bytes in texels keep their order: r, g, b, a */
+	y->drmFormat_ = DRM_FORMAT_ABGR8888;
+	uv->drmFormat_ = DRM_FORMAT_ABGR8888;
+	y->offset_ = planes[0].offset;
+	uv->offset_ = planes.size() > 1 ? chroma.offset
+					: planes[0].offset + stride * outputSize_.height;
+
+	if (egl_.createOutputDMABufTexture2D(*y, fd.get()) ||
+	    egl_.createOutputDMABufTexture2D(*uv, chroma.fd.get())) {
+		LOG(Debayer, Debug) << "Output planes not imported, reading them back";
+		return nullptr;
+	}
+
+	targets.y = std::move(y);
+	targets.uv = std::move(uv);
+	return &targets;
+}
+
+/* Makes \a program the one in use and finds its variables. */
+int DebayerEGL::usePass(GLuint program)
+{
+	programId_ = program;
+	egl_.useProgram(programId_);
+	return getShaderVariableLocations();
+}
+
+int DebayerEGL::draw(eGLImage &eglImageIn, eGLImage &eglImageOut, const DebayerParams &params,
+		     GLsizei width, GLsizei height)
+{
+	if (egl_.attachTextureToFBO(eglImageOut))
+		return -ENODEV;
+	setShaderVariableValues(eglImageIn, params);
+
+	glViewport(0, 0, width, height);
+	glClear(GL_COLOR_BUFFER_BIT);
+	glDrawArrays(GL_TRIANGLE_FAN, 0, DEBAYER_OPENGL_COORDS);
+
+	GLenum err = glGetError();
+	if (err != GL_NO_ERROR) {
+		LOG(eGL, Error) << "Drawing scene fail " << err;
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
 int DebayerEGL::debayerGPU(FrameBuffer *input, FrameBuffer *output, const DebayerParams &params, std::optional<MappedFrameBuffer> *inMapped, std::optional<DmaSyncer> *inDmaSyncer)
 {
 	eGLImage *eglImageIn;
@@ -600,24 +808,51 @@ int DebayerEGL::debayerGPU(FrameBuffer *input, FrameBuffer *output, const Debaye
 	eglImageIn = getCachedInputFrameBuffer(input, inMapped, inDmaSyncer);
 	if (!eglImageIn)
 		return -ENOMEM;
-	eglImageOut = getCachedOutputFrameBuffer(output);
-	if (!eglImageOut)
-		return -ENOMEM;
 
-	egl_.attachTextureToFBO(*eglImageOut);
-	setShaderVariableValues(*eglImageIn, params);
-
-	glViewport(0, 0, width_, height_);
-	glClear(GL_COLOR_BUFFER_BIT);
-	glDrawArrays(GL_TRIANGLE_FAN, 0, DEBAYER_OPENGL_COORDS);
-
-	GLenum err = glGetError();
-	if (err != GL_NO_ERROR) {
-		LOG(eGL, Error) << "Drawing scene fail " << err;
-		return -ENODEV;
-	} else {
+	if (!yuvOutput_) {
+		eglImageOut = getCachedOutputFrameBuffer(output);
+		if (!eglImageOut)
+			return -ENOMEM;
+		if (draw(*eglImageIn, *eglImageOut, params, width_, height_))
+			return -ENODEV;
 		egl_.flushOutput();
+		return 0;
 	}
+
+	/*
+	 * The planes are rendered into the output buffer, or where the EGL
+	 * can't import it into textures of the GPU's own and read back.
+	 */
+	YuvTargets *targets = getCachedOutputYuvFrameBuffer(output);
+	eGLImage &targetY = targets ? *targets->y : *yTarget_;
+	eGLImage &targetUV = targets ? *targets->uv : *uvTarget_;
+	if (usePass(programY_) ||
+	    draw(*eglImageIn, targetY, params, targetY.width_, targetY.height_) ||
+	    usePass(programUV_) ||
+	    draw(*eglImageIn, targetUV, params, targetUV.width_, targetUV.height_))
+		return -ENODEV;
+	if (targets) {
+		egl_.flushOutput();
+		return 0;
+	}
+
+	std::vector<DmaSyncer> outDmaSyncers;
+	for (const FrameBuffer::Plane &plane : output->planes()) {
+		if (outDmaSyncers.empty() || plane.fd != output->planes()[0].fd)
+			outDmaSyncers.emplace_back(plane.fd, DmaSyncer::SyncType::Write);
+	}
+	MappedFrameBuffer outMapped(output, MappedFrameBuffer::MapFlag::Write);
+	if (!outMapped.isValid()) {
+		LOG(Debayer, Error) << "mmap-ing output buffer failed";
+		return -ENOMEM;
+	}
+
+	uint8_t *dstY = outMapped.planes()[0].data();
+	uint8_t *dstUV = outMapped.planes().size() > 1
+				 ? outMapped.planes()[1].data()
+				 : dstY + outputConfig_.stride * outputSize_.height;
+	readPlane(*yTarget_, dstY, outputSize_.height);
+	readPlane(*uvTarget_, dstUV, outputSize_.height / 2);
 
 	return 0;
 }
@@ -640,7 +875,8 @@ void DebayerEGL::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output
 		goto error;
 	}
 
-	metadata.planes()[0].bytesused = output->planes()[0].length;
+	for (unsigned int i = 0; i < metadata.planes().size(); i++)
+		metadata.planes()[i].bytesused = output->planes()[i].length;
 
 	/* Calculate stats for the whole frame */
 	if (frame % SwStatsCpu::kStatPerNumFrames) {
@@ -685,8 +921,27 @@ int DebayerEGL::start()
 
 	LOG(Debayer, Debug) << "Available fragment shader texture units " << maxTextureImageUnits;
 
-	if (initBayerShaders(inputPixelFormat_, outputPixelFormat_))
+	yuvOutput_ = outputPixelFormat_ == formats::NV12 ||
+		     outputPixelFormat_ == formats::NV21;
+	if (!yuvOutput_)
+		return initBayerShaders(inputPixelFormat_, outputPixelFormat_, nullptr)
+			       ? -EINVAL : 0;
+
+	const unsigned int targetWidth = (outputSize_.width + 3) / 4;
+	yTarget_ = std::make_unique<eGLImage>(GL_RGBA, targetWidth, outputSize_.height,
+					      targetWidth * 4, GL_TEXTURE1, 1);
+	uvTarget_ = std::make_unique<eGLImage>(GL_RGBA, targetWidth, outputSize_.height / 2,
+					       targetWidth * 4, GL_TEXTURE1, 1);
+	egl_.createTexture2D(*yTarget_, nullptr);
+	egl_.createTexture2D(*uvTarget_, nullptr);
+
+	if (initBayerShaders(inputPixelFormat_, outputPixelFormat_, "#define OUTPUT_UV"))
 		return -EINVAL;
+	programUV_ = programId_;
+	programId_ = 0;
+	if (initBayerShaders(inputPixelFormat_, outputPixelFormat_, "#define OUTPUT_Y"))
+		return -EINVAL;
+	programY_ = programId_;
 
 	return 0;
 }
@@ -694,10 +949,22 @@ int DebayerEGL::start()
 void DebayerEGL::stop()
 {
 	eglImageOutCache_.clear();
+	eglYuvOutCache_.clear();
 	eglImageInCache_.clear();
+	yTarget_.reset();
+	uvTarget_.reset();
+	lut_.reset();
 
-	if (programId_)
+	if (yuvOutput_) {
+		if (programY_)
+			glDeleteProgram(programY_);
+		if (programUV_)
+			glDeleteProgram(programUV_);
+		programY_ = programUV_ = programId_ = 0;
+	} else if (programId_) {
 		glDeleteProgram(programId_);
+		programId_ = 0;
+	}
 }
 
 SizeRange DebayerEGL::sizes(PixelFormat inputFormat, const Size &inputSize)

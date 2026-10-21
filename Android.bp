@@ -139,6 +139,30 @@ genrule {
     export_include_dirs: ["include"],
 }
 
+// The shaders of the GPU debayer, embedded where meson puts them: debayer_egl.cpp
+// includes "../shaders/glsl_shaders.h", the stamp gives that path its directory.
+genrule {
+    name: "libcamera_glsl_shaders_h",
+    srcs: [
+        "src/libcamera/shaders/bayer_1x_packed.frag",
+        "src/libcamera/shaders/bayer_mtisp10.frag",
+        "src/libcamera/shaders/bayer_unpacked.frag",
+        "src/libcamera/shaders/bayer_unpacked.vert",
+        "src/libcamera/shaders/identity.vert",
+    ],
+    tool_files: ["utils/codegen/gen-shader-header.py"],
+    tools: ["libcamera_codegen_host"],
+    cmd: "$(location libcamera_codegen_host)" +
+        " $(location utils/codegen/gen-shader-header.py)" +
+        " -o $(genDir)/src/libcamera/shaders/glsl_shaders.h $(in)" +
+        " && touch $(genDir)/src/libcamera/software_isp/glsl_shaders.stamp",
+    out: [
+        "src/libcamera/shaders/glsl_shaders.h",
+        "src/libcamera/software_isp/glsl_shaders.stamp",
+    ],
+    export_include_dirs: ["src/libcamera/software_isp"],
+}
+
 genrule {
     name: "libcamera_tracepoints_h",
     srcs: [
@@ -464,7 +488,15 @@ cc_library_shared {
 cc_library_shared {
     name: "libcamera",
     defaults: ["libcamera_private_defaults"],
-    shared_libs: ["libcamera-base"],
+    shared_libs: [
+        "libEGL",
+        "libGLESv2",
+        "libcamera-base",
+    ],
+    generated_headers: ["libcamera_glsl_shaders_h"],
+    // The software ISP debayers on the GPU where EGL can render without a
+    // surface, on the CPU otherwise or with software_isp: mode: cpu
+    cflags: ["-DHAVE_DEBAYER_EGL=1"],
     export_shared_lib_headers: ["libcamera-base"],
     static_libs: ["libyaml"],
     export_include_dirs: ["include"],
@@ -505,6 +537,7 @@ cc_library_shared {
         "src/libcamera/device_enumerator.cpp",
         "src/libcamera/device_enumerator_sysfs.cpp",
         "src/libcamera/dma_buf_allocator.cpp",
+        "src/libcamera/egl.cpp",
         "src/libcamera/fence.cpp",
         "src/libcamera/formats.cpp",
         "src/libcamera/framebuffer.cpp",
@@ -540,6 +573,7 @@ cc_library_shared {
         "src/libcamera/software_isp/benchmark.cpp",
         "src/libcamera/software_isp/debayer.cpp",
         "src/libcamera/software_isp/debayer_cpu.cpp",
+        "src/libcamera/software_isp/debayer_egl.cpp",
         "src/libcamera/software_isp/software_isp.cpp",
         "src/libcamera/software_isp/swstats_cpu.cpp",
         "src/libcamera/source_paths.cpp",

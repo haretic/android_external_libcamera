@@ -420,10 +420,12 @@ int DebayerEGL::configure(const StreamConfiguration &inputCfg,
 					       ((height_ - shown.height) / 2) & ~1U, shown);
 			/*
 			 * A pixel of luma covers scale samples to a side,
-			 * scale / 2 quads, one of chroma twice that.
+			 * scale / 2 quads, one of chroma twice that. Two to
+			 * a side at most: more is more than this GPU renders
+			 * at the sensor's frame rate, for little less noise.
 			 */
-			out.quads = std::clamp<long>(std::lround(scale / 2), 1, 3);
-			out.chromaQuads = std::clamp<long>(std::lround(scale), 1, 4);
+			out.quads = std::clamp<long>(std::lround(scale / 2), 1, 2);
+			out.chromaQuads = std::clamp<long>(std::lround(scale), 1, 2);
 		} else {
 			out.window = Rectangle(((width_ - out.size.width) / 2) &
 						       ~(inputConfig_.patternSize.width - 1),
@@ -1070,6 +1072,16 @@ SizeRange DebayerEGL::sizes(PixelFormat inputFormat, const Size &inputSize)
 			<< "Input format size too small: " << inputSize;
 		return {};
 	}
+
+	/*
+	 * The MediaTek layout's shader mirrors the samples beyond the image's
+	 * edges itself, so its outputs go up to the whole image.
+	 */
+	if (BayerFormat::fromPixelFormat(inputFormat).packing == BayerFormat::Packing::MTISP)
+		return SizeRange(Size(patternSize.width, patternSize.height),
+				 Size(inputSize.width & ~(patternSize.width - 1),
+				      inputSize.height & ~(patternSize.height - 1)),
+				 patternSize.width, patternSize.height);
 
 	return SizeRange(Size(patternSize.width, patternSize.height),
 			 Size((inputSize.width - 2 * patternSize.width) & ~(patternSize.width - 1),

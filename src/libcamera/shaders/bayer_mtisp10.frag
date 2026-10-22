@@ -43,6 +43,15 @@ float texels()
 	return (4.0 / tex_step.x + 1.0) * 0.25;
 }
 
+/*
+ * Lines beyond the top and bottom edges, mirrored in them: the lines of the
+ * same colours as the ones they stand for.
+ */
+float mirror_y(float y)
+{
+	return tex_size.y - 1.0 - abs(tex_size.y - 1.0 - abs(y));
+}
+
 /* Byte x of line y, 0 to 255 */
 float byte_at(float x, float y, float stride)
 {
@@ -60,8 +69,8 @@ float byte_at(float x, float y, float stride)
  */
 float fetch(float x, float y, float stride)
 {
-	x = clamp(x, 0.0, tex_size.x - 1.0);
-	y = clamp(y, 0.0, tex_size.y - 1.0);
+	x = tex_size.x - 1.0 - abs(tex_size.x - 1.0 - abs(x));
+	y = mirror_y(y);
 	float group = floor(x * 0.25 + 0.01);
 	float k = x - 4.0 * group;
 	float byte_x = 5.0 * group + k;
@@ -138,7 +147,7 @@ uniform vec2 out_origin;
 
 void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 {
-	y = clamp(y, 0.0, tex_size.y - 1.0);
+	y = mirror_y(y);
 	float v = (y + 0.5) / tex_size.y;
 	float first = 5.0 * g - 2.0;
 	float t = floor(first * 0.25);
@@ -237,7 +246,7 @@ uniform vec2 out_scale;
 vec2 pair_at(float x, float y, float stride)
 {
 	x = clamp(x, 0.0, tex_size.x - 2.0);
-	y = clamp(y, 0.0, tex_size.y - 1.0);
+	y = mirror_y(y);
 	float g = floor(x * 0.25 + 0.01);
 	float k = x - 4.0 * g;
 	float first = 5.0 * g + k;
@@ -271,6 +280,60 @@ vec3 quad(vec2 q, float stride)
 	return vec3(r, (red_line.x + red_line.y + blue_line.x + blue_line.y - r - b) * 0.5, b);
 }
 
+#if QUADS == 2
+/*
+ * The four samples of group g of line y. A group's five bytes always lie in
+ * two texels, so two quads take half the fetches of pair_at().
+ */
+vec4 group_at(float g, float y, float stride)
+{
+	g = clamp(g, 0.0, floor(tex_size.x * 0.25) - 1.0);
+	y = mirror_y(y);
+	float first = 5.0 * g;
+	float t = floor(first * 0.25);
+	float o = first - 4.0 * t;
+	float v = (y + 0.5) / tex_size.y;
+	vec4 ta = texture2D(tex_y, vec2((t + 0.5) / stride, v));
+	vec4 tb = texture2D(tex_y, vec2((t + 1.5) / stride, v));
+
+	vec4 w = vec4(equal(vec4(o), vec4(0.0, 1.0, 2.0, 3.0)));
+	vec4 b = ta * w.x + vec4(ta.yzw, tb.x) * w.y + vec4(ta.zw, tb.xy) * w.z +
+		 vec4(ta.w, tb.xyz) * w.w;
+	float b4 = dot(vec4(tb.xyz, 0.0), w) + tb.w * w.w;
+	b = floor(b * 255.0 + 0.5);
+	b4 = floor(b4 * 255.0 + 0.5);
+
+	return vec4(b.x + mod(b.y, 4.0) * 256.0,
+		    floor(b.y / 4.0 + 0.001) + mod(b.z, 16.0) * 64.0,
+		    floor(b.z / 16.0 + 0.001) + mod(b.w, 64.0) * 16.0,
+		    floor(b.w / 64.0 + 0.001) + b4 * 4.0) / 1023.0;
+}
+
+/* The summed colours of the two quads of group g on lines y and y + 1 */
+vec3 group_quads(float g, float y, float stride)
+{
+	vec4 top = group_at(g, y, stride);
+	vec4 bot = group_at(g, y + 1.0, stride);
+	vec4 red_line = tex_bayer_first_red.y < 0.5 ? top : bot;
+	vec4 blue_line = tex_bayer_first_red.y < 0.5 ? bot : top;
+	vec4 even = tex_bayer_first_red.x < 0.5 ? vec4(1.0, 0.0, 1.0, 0.0) : vec4(0.0, 1.0, 0.0, 1.0);
+	float r = dot(red_line, even);
+	float b = dot(blue_line, 1.0 - even);
+	return vec3(r, dot(top + bot, vec4(1.0)) - r - b, b);
+}
+
+/*
+ * The mean colour of the 2 x 2 quads around c, in samples: the two groups'
+ * worth on four lines nearest it, up to two samples off to the side.
+ */
+vec3 area(vec2 c, float stride)
+{
+	float g = floor((c.x - 2.0) * 0.25 + 0.5);
+	float y = 2.0 * floor((c.y - 2.0) * 0.5 + 0.5);
+	vec3 sum = group_quads(g, y, stride) + group_quads(g, y + 2.0, stride);
+	return sum * vec3(0.25, 0.125, 0.25);
+}
+#else
 /* The mean colour of the QUADS x QUADS quads around c, in samples */
 vec3 area(vec2 c, float stride)
 {
@@ -282,6 +345,7 @@ vec3 area(vec2 c, float stride)
 	}
 	return sum / float(QUADS * QUADS);
 }
+#endif
 #endif
 
 void main(void)

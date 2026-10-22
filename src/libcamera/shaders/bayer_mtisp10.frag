@@ -34,6 +34,11 @@ uniform vec3 blacklevel;
 uniform sampler2D tex_lut;
 #define TONE_RANGE 16.0
 
+/* Defect threshold in raw 10-bit units, scaled by the same-colour peers */
+#define DEFECT_ABSOLUTE (48.0 / 1023.0)
+#define DEFECT_RELATIVE 0.25
+#define DEFECT_ISOLATION 3.0
+
 /*
  * The texture holds four bytes of a line in each texel, in r, g, b and a,
  * the stride a quarter as wide; tex_step.x is 4 / (stride - 1).
@@ -145,6 +150,22 @@ vec3 process(vec3 rgb)
  */
 uniform vec2 out_origin;
 
+/*
+ * A hot sample must exceed its same-colour peers AND the immediate samples
+ * of the other colour after black subtraction and white balance. The latter
+ * protects thin bright detail whose light also reaches adjacent pixels.
+ * Use original samples throughout; all neighbours are already decoded.
+ */
+vec3 correct_triplet(vec3 s, vec3 signal, vec3 adjacent)
+{
+	vec3 mean = (s.yzx + s.zxy) * 0.5;
+	vec3 limit = abs(s.yzx - s.zxy) * 0.5 +
+		     vec3(DEFECT_ABSOLUTE) + DEFECT_RELATIVE * mean;
+	vec3 hot = vec3(greaterThan(s - mean, limit));
+	vec3 isolated = vec3(greaterThan(signal, DEFECT_ISOLATION * adjacent));
+	return mix(s, mean, hot * isolated);
+}
+
 void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 {
 	y = mirror_y(y);
@@ -192,6 +213,29 @@ void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 		edge.x = s.y;
 	if (4.0 * g + 4.0 > tex_size.x - 0.5)
 		edge.y = s.z;
+
+	/* Even/odd columns' channel gains on this Bayer row */
+	bool red_row = mod(y + tex_bayer_first_red.y, 2.0) < 1.0;
+	vec2 gain = red_row ? awb.rg : awb.gb;
+	vec2 black = red_row ? blacklevel.rg : blacklevel.gb;
+	if (tex_bayer_first_red.x >= 0.5) {
+		gain = gain.yx;
+		black = black.yx;
+	}
+
+	vec3 even_raw = vec3(s.xz, edge.y);
+	vec3 odd_raw = vec3(edge.x, s.yw);
+	vec3 even_signal = max(even_raw - vec3(black.x), 0.0) *
+			   (gain.x / (1.0 - black.x));
+	vec3 odd_signal = max(odd_raw - vec3(black.y), 0.0) *
+			  (gain.y / (1.0 - black.y));
+	/* Each halo endpoint has just one immediate neighbour in this window */
+	vec3 even = correct_triplet(even_raw, even_signal,
+				    max(odd_signal, odd_signal.yzz));
+	vec3 odd = correct_triplet(odd_raw, odd_signal,
+				   max(even_signal.xxy, even_signal));
+	s = vec4(even.x, odd.y, even.y, odd.z);
+	edge = vec2(odd.x, even.z);
 }
 
 /* The colours of the pixels of group \a g of line \a y, linear */
@@ -240,6 +284,21 @@ vec2 chroma(vec3 rgb)
 uniform vec2 out_scale;
 
 /*
+ * Diagonal greens alone cannot distinguish a hot sample from an edge. Only
+ * cap their difference when the brighter green is also isolated from BOTH
+ * immediate R/B neighbours, already decoded in this quad.
+ */
+float green_pair(float a, float b, float r, float blue)
+{
+	float lo = min(a, b);
+	float hi = max(a, b);
+	vec3 signal = max((vec3(r, hi, blue) - blacklevel) /
+			  (1.0 - blacklevel), 0.0) * awb;
+	bool isolated = signal.g > DEFECT_ISOLATION * max(signal.r, signal.b);
+	return lo + (isolated ? min(hi, lo + DEFECT_ABSOLUTE + DEFECT_RELATIVE * lo) : hi);
+}
+
+/*
  * Samples x and x + 1 of line y, x even: k = 0 or 2 in their group, the
  * three bytes from byte k of the group's five on, in at most two texels.
  */
@@ -277,7 +336,9 @@ vec3 quad(vec2 q, float stride)
 	vec2 blue_line = tex_bayer_first_red.y < 0.5 ? bot : top;
 	float r = tex_bayer_first_red.x < 0.5 ? red_line.x : red_line.y;
 	float b = tex_bayer_first_red.x < 0.5 ? blue_line.y : blue_line.x;
-	return vec3(r, (red_line.x + red_line.y + blue_line.x + blue_line.y - r - b) * 0.5, b);
+	float gr = tex_bayer_first_red.x < 0.5 ? red_line.y : red_line.x;
+	float gb = tex_bayer_first_red.x < 0.5 ? blue_line.x : blue_line.y;
+	return vec3(r, green_pair(gr, gb, r, b) * 0.5, b);
 }
 
 #if QUADS == 2
@@ -316,10 +377,13 @@ vec3 group_quads(float g, float y, float stride)
 	vec4 bot = group_at(g, y + 1.0, stride);
 	vec4 red_line = tex_bayer_first_red.y < 0.5 ? top : bot;
 	vec4 blue_line = tex_bayer_first_red.y < 0.5 ? bot : top;
-	vec4 even = tex_bayer_first_red.x < 0.5 ? vec4(1.0, 0.0, 1.0, 0.0) : vec4(0.0, 1.0, 0.0, 1.0);
-	float r = dot(red_line, even);
-	float b = dot(blue_line, 1.0 - even);
-	return vec3(r, dot(top + bot, vec4(1.0)) - r - b, b);
+	vec2 r = tex_bayer_first_red.x < 0.5 ? red_line.xz : red_line.yw;
+	vec2 b = tex_bayer_first_red.x < 0.5 ? blue_line.yw : blue_line.xz;
+	vec2 gr = tex_bayer_first_red.x < 0.5 ? red_line.yw : red_line.xz;
+	vec2 gb = tex_bayer_first_red.x < 0.5 ? blue_line.xz : blue_line.yw;
+	return vec3(r.x + r.y,
+		    green_pair(gr.x, gb.x, r.x, b.x) + green_pair(gr.y, gb.y, r.y, b.y),
+		    b.x + b.y);
 }
 
 /*

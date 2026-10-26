@@ -16,6 +16,8 @@
 #include <unistd.h>
 #include <vector>
 
+#include <cutils/properties.h>
+
 #include <libcamera/base/log.h>
 #include <libcamera/base/unique_fd.h>
 #include <libcamera/base/utils.h>
@@ -377,7 +379,7 @@ int CameraDevice::initialize(const CameraConfigData *cameraConfigData)
 		parkPosition_ = cameraConfigData->parkPosition;
 
 		/* Hide the sensor, also after the HAL restarted with it out. */
-		turnTo(parkPosition_);
+		turnTo(parkPosition());
 
 		return capabilities_.initialize(camera_, orientation_, facing_);
 	}
@@ -541,7 +543,21 @@ void CameraDevice::close()
 	camera_->requestCompleted.disconnect(this, &CameraDevice::requestComplete);
 	camera_->release();
 
-	turnTo(parkPosition_);
+	turnTo(parkPosition());
+}
+
+/*
+ * Where a turning camera rests while closed: the configuration's park position,
+ * unless the user picked another (the persist.sys.r1.camera.park property, in
+ * degrees as the position control takes them).
+ */
+int CameraDevice::parkPosition() const
+{
+	if (parkPosition_ < 0)
+		return parkPosition_;
+
+	int position = property_get_int32("persist.sys.r1.camera.park", -1);
+	return position >= 0 && position <= 180 ? position : parkPosition_;
 }
 
 void CameraDevice::flush()

@@ -79,6 +79,7 @@ private:
 	CameraDevice(unsigned int id, std::shared_ptr<libcamera::Camera> camera);
 
 	void turnTo(int position) const;
+	int parkPosition() const;
 
 	enum class State {
 		Stopped,

@@ -1366,9 +1366,14 @@ void CameraDevice::requestComplete(Request *request)
 	 * and complete the request with all buffers in error state.
 	 */
 	if (request->status() != Request::RequestComplete) {
-		LOG(HAL, Error) << "Request " << request->cookie()
-				<< " not successfully completed: "
-				<< request->status();
+		/* A flush cancels the requests in flight, as closing the camera does. */
+		if (request->status() == Request::RequestCancelled)
+			LOG(HAL, Debug) << "Request " << request->cookie()
+					<< " cancelled";
+		else
+			LOG(HAL, Error) << "Request " << request->cookie()
+					<< " not successfully completed: "
+					<< request->status();
 
 		abortRequest(descriptor);
 		completeDescriptor(descriptor);

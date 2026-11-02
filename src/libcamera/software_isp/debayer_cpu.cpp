@@ -1225,7 +1225,8 @@ void DebayerCpu::updateLookupTables(const DebayerParams &params)
 
 void DebayerCpu::process(uint32_t frame, FrameBuffer *input,
 			 const std::vector<FrameBuffer *> &outputs,
-			 const DebayerParams &params)
+			 const DebayerParams &params,
+			 [[maybe_unused]] const Rectangle &crop)
 {
 	FrameBuffer *output = outputs[0];
 

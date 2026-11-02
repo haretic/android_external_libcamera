@@ -306,6 +306,8 @@ public:
 	void imageBufferReady(FrameBuffer *buffer);
 	void clearIncompleteRequests();
 	void updateFrameDurationLimits();
+	void updateScalerCrop(const Size &captureSize);
+	Rectangle zoomCrop(Request *request);
 
 	unsigned int streamIndex(const Stream *stream) const
 	{
@@ -374,6 +376,16 @@ public:
 	std::unique_ptr<Converter> converter_;
 	std::unique_ptr<SoftwareIsp> swIsp_;
 	SimpleFrames frameInfo_;
+
+	/*
+	 * The digital zoom of a Software ISP that crops: the sensor's
+	 * read-out part of its active area, the requested part of that, and
+	 * the size of the captured image it maps to.
+	 */
+	Rectangle sensorCrop_;
+	Rectangle scalerCrop_;
+	Size minScalerCrop_;
+	Size captureSize_;
 
 private:
 	void tryPipeline(unsigned int code, const Size &size);
@@ -685,6 +697,7 @@ int SimpleCameraData::init()
 	properties_ = sensor_->properties();
 
 	updateFrameDurationLimits();
+	updateScalerCrop({});
 
 	/* Find the first subdev that can generate a frame start signal, if any. */
 	frameStartEmitter_ = nullptr;
@@ -945,6 +958,56 @@ void SimpleCameraData::updateFrameDurationLimits()
 	controlInfo_ = ControlInfoMap(std::move(ctrlMap), controls::controls);
 }
 
+/*
+ * A Software ISP that crops zooms in up to kMaxZoom: the ScalerCrop control
+ * ranges from the sensor's read-out part of its active area to a part of it
+ * kMaxZoom times smaller each way, and the requests start from all of it.
+ */
+void SimpleCameraData::updateScalerCrop(const Size &captureSize)
+{
+	static constexpr unsigned int kMaxZoom = 4;
+
+	IPACameraSensorInfo sensorInfo;
+	if (!swIsp_ || !swIsp_->canCrop() || sensor_->sensorInfo(&sensorInfo))
+		return;
+
+	sensorCrop_ = sensorInfo.analogCrop;
+	scalerCrop_ = sensorCrop_;
+	captureSize_ = captureSize;
+
+	const Size min = (sensorCrop_.size() / kMaxZoom).alignedUpTo(2, 2);
+	ControlInfoMap::Map ctrlMap(controlInfo_.begin(), controlInfo_.end());
+	ctrlMap[&controls::ScalerCrop] =
+		ControlInfo(min.centeredTo(sensorCrop_.center()), sensorCrop_, sensorCrop_);
+	controlInfo_ = ControlInfoMap(std::move(ctrlMap), controls::controls);
+	minScalerCrop_ = min;
+}
+
+/*
+ * The part of the captured image the request's ScalerCrop shows, in its
+ * pixels, null where it shows all of it. A crop holds for the requests after
+ * it too, and each reports the one it got.
+ */
+Rectangle SimpleCameraData::zoomCrop(Request *request)
+{
+	if (sensorCrop_.isNull() || captureSize_.isNull())
+		return {};
+
+	const auto &crop = request->controls().get(controls::ScalerCrop);
+	if (crop)
+		scalerCrop_ = crop->size()
+				      .expandedTo(minScalerCrop_)
+				      .boundedTo(sensorCrop_.size())
+				      .centeredTo(crop->center())
+				      .enclosedIn(sensorCrop_);
+	request->_d()->metadata().set(controls::ScalerCrop, scalerCrop_);
+
+	if (scalerCrop_ == sensorCrop_)
+		return {};
+	return scalerCrop_.translatedBy(-sensorCrop_.topLeft())
+		.scaledBy(captureSize_, sensorCrop_.size());
+}
+
 void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
 {
 	SimplePipelineHandler *pipe = SimpleCameraData::pipe();
@@ -1040,7 +1103,8 @@ void SimpleCameraData::imageBufferReady(FrameBuffer *buffer)
 			 * already here.
 			 */
 			swIsp_->queueBuffers(request->sequence(), buffer,
-					     conversionQueue_.front().outputs);
+					     conversionQueue_.front().outputs,
+					     zoomCrop(conversionQueue_.front().request));
 
 		conversionQueue_.pop();
 		return;
@@ -1636,6 +1700,7 @@ int SimplePipelineHandler::configure(Camera *camera, CameraConfiguration *c)
 		return ret;
 
 	data->updateFrameDurationLimits();
+	data->updateScalerCrop(pipeConfig->captureSize);
 
 	/* Configure the video node, taking into account any Bayer pattern change. */
 	V4L2PixelFormat videoFormat;

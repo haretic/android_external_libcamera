@@ -55,10 +55,11 @@ public:
 	uint32_t preferredInputStride(const PixelFormat &inputFormat, const Size &size) override;
 
 	unsigned int maxOutputs() const override { return kMaxOutputs; }
+	bool canCrop() const override { return true; }
 	unsigned int frameSize(unsigned int output) override;
 	void process(uint32_t frame, FrameBuffer *input,
 		     const std::vector<FrameBuffer *> &outputs,
-		     const DebayerParams &params) override;
+		     const DebayerParams &params, const Rectangle &crop) override;
 	int start() override;
 	void stop() override;
 
@@ -98,6 +99,11 @@ private:
 		Rectangle window;
 		unsigned int quads;
 		unsigned int chromaQuads;
+		/*
+		 * The part of the image this frame shows: the window, or
+		 * the part of the crop the request zoomed in on.
+		 */
+		Rectangle shown;
 
 		/*
 		 * NV12 and NV21 take two passes, each its own program: the
@@ -107,6 +113,13 @@ private:
 		GLuint program = 0;
 		GLuint programY = 0;
 		GLuint programUV = 0;
+		/*
+		 * The passes of a zoomed frame, a crop smaller than the
+		 * window, where quads would be too few to a pixel: each
+		 * pixel blended from the quads around it.
+		 */
+		GLuint programYZoom = 0;
+		GLuint programUVZoom = 0;
 
 		std::deque<std::pair<SharedFD, std::unique_ptr<eGLImage>>> rgbCache;
 		std::deque<std::pair<SharedFD, YuvTargets>> yuvCache;
@@ -127,7 +140,7 @@ private:
 	void setShaderVariableValues(eGLImage &eGLImageIn, const Output &out,
 				     const DebayerParams &params);
 	int render(eGLImage &eglImageIn, FrameBuffer *buffer, Output &out,
-		   const DebayerParams &params);
+		   const DebayerParams &params, const Rectangle &crop);
 	void deletePrograms(Output &out);
 
 	eGLImage *getCachedInputFrameBuffer(FrameBuffer *input, std::optional<MappedFrameBuffer> *inMapped, std::optional<DmaSyncer> *inDmaSyncer);

@@ -50,9 +50,10 @@ public:
 	virtual uint32_t preferredInputStride([[maybe_unused]] const PixelFormat &inputFormat, [[maybe_unused]] const Size &size) { return 0; }
 
 	virtual unsigned int maxOutputs() const { return 1; }
+	virtual bool canCrop() const { return false; }
 	virtual void process(uint32_t frame, FrameBuffer *input,
 			     const std::vector<FrameBuffer *> &outputs,
-			     const DebayerParams &params) = 0;
+			     const DebayerParams &params, const Rectangle &crop) = 0;
 	virtual int start() { return 0; }
 	virtual void stop() {}
 

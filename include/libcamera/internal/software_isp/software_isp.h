@@ -78,10 +78,13 @@ public:
 
 	void queueRequest(const uint32_t frame, const ControlList &controls);
 	int queueBuffers(uint32_t frame, FrameBuffer *input,
-			 const std::map<const Stream *, FrameBuffer *> &outputs);
+			 const std::map<const Stream *, FrameBuffer *> &outputs,
+			 const Rectangle &crop = {});
+	bool canCrop() const;
 
 	void process(uint32_t frame, FrameBuffer *input,
-		     const std::vector<FrameBuffer *> &outputs);
+		     const std::vector<FrameBuffer *> &outputs,
+		     const Rectangle &crop);
 	unsigned int maxOutputs() const;
 
 	Signal<FrameBuffer *> inputBufferReady;

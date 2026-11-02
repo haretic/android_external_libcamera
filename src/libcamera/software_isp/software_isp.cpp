@@ -364,10 +364,13 @@ void SoftwareIsp::queueRequest(const uint32_t frame, const ControlList &controls
  * \param[in] input The input framebuffer
  * \param[in] outputs The container holding the output stream pointers and
  * their respective frame buffer outputs
+ * \param[in] crop The part of the input to show, in its pixels, null for all
+ * of it
  * \return 0 on success, a negative errno on failure
  */
 int SoftwareIsp::queueBuffers(uint32_t frame, FrameBuffer *input,
-			      const std::map<const Stream *, FrameBuffer *> &outputs)
+			      const std::map<const Stream *, FrameBuffer *> &outputs,
+			      const Rectangle &crop)
 {
 	/*
 	 * Validate the outputs as a sanity check: at least one output is
@@ -391,9 +394,18 @@ int SoftwareIsp::queueBuffers(uint32_t frame, FrameBuffer *input,
 		if (buffer)
 			queuedOutputBuffers_.push_back(buffer);
 	}
-	process(frame, input, buffers);
+	process(frame, input, buffers, crop);
 
 	return 0;
+}
+
+/**
+ * \brief Whether the Software ISP zooms in on the crop queueBuffers() is given
+ * \return True where it renders a crop of the input, false where it ignores it
+ */
+bool SoftwareIsp::canCrop() const
+{
+	return debayer_->canCrop();
 }
 
 /**
@@ -457,13 +469,16 @@ void SoftwareIsp::stop()
  * \param[in] input The input framebuffer
  * \param[out] outputs The framebuffers to write the processed frame to, in
  * the order of the configured outputs, null for those the frame doesn't render
+ * \param[in] crop The part of the input to show, null for all of it
  */
 void SoftwareIsp::process(uint32_t frame, FrameBuffer *input,
-			  const std::vector<FrameBuffer *> &outputs)
+			  const std::vector<FrameBuffer *> &outputs,
+			  const Rectangle &crop)
 {
 	ipa_->computeParams(frame);
 	debayer_->invokeMethod(&Debayer::process,
-			       ConnectionTypeQueued, frame, input, outputs, debayerParams_);
+			       ConnectionTypeQueued, frame, input, outputs, debayerParams_,
+			       crop);
 }
 
 void SoftwareIsp::saveIspParams()

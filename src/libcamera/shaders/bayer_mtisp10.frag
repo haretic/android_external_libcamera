@@ -341,7 +341,23 @@ vec3 quad(vec2 q, float stride)
 	return vec3(r, green_pair(gr, gb, r, b) * 0.5, b);
 }
 
-#if QUADS == 2
+#if defined (ZOOM)
+/*
+ * Zoomed in until a pixel covers less than two quads: the colour where c
+ * falls between the four quads around it, blended by how near it is to
+ * each, which a zoomed window shows smooth rather than in blocks.
+ */
+vec3 area(vec2 c, float stride)
+{
+	vec2 f = (c - 1.0) * 0.5;
+	vec2 i = floor(f);
+	vec2 t = f - i;
+	vec2 q = 2.0 * i;
+	return mix(mix(quad(q, stride), quad(q + vec2(2.0, 0.0), stride), t.x),
+		   mix(quad(q + vec2(0.0, 2.0), stride), quad(q + vec2(2.0), stride), t.x),
+		   t.y);
+}
+#elif QUADS == 2
 /*
  * The four samples of group g of line y. A group's five bytes always lie in
  * two texels, so two quads take half the fetches of pair_at().

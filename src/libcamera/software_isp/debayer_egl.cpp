@@ -436,6 +436,8 @@ int DebayerEGL::configure(const StreamConfiguration &inputCfg,
 			out.chromaQuads = 0;
 		}
 
+		out.shown = out.window;
+
 		LOG(Debayer, Info)
 			<< "Output " << i << " " << out.size << "-" << out.format
 			<< (out.quads ? " scaled from " : " cropped from ") << out.window;
@@ -545,9 +547,9 @@ void DebayerEGL::setShaderVariableValues(eGLImage &eglImageIn, const Output &out
 	 * packed format gets the samples of whole groups; otherwise scaled
 	 * from the window, out_scale samples to a pixel.
 	 */
-	GLfloat outOrigin[] = { (GLfloat)out.window.x, (GLfloat)out.window.y };
-	GLfloat outScale[] = { (GLfloat)out.window.width / out.size.width,
-			       (GLfloat)out.window.height / out.size.height };
+	GLfloat outOrigin[] = { (GLfloat)out.shown.x, (GLfloat)out.shown.y };
+	GLfloat outScale[] = { (GLfloat)out.shown.width / out.size.width,
+			       (GLfloat)out.shown.height / out.size.height };
 	if (out.yuv) {
 		projMatrix[0] = projMatrix[5] = 1;
 		projMatrix[12] = projMatrix[13] = 0;
@@ -862,7 +864,7 @@ int DebayerEGL::draw(eGLImage &eglImageIn, eGLImage &eglImageOut, const Output &
 }
 
 int DebayerEGL::render(eGLImage &eglImageIn, FrameBuffer *buffer, Output &out,
-		       const DebayerParams &params)
+		       const DebayerParams &params, const Rectangle &crop)
 {
 	if (!out.yuv) {
 		eGLImage *eglImageOut = getCachedOutputFrameBuffer(buffer, out);
@@ -882,9 +884,39 @@ int DebayerEGL::render(eGLImage &eglImageIn, FrameBuffer *buffer, Output &out,
 	YuvTargets *targets = getCachedOutputYuvFrameBuffer(buffer, out);
 	eGLImage &targetY = targets ? *targets->y : *out.yTarget;
 	eGLImage &targetUV = targets ? *targets->uv : *out.uvTarget;
-	if (usePass(out.programY) ||
+
+	/*
+	 * A crop zooms in where the largest part of it of the output's aspect
+	 * ratio, about its centre, is smaller than the window; the window
+	 * otherwise, as an output cropped from the image already shows less
+	 * than a crop near the whole of it.
+	 */
+	GLuint programY = out.programY;
+	GLuint programUV = out.programUV;
+	out.shown = out.window;
+	if (!crop.isNull() && out.programYZoom) {
+		const Rectangle bounded = crop.boundedTo(Rectangle(Size(width_, height_)));
+		const Size size = bounded.size().boundedToAspectRatio(out.size).alignedDownTo(2, 2);
+		if (size.width < out.window.width && !size.isNull()) {
+			Rectangle shown = size.centeredTo(bounded.center());
+			shown.x &= ~1;
+			shown.y &= ~1;
+			out.shown = shown;
+			/*
+			 * Pixels of luma that still cover twice the quads the
+			 * scaled pass bins, and of chroma the quads, keep it.
+			 */
+			const float scale = static_cast<float>(shown.width) / out.size.width;
+			if (!out.quads || scale < 2.0f * out.quads)
+				programY = out.programYZoom;
+			if (!out.chromaQuads || scale < out.chromaQuads)
+				programUV = out.programUVZoom;
+		}
+	}
+
+	if (usePass(programY) ||
 	    draw(eglImageIn, targetY, out, params, targetY.width_, targetY.height_) ||
-	    usePass(out.programUV) ||
+	    usePass(programUV) ||
 	    draw(eglImageIn, targetUV, out, params, targetUV.width_, targetUV.height_))
 		return -ENODEV;
 	if (targets) {
@@ -915,7 +947,7 @@ int DebayerEGL::render(eGLImage &eglImageIn, FrameBuffer *buffer, Output &out,
 
 void DebayerEGL::process(uint32_t frame, FrameBuffer *input,
 			 const std::vector<FrameBuffer *> &outputs,
-			 const DebayerParams &params)
+			 const DebayerParams &params, const Rectangle &crop)
 {
 	bench_.startFrame();
 
@@ -938,7 +970,7 @@ void DebayerEGL::process(uint32_t frame, FrameBuffer *input,
 		metadata.sequence = input->metadata().sequence;
 		metadata.timestamp = input->metadata().timestamp;
 
-		if (!eglImageIn || render(*eglImageIn, output, outputs_[i], params)) {
+		if (!eglImageIn || render(*eglImageIn, output, outputs_[i], params, crop)) {
 			LOG(Debayer, Error) << "debayerGPU failed for output " << i;
 			metadata.status = FrameMetadata::FrameError;
 			continue;
@@ -1022,6 +1054,25 @@ int DebayerEGL::start()
 			return -EINVAL;
 		out.programY = programId_;
 		programId_ = 0;
+
+		/* The zoomed passes, which only the MTISP shader has */
+		if (BayerFormat::fromPixelFormat(inputPixelFormat_).packing !=
+		    BayerFormat::Packing::MTISP)
+			continue;
+		const std::vector<std::string> zoom = { "#define SCALED", "#define ZOOM",
+							"#define QUADS 1" };
+		y.resize(1);
+		uv.resize(1);
+		y.insert(y.end(), zoom.begin(), zoom.end());
+		uv.insert(uv.end(), zoom.begin(), zoom.end());
+		if (initBayerShaders(inputPixelFormat_, out.format, uv))
+			return -EINVAL;
+		out.programUVZoom = programId_;
+		programId_ = 0;
+		if (initBayerShaders(inputPixelFormat_, out.format, y))
+			return -EINVAL;
+		out.programYZoom = programId_;
+		programId_ = 0;
 	}
 
 	return 0;
@@ -1029,7 +1080,8 @@ int DebayerEGL::start()
 
 void DebayerEGL::deletePrograms(Output &out)
 {
-	for (GLuint *program : { &out.program, &out.programY, &out.programUV }) {
+	for (GLuint *program : { &out.program, &out.programY, &out.programUV,
+				 &out.programYZoom, &out.programUVZoom }) {
 		if (*program)
 			glDeleteProgram(*program);
 		*program = 0;

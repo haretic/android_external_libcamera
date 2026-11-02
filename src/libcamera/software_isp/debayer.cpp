@@ -118,13 +118,21 @@ Debayer::~Debayer()
  */
 
 /**
- * \fn void Debayer::process(uint32_t frame, FrameBuffer *input, const std::vector<FrameBuffer *> &outputs, const DebayerParams &params)
+ * \fn bool Debayer::canCrop() const
+ * \brief Whether the debayer zooms in on the crop process() is given
+ * \return True where it renders a crop of the input, false where it ignores it
+ */
+
+/**
+ * \fn void Debayer::process(uint32_t frame, FrameBuffer *input, const std::vector<FrameBuffer *> &outputs, const DebayerParams &params, const Rectangle &crop)
  * \brief Process the bayer data into the requested format
  * \param[in] frame The frame number
  * \param[in] input The input buffer
  * \param[in] outputs The output buffers, one for each configured output in
  * the order of the configuration, null for those the frame doesn't render
  * \param[in] params The parameters to be used in debayering
+ * \param[in] crop The part of the input to show, in its pixels, null for all
+ * of it; ignored where canCrop() is false
  *
  * The output buffers are signalled ready in the order of \a outputs.
  *

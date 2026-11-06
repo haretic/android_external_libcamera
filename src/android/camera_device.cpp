@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sys/mman.h>
@@ -1650,7 +1651,7 @@ CameraDevice::getResultMetadata(const Camera3RequestDescriptor &descriptor) cons
 
 	/*
 	 * \todo Keep this in sync with the actual number of entries.
-	 * Currently: 40 entries, 156 bytes
+	 * Currently: 41 entries, 160 bytes
 	 *
 	 * Reserve more space for the JPEG metadata set by the post-processor.
 	 * Currently:
@@ -1665,7 +1666,7 @@ CameraDevice::getResultMetadata(const Camera3RequestDescriptor &descriptor) cons
 	 * Total bytes for JPEG metadata: 82
 	 */
 	std::unique_ptr<CameraMetadata> resultMetadata =
-		std::make_unique<CameraMetadata>(88, 166);
+		std::make_unique<CameraMetadata>(89, 170);
 	if (!resultMetadata->isValid()) {
 		LOG(HAL, Error) << "Failed to allocate result metadata";
 		return nullptr;
@@ -1806,6 +1807,20 @@ CameraDevice::getResultMetadata(const Camera3RequestDescriptor &descriptor) cons
 	if (frameDuration)
 		resultMetadata->addEntry(ANDROID_SENSOR_FRAME_DURATION,
 					 *frameDuration * 1000);
+
+	/*
+	 * The sensitivity the frame was taken at, ISO 100 at unity gain: the
+	 * sensor's analogue gain times the ISP's digital gain, within the
+	 * range the camera declares. The JPEG's EXIF takes it from here.
+	 */
+	const auto &analogueGain = metadata.get(controls::AnalogueGain);
+	if (analogueGain) {
+		const auto &digitalGain = metadata.get(controls::DigitalGain);
+		const float gain = *analogueGain * digitalGain.value_or(1.0f);
+		const int32_t sensitivity =
+			std::clamp<int32_t>(std::lround(100.0f * gain), 32, 2400);
+		resultMetadata->addEntry(ANDROID_SENSOR_SENSITIVITY, sensitivity);
+	}
 
 	const auto &faceDetectRectangles =
 		metadata.get(controls::draft::FaceDetectFaceRectangles);

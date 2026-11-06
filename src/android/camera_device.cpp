@@ -322,7 +322,7 @@ bool validateCropRotate(const camera3_stream_configuration_t &streamList)
 CameraDevice::CameraDevice(unsigned int id, std::shared_ptr<Camera> camera)
 	: id_(id), state_(State::Stopped), camera_(std::move(camera)),
 	  facing_(CAMERA_FACING_FRONT), orientation_(0), position_(-1),
-	  parkPosition_(-1)
+	  parkPosition_(-1), turnedOut_(false)
 {
 	maker_ = "libcamera";
 	model_ = "cameraModel";
@@ -519,7 +519,12 @@ int CameraDevice::open(const hw_module_t *hardwareModule)
 	 */
 	camera_->requestCompleted.connect(this, &CameraDevice::requestComplete);
 
-	turnTo(position_);
+	/*
+	 * A turning camera turns out when its streams are configured, not here:
+	 * with the camera access switched off, the camera service opens the
+	 * camera and closes it again at once, and the lens stays facing away.
+	 */
+	turnedOut_ = false;
 
 	/* Initialize the hw_device_t in the instance camera3_module_t. */
 	camera3Device_.common.tag = HARDWARE_DEVICE_TAG;
@@ -545,6 +550,7 @@ void CameraDevice::close()
 	camera_->release();
 
 	turnTo(parkPosition());
+	turnedOut_ = false;
 }
 
 /*
@@ -677,6 +683,11 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
 {
 	/* Before any configuration attempt, stop the camera. */
 	stop();
+
+	if (!turnedOut_) {
+		turnTo(position_);
+		turnedOut_ = true;
+	}
 
 	if (stream_list->num_streams == 0) {
 		LOG(HAL, Error) << "No streams in configuration";

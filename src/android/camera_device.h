@@ -136,6 +136,8 @@ private:
 	std::string positionControl_;
 	int position_;
 	int parkPosition_;
+	/* Turned out to position_ since the camera was opened */
+	bool turnedOut_;
 
 	CameraMetadata lastSettings_;
 };

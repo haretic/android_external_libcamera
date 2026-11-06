@@ -19,6 +19,7 @@ public:
 	Agc();
 	~Agc() = default;
 
+	int init(IPAContext &context, const ValueNode &tuningData) override;
 	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
 	void queueRequest(IPAContext &context, const uint32_t frame,
 			  IPAFrameContext &frameContext,
@@ -32,7 +33,22 @@ public:
 		     ControlList &metadata) override;
 
 private:
-	void updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV);
+	void allocate(IPAContext &context, double total);
+
+	/* Tuning */
+	double target_;
+	double tolerance_;
+	double speed_;
+	double maxStep_;
+	double highlightLevel_;
+	double highlightFraction_;
+	double againMax_;
+	double againStep_;
+	double digitalGainMax_;
+	unsigned int settleFrames_;
+	double initialExposureTime_;
+	double noiseShot_;
+	double noiseRead_;
 };
 
 } /* namespace ipa::soft::algorithms */

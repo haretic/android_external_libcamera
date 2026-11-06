@@ -280,6 +280,23 @@ int IPASoftSimple::configure(const IPAConfigInfo &configInfo)
 		<< context_.configuration.agc.againMax
 		<< " (" << context_.configuration.agc.againMinStep << ")";
 
+	/*
+	 * Start the sensor where the loop starts, rather than at whatever the
+	 * last session left, which the first frames would otherwise show
+	 * until the first statistics arrive.
+	 */
+	const auto &agcState = context_.activeState.agc;
+	if (agcState.valid) {
+		ControlList ctrls(sensorInfoMap_);
+		ctrls.set(V4L2_CID_EXPOSURE, agcState.exposure);
+		ctrls.set(V4L2_CID_ANALOGUE_GAIN,
+			  static_cast<int32_t>(camHelper_ ? camHelper_->gainCode(agcState.again)
+							  : agcState.again));
+		if (context_.configuration.agc.vblankMax)
+			ctrls.set(V4L2_CID_VBLANK, context_.activeState.agc.vblankMin);
+		setSensorControls.emit(ctrls);
+	}
+
 	return 0;
 }
 

@@ -35,6 +35,10 @@ struct IPASessionConfiguration {
 		 */
 		int32_t exposureMargin;
 		int32_t vblankMin, vblankMax;
+		/* The longest exposure that keeps the frame at its shortest. */
+		int32_t exposureMinFrame;
+		/* The gain the tuning stops at, and the gain of one control step. */
+		double againLimit, againQuantum;
 	} agc;
 	struct {
 		std::optional<uint8_t> level;
@@ -52,6 +56,8 @@ struct IPAActiveState {
 		int32_t exposureMax;
 		/* The blanking the shortest frame duration allowed needs. */
 		int32_t vblankMin;
+		/* The frame whose statistics last changed the exposure. */
+		uint32_t lastChange;
 	} agc;
 
 	struct {

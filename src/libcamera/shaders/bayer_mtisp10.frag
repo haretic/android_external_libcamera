@@ -40,6 +40,17 @@ uniform sampler2D tex_lut;
 #define DEFECT_ISOLATION 3.0
 
 /*
+ * Noise variance of a sample in units of white squared at the frame's gain:
+ * x times the signal (shot) plus y (read). A sample within NOISE_FLAT
+ * standard deviations of its same-colour neighbours' mean is taken to be
+ * noise and replaced by it, one more than NOISE_EDGE away is detail and
+ * kept, in between it fades. Zero leaves the samples alone.
+ */
+uniform vec2 noise;
+#define NOISE_FLAT 1.0
+#define NOISE_EDGE 3.0
+
+/*
  * The texture holds four bytes of a line in each texel, in r, g, b and a,
  * the stride a quarter as wide; tex_step.x is 4 / (stride - 1).
  */
@@ -166,6 +177,24 @@ vec3 correct_triplet(vec3 s, vec3 signal, vec3 adjacent)
 	return mix(s, mean, hot * isolated);
 }
 
+/*
+ * Each sample of a same-colour triplet shrunk towards the mean of the other
+ * two by how far it stands from it against the noise expected at that
+ * level, in raw units: the expected deviation grows with the gain, so the
+ * filter strengthens as the scene darkens, the way a per-ISO table does.
+ */
+vec3 denoise_triplet(vec3 s, float black)
+{
+	if (noise.x + noise.y <= 0.0)
+		return s;
+	vec3 mean = (s.yzx + s.zxy) * 0.5;
+	vec3 signal = max(mean - black, 0.0) / (1.0 - black);
+	vec3 sigma = sqrt(noise.x * signal + noise.y) * (1.0 - black);
+	vec3 d = s - mean;
+	vec3 keep = smoothstep(NOISE_FLAT * sigma, NOISE_EDGE * sigma, abs(d));
+	return mean + d * keep;
+}
+
 void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 {
 	y = mirror_y(y);
@@ -234,6 +263,8 @@ void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 				    max(odd_signal, odd_signal.yzz));
 	vec3 odd = correct_triplet(odd_raw, odd_signal,
 				   max(even_signal.xxy, even_signal));
+	even = denoise_triplet(even, black.x);
+	odd = denoise_triplet(odd, black.y);
 	s = vec4(even.x, odd.y, even.y, odd.z);
 	edge = vec2(odd.x, even.z);
 }

@@ -25,6 +25,13 @@ struct DebayerParams {
 	float gamma = 1.0;
 	float contrastExp = 1.0;
 	RGB<float> gains = RGB<float>({ 1.0, 1.0, 1.0 });
+	/*
+	 * Noise variance of a raw sample in units of white squared: shot
+	 * times the signal plus read, at the gain the frame was taken with.
+	 * Zero leaves the noise alone.
+	 */
+	float noiseShot = 0.0;
+	float noiseRead = 0.0;
 };
 
 } /* namespace libcamera */

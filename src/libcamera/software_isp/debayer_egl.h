@@ -203,6 +203,9 @@ private:
 	/* Contrast */
 	GLint contrastExpUniformDataIn_;
 
+	/* Noise variance, shot and read */
+	GLint noiseUniformDataIn_;
+
 	Size nativeOutputSize_;
 	std::unique_ptr<SwStatsCpu> stats_;
 	eGL egl_;

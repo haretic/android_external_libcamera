@@ -145,6 +145,7 @@ int DebayerEGL::getShaderVariableLocations(void)
 	blackLevelUniformDataIn_ = glGetUniformLocation(programId_, "blacklevel");
 	gammaUniformDataIn_ = glGetUniformLocation(programId_, "gamma");
 	contrastExpUniformDataIn_ = glGetUniformLocation(programId_, "contrastExp");
+	noiseUniformDataIn_ = glGetUniformLocation(programId_, "noise");
 
 	textureUniformStep_ = glGetUniformLocation(programId_, "tex_step");
 	textureUniformSize_ = glGetUniformLocation(programId_, "tex_size");
@@ -647,6 +648,10 @@ void DebayerEGL::setShaderVariableValues(eGLImage &eglImageIn, const Output &out
 	 */
 	glUniform1f(contrastExpUniformDataIn_, params.contrastExp);
 	LOG(Debayer, Debug) << " contrastExpUniformDataIn_ " << contrastExpUniformDataIn_ << " data " << params.contrastExp;
+
+	/* Noise: shot variance per unit of signal and read variance, this gain's */
+	if (noiseUniformDataIn_ >= 0)
+		glUniform2f(noiseUniformDataIn_, params.noiseShot, params.noiseRead);
 
 	return;
 }

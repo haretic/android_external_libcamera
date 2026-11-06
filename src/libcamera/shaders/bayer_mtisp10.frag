@@ -42,11 +42,6 @@ uniform vec4 black_shift;
 uniform sampler2D tex_lut;
 #define TONE_RANGE 16.0
 
-/* Defect threshold in raw 10-bit units, scaled by the same-colour peers */
-#define DEFECT_ABSOLUTE (48.0 / 1023.0)
-#define DEFECT_RELATIVE 0.25
-#define DEFECT_ISOLATION 3.0
-
 /*
  * Noise variance of a sample in units of white squared at the frame's gain:
  * x times the signal (shot) plus y (read). A sample within NOISE_FLAT
@@ -57,6 +52,47 @@ uniform sampler2D tex_lut;
 uniform vec2 noise;
 #define NOISE_FLAT 1.0
 #define NOISE_EDGE 3.0
+
+/*
+ * Defective samples, hot or dead. A sample standing above all its
+ * same-colour peers, or below all, by more than DEFECT_SIGMA standard
+ * deviations of the noise expected at their level (at least DEFECT_FLOOR)
+ * plus DEFECT_SPREAD times how far the peers differ, which texture makes
+ * them, is a defect, unless a sample of another colour around it rises or
+ * falls with it past DEFECT_NOISE deviations, by at least a
+ * DEFECT_ISOLATION-th as much: the lens spreads real detail over the
+ * neighbours, and a line however thin runs on through them, while a defect
+ * stays in its sample. Compared white balanced, so grey detail rises alike
+ * in every colour. A defect takes the mean of its peers. The scaled outputs
+ * look harder, DEFECT_SIGMA_SCALED: they average away the detail they could
+ * take, and a defect left in a small preview stands still as the scene
+ * moves.
+ */
+#define DEFECT_SIGMA 5.0
+#define DEFECT_SIGMA_SCALED 4.0
+#define DEFECT_FLOOR (8.0 / 1023.0)
+#define DEFECT_SPREAD 0.5
+#define DEFECT_NOISE 3.0
+#define DEFECT_ISOLATION 8.0
+
+/* The noise standard deviation of raw samples at level s, in raw units */
+vec3 noise_sigma(vec3 s, float black)
+{
+	vec3 signal = max(s - black, 0.0) / (1.0 - black);
+	return sqrt(noise.x * signal + noise.y) * (1.0 - black);
+}
+
+vec4 noise_sigma(vec4 s, vec4 black)
+{
+	vec4 signal = max(s - black, 0.0) / (1.0 - black);
+	return sqrt(noise.x * signal + noise.y) * (1.0 - black);
+}
+
+/* For each component, the largest of the other three */
+vec4 others_max(vec4 v)
+{
+	return max(max(v.yxwz, v.zwxy), v.wzyx);
+}
 
 /*
  * The texture holds four bytes of a line in each texel, in r, g, b and a,
@@ -178,22 +214,6 @@ vec3 process(vec3 rgb)
 uniform vec2 out_origin;
 
 /*
- * A hot sample must exceed its same-colour peers AND the immediate samples
- * of the other colour after black subtraction and white balance. The latter
- * protects thin bright detail whose light also reaches adjacent pixels.
- * Use original samples throughout; all neighbours are already decoded.
- */
-vec3 correct_triplet(vec3 s, vec3 signal, vec3 adjacent)
-{
-	vec3 mean = (s.yzx + s.zxy) * 0.5;
-	vec3 limit = abs(s.yzx - s.zxy) * 0.5 +
-		     vec3(DEFECT_ABSOLUTE) + DEFECT_RELATIVE * mean;
-	vec3 hot = vec3(greaterThan(s - mean, limit));
-	vec3 isolated = vec3(greaterThan(signal, DEFECT_ISOLATION * adjacent));
-	return mix(s, mean, hot * isolated);
-}
-
-/*
  * Each sample of a same-colour triplet shrunk towards the mean of the other
  * two by how far it stands from it against the noise expected at that
  * level, in raw units: the expected deviation grows with the gain, so the
@@ -211,8 +231,17 @@ vec3 denoise_triplet(vec3 s, float black)
 	return mean + d * keep;
 }
 
-void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
+/*
+ * Line y around group g, raw with the black level shifts: the samples of
+ * the even columns 4g, 4g + 2 and 4g + 4 and of the odd ones 4g - 1, 4g + 1
+ * and 4g + 3, one colour each, and the two colours' black levels and white
+ * balance gains over the range above black.
+ */
+void decode_line(float g, float y, float stride, out vec3 even, out vec3 odd,
+		 out vec2 black, out vec2 wb)
 {
+	vec4 s;
+	vec2 edge;
 	y = mirror_y(y);
 	float v = (y + 0.5) / tex_size.y;
 	float first = 5.0 * g - 2.0;
@@ -265,28 +294,100 @@ void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 	if (4.0 * g + 4.0 > tex_size.x - 0.5)
 		edge.y = s.z;
 
+	even = vec3(s.xz, edge.y);
+	odd = vec3(edge.x, s.yw);
+
 	/* Even/odd columns' channel gains on this Bayer row */
 	bool red_row = mod(y + tex_bayer_first_red.y, 2.0) < 1.0;
 	vec2 gain = red_row ? awb.rg : awb.gb;
-	vec2 black = red_row ? blacklevel.rg : blacklevel.gb;
+	black = red_row ? blacklevel.rg : blacklevel.gb;
 	if (tex_bayer_first_red.x >= 0.5) {
 		gain = gain.yx;
 		black = black.yx;
 	}
+	wb = gain / (1.0 - black);
+}
 
-	vec3 even_raw = vec3(s.xz, edge.y);
-	vec3 odd_raw = vec3(edge.x, s.yw);
-	vec3 even_signal = max(even_raw - vec3(black.x), 0.0) *
-			   (gain.x / (1.0 - black.x));
-	vec3 odd_signal = max(odd_raw - vec3(black.y), 0.0) *
-			  (gain.y / (1.0 - black.y));
-	/* Each halo endpoint has just one immediate neighbour in this window */
-	vec3 even = correct_triplet(even_raw, even_signal,
-				    max(odd_signal, odd_signal.yzz));
-	vec3 odd = correct_triplet(odd_raw, odd_signal,
-				   max(even_signal.xxy, even_signal));
-	even = denoise_triplet(even, black.x);
-	odd = denoise_triplet(odd, black.y);
+/*
+ * A same-colour triplet's peers' means, raw, and white balanced how far
+ * each sample stands past both its peers beyond the limit, above (hot) and
+ * below (dead), and how far it rises and falls from their mean beyond the
+ * noise.
+ */
+void triplet(vec3 s, float black, float wb, out vec3 mean, out vec3 hot,
+	     out vec3 dead, out vec3 rise, out vec3 fall)
+{
+	vec3 a = s.yzx;
+	vec3 b = s.zxy;
+	mean = (a + b) * 0.5;
+	vec3 sigma = noise_sigma(mean, black);
+	vec3 limit = max(DEFECT_SIGMA * sigma, DEFECT_FLOOR) + DEFECT_SPREAD * abs(a - b);
+	vec3 above = s - max(a, b);
+	vec3 below = min(a, b) - s;
+	hot = above * vec3(greaterThan(above, limit)) * wb;
+	dead = below * vec3(greaterThan(below, limit)) * wb;
+	rise = max(s - mean - DEFECT_NOISE * sigma, 0.0) * wb;
+	fall = max(mean - s - DEFECT_NOISE * sigma, 0.0) * wb;
+}
+
+/*
+ * A line's two triplets with their defect figures: beside_* are the rises
+ * and falls of the samples of the other colour beside each sample on the
+ * line, around_* those of the column and the two beside it, which the lines
+ * above and below take as theirs.
+ */
+struct Line {
+	vec3 even, odd;
+	vec3 mean_even, mean_odd;
+	vec3 hot_even, hot_odd, dead_even, dead_odd;
+	vec3 beside_rise_even, beside_rise_odd, beside_fall_even, beside_fall_odd;
+	vec3 around_rise_even, around_rise_odd, around_fall_even, around_fall_odd;
+	vec2 black;
+};
+
+Line line_at(float g, float y, float stride)
+{
+	Line l;
+	vec2 wb;
+	vec3 rise_even, rise_odd, fall_even, fall_odd;
+	decode_line(g, y, stride, l.even, l.odd, l.black, wb);
+	triplet(l.even, l.black.x, wb.x, l.mean_even, l.hot_even, l.dead_even,
+		rise_even, fall_even);
+	triplet(l.odd, l.black.y, wb.y, l.mean_odd, l.hot_odd, l.dead_odd,
+		rise_odd, fall_odd);
+
+	/* Beside even column c are odd c - 1 and c + 1, beside odd c even c - 1 and c + 1 */
+	l.beside_rise_even = max(rise_odd, rise_odd.yzz);
+	l.beside_fall_even = max(fall_odd, fall_odd.yzz);
+	l.beside_rise_odd = max(rise_even.xxy, rise_even);
+	l.beside_fall_odd = max(fall_even.xxy, fall_even);
+	l.around_rise_even = max(rise_even, l.beside_rise_even);
+	l.around_fall_even = max(fall_even, l.beside_fall_even);
+	l.around_rise_odd = max(rise_odd, l.beside_rise_odd);
+	l.around_fall_odd = max(fall_odd, l.beside_fall_odd);
+	return l;
+}
+
+/*
+ * Line l with its defects replaced, the samples of the lines above and
+ * below it vouching for detail, then denoised: the samples of columns
+ * 4g .. 4g + 3 in s, of 4g - 1 and 4g + 4 in edge. At the window's first
+ * and last line, the one line next to it stands for both.
+ */
+void fix_line(Line l, Line up, Line down, out vec4 s, out vec2 edge)
+{
+	vec3 rise = max(l.beside_rise_even, max(up.around_rise_even, down.around_rise_even));
+	vec3 fall = max(l.beside_fall_even, max(up.around_fall_even, down.around_fall_even));
+	vec3 bad = max(vec3(greaterThan(l.hot_even, DEFECT_ISOLATION * rise)),
+		       vec3(greaterThan(l.dead_even, DEFECT_ISOLATION * fall)));
+	vec3 even = denoise_triplet(mix(l.even, l.mean_even, bad), l.black.x);
+
+	rise = max(l.beside_rise_odd, max(up.around_rise_odd, down.around_rise_odd));
+	fall = max(l.beside_fall_odd, max(up.around_fall_odd, down.around_fall_odd));
+	bad = max(vec3(greaterThan(l.hot_odd, DEFECT_ISOLATION * rise)),
+		  vec3(greaterThan(l.dead_odd, DEFECT_ISOLATION * fall)));
+	vec3 odd = denoise_triplet(mix(l.odd, l.mean_odd, bad), l.black.y);
+
 	s = vec4(even.x, odd.y, even.y, odd.z);
 	edge = vec2(odd.x, even.z);
 }
@@ -295,11 +396,14 @@ void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 void group_colours(float g, float y, float stride,
 		   out vec3 c0, out vec3 c1, out vec3 c2, out vec3 c3)
 {
+	Line lt = line_at(g, y - 1.0, stride);
+	Line lm = line_at(g, y, stride);
+	Line lb = line_at(g, y + 1.0, stride);
 	vec4 t, m, b;
 	vec2 te, me, be;
-	group_line(g, y - 1.0, stride, t, te);
-	group_line(g, y, stride, m, me);
-	group_line(g, y + 1.0, stride, b, be);
+	fix_line(lt, lm, lm, t, te);
+	fix_line(lm, lt, lb, m, me);
+	fix_line(lb, lm, lm, b, be);
 
 	float x = 4.0 * g;
 	c0 = demosaic(vec2(x, y), vec3(te.x, t.xy), vec3(me.x, m.xy), vec3(be.x, b.xy));
@@ -337,21 +441,6 @@ vec2 chroma(vec3 rgb)
 uniform vec2 out_scale;
 
 /*
- * Diagonal greens alone cannot distinguish a hot sample from an edge. Only
- * cap their difference when the brighter green is also isolated from BOTH
- * immediate R/B neighbours, already decoded in this quad.
- */
-float green_pair(float a, float b, float r, float blue)
-{
-	float lo = min(a, b);
-	float hi = max(a, b);
-	vec3 signal = max((vec3(r, hi, blue) - blacklevel) /
-			  (1.0 - blacklevel), 0.0) * awb;
-	bool isolated = signal.g > DEFECT_ISOLATION * max(signal.r, signal.b);
-	return lo + (isolated ? min(hi, lo + DEFECT_ABSOLUTE + DEFECT_RELATIVE * lo) : hi);
-}
-
-/*
  * Samples x and x + 1 of line y, x even: k = 0 or 2 in their group, the
  * three bytes from byte k of the group's five on, in at most two texels.
  */
@@ -380,19 +469,57 @@ vec2 pair_at(float x, float y, float stride)
 	       vec2(black_shift_at(0.0, y), black_shift_at(1.0, y));
 }
 
-/* The colour of the quad at q, both even: red where first red has it */
-vec3 quad(vec2 q, float stride)
+/*
+ * The samples of the quad at q, both even, raw: r, gr (beside red), gb
+ * (beside blue) and b. Quads beyond the left and right edges are mirrored in
+ * them.
+ */
+vec4 quad_raw(vec2 q, float stride)
 {
+	q.x = tex_size.x - 2.0 - abs(tex_size.x - 2.0 - abs(q.x));
 	q.y = min(q.y, tex_size.y - 2.0);
 	vec2 top = pair_at(q.x, q.y, stride);
 	vec2 bot = pair_at(q.x, q.y + 1.0, stride);
 	vec2 red_line = tex_bayer_first_red.y < 0.5 ? top : bot;
 	vec2 blue_line = tex_bayer_first_red.y < 0.5 ? bot : top;
-	float r = tex_bayer_first_red.x < 0.5 ? red_line.x : red_line.y;
-	float b = tex_bayer_first_red.x < 0.5 ? blue_line.y : blue_line.x;
-	float gr = tex_bayer_first_red.x < 0.5 ? red_line.y : red_line.x;
-	float gb = tex_bayer_first_red.x < 0.5 ? blue_line.x : blue_line.y;
-	return vec3(r, green_pair(gr, gb, r, b) * 0.5, b);
+	return tex_bayer_first_red.x < 0.5 ? vec4(red_line, blue_line) :
+					     vec4(red_line.yx, blue_line.yx);
+}
+
+/*
+ * Quad c with its defects replaced, its peers the same samples of the quads
+ * l and r beside it, each sample's evidence of detail the other three of its
+ * quad, all next to it.
+ */
+vec4 fix_quad(vec4 l, vec4 c, vec4 r)
+{
+	vec4 black = blacklevel.rggb;
+	vec4 wb = awb.rggb / (1.0 - black);
+	vec4 mean = (l + r) * 0.5;
+	vec4 sigma = noise_sigma(mean, black);
+	vec4 limit = max(DEFECT_SIGMA_SCALED * sigma, DEFECT_FLOOR) + DEFECT_SPREAD * abs(l - r);
+	vec4 above = c - max(l, r);
+	vec4 below = min(l, r) - c;
+	vec4 hot = above * vec4(greaterThan(above, limit)) * wb;
+	vec4 dead = below * vec4(greaterThan(below, limit)) * wb;
+	vec4 rise = max(c - mean - DEFECT_NOISE * sigma, 0.0) * wb;
+	vec4 fall = max(mean - c - DEFECT_NOISE * sigma, 0.0) * wb;
+	vec4 bad = max(vec4(greaterThan(hot, DEFECT_ISOLATION * others_max(rise))),
+		       vec4(greaterThan(dead, DEFECT_ISOLATION * others_max(fall))));
+	return mix(c, mean, bad);
+}
+
+/* The colour of a quad's samples, red where first red has it */
+vec3 quad_colour(vec4 q)
+{
+	return vec3(q.x, (q.y + q.z) * 0.5, q.w);
+}
+
+/* The colour of the quad at q, both even, its defects replaced */
+vec3 quad(vec2 q, float stride)
+{
+	return quad_colour(fix_quad(quad_raw(q - vec2(2.0, 0.0), stride), quad_raw(q, stride),
+				    quad_raw(q + vec2(2.0, 0.0), stride)));
 }
 
 #if defined (ZOOM)
@@ -407,9 +534,16 @@ vec3 area(vec2 c, float stride)
 	vec2 i = floor(f);
 	vec2 t = f - i;
 	vec2 q = 2.0 * i;
-	return mix(mix(quad(q, stride), quad(q + vec2(2.0, 0.0), stride), t.x),
-		   mix(quad(q + vec2(0.0, 2.0), stride), quad(q + vec2(2.0), stride), t.x),
-		   t.y);
+	vec3 row[2];
+	for (int j = 0; j < 2; j++) {
+		vec2 r = q + vec2(0.0, 2.0 * float(j));
+		vec4 q0 = quad_raw(r - vec2(2.0, 0.0), stride);
+		vec4 q1 = quad_raw(r, stride);
+		vec4 q2 = quad_raw(r + vec2(2.0, 0.0), stride);
+		vec4 q3 = quad_raw(r + vec2(4.0, 0.0), stride);
+		row[j] = mix(quad_colour(fix_quad(q0, q1, q2)), quad_colour(fix_quad(q1, q2, q3)), t.x);
+	}
+	return mix(row[0], row[1], t.y);
 }
 #elif QUADS == 2
 /*
@@ -443,32 +577,78 @@ vec4 group_at(float g, float y, float stride)
 	       vec4(shift_even, shift_odd, shift_even, shift_odd);
 }
 
-/* The summed colours of the two quads of group g on lines y and y + 1 */
-vec3 group_quads(float g, float y, float stride)
+/*
+ * One colour's samples of a 2 x 2 box of quads, a quad a component: their
+ * peers' means, raw, and white balanced how far each stands past all three
+ * of its peers (beside, above or below and across it) beyond the limit, and
+ * how far it rises and falls from their mean beyond the noise.
+ */
+void box_colour(vec4 s, float black, float wb, out vec4 mean, out vec4 hot,
+		out vec4 dead, out vec4 rise, out vec4 fall)
 {
-	vec4 top = group_at(g, y, stride);
-	vec4 bot = group_at(g, y + 1.0, stride);
-	vec4 red_line = tex_bayer_first_red.y < 0.5 ? top : bot;
-	vec4 blue_line = tex_bayer_first_red.y < 0.5 ? bot : top;
-	vec2 r = tex_bayer_first_red.x < 0.5 ? red_line.xz : red_line.yw;
-	vec2 b = tex_bayer_first_red.x < 0.5 ? blue_line.yw : blue_line.xz;
-	vec2 gr = tex_bayer_first_red.x < 0.5 ? red_line.yw : red_line.xz;
-	vec2 gb = tex_bayer_first_red.x < 0.5 ? blue_line.xz : blue_line.yw;
-	return vec3(r.x + r.y,
-		    green_pair(gr.x, gb.x, r.x, b.x) + green_pair(gr.y, gb.y, r.y, b.y),
-		    b.x + b.y);
+	vec4 a = s.yxwz;
+	vec4 b = s.zwxy;
+	vec4 c = s.wzyx;
+	mean = (a + b + c) * (1.0 / 3.0);
+	vec4 sigma = noise_sigma(mean, vec4(black));
+	vec4 limit = max(DEFECT_SIGMA_SCALED * sigma, DEFECT_FLOOR) +
+		     DEFECT_SPREAD * (max(max(a, b), c) - min(min(a, b), c));
+	vec4 above = s - max(max(a, b), c);
+	vec4 below = min(min(a, b), c) - s;
+	hot = above * vec4(greaterThan(above, limit)) * wb;
+	dead = below * vec4(greaterThan(below, limit)) * wb;
+	rise = max(s - mean - DEFECT_NOISE * sigma, 0.0) * wb;
+	fall = max(mean - s - DEFECT_NOISE * sigma, 0.0) * wb;
 }
 
 /*
  * The mean colour of the 2 x 2 quads around c, in samples: the two groups'
- * worth on four lines nearest it, up to two samples off to the side.
+ * worth on four lines nearest it, up to two samples off to the side. A
+ * sample of a quad is a defect when it stands out from the same samples of
+ * the other three and no other sample of its quad goes with it.
  */
 vec3 area(vec2 c, float stride)
 {
 	float g = floor((c.x - 2.0) * 0.25 + 0.5);
 	float y = 2.0 * floor((c.y - 2.0) * 0.5 + 0.5);
-	vec3 sum = group_quads(g, y, stride) + group_quads(g, y + 2.0, stride);
-	return sum * vec3(0.25, 0.125, 0.25);
+	vec4 l0 = group_at(g, y, stride);
+	vec4 l1 = group_at(g, y + 1.0, stride);
+	vec4 l2 = group_at(g, y + 2.0, stride);
+	vec4 l3 = group_at(g, y + 3.0, stride);
+
+	/* Each position of a quad, over the box's quads: left, right, lower left, lower right */
+	vec4 top_left = vec4(l0.xz, l2.xz);
+	vec4 top_right = vec4(l0.yw, l2.yw);
+	vec4 bottom_left = vec4(l1.xz, l3.xz);
+	vec4 bottom_right = vec4(l1.yw, l3.yw);
+	bool red_top = tex_bayer_first_red.y < 0.5;
+	bool red_left = tex_bayer_first_red.x < 0.5;
+	vec4 red_line_left = red_top ? top_left : bottom_left;
+	vec4 red_line_right = red_top ? top_right : bottom_right;
+	vec4 blue_line_left = red_top ? bottom_left : top_left;
+	vec4 blue_line_right = red_top ? bottom_right : top_right;
+	vec4 r = red_left ? red_line_left : red_line_right;
+	vec4 gr = red_left ? red_line_right : red_line_left;
+	vec4 gb = red_left ? blue_line_left : blue_line_right;
+	vec4 b = red_left ? blue_line_right : blue_line_left;
+
+	vec3 wb = awb / (1.0 - blacklevel);
+	vec4 mr, mgr, mgb, mb, hr, hgr, hgb, hb, dr, dgr, dgb, db;
+	vec4 rr, rgr, rgb, rb, fr, fgr, fgb, fb;
+	box_colour(r, blacklevel.r, wb.r, mr, hr, dr, rr, fr);
+	box_colour(gr, blacklevel.g, wb.g, mgr, hgr, dgr, rgr, fgr);
+	box_colour(gb, blacklevel.g, wb.g, mgb, hgb, dgb, rgb, fgb);
+	box_colour(b, blacklevel.b, wb.b, mb, hb, db, rb, fb);
+
+	r = mix(r, mr, max(vec4(greaterThan(hr, DEFECT_ISOLATION * max(max(rgr, rgb), rb))),
+			   vec4(greaterThan(dr, DEFECT_ISOLATION * max(max(fgr, fgb), fb)))));
+	gr = mix(gr, mgr, max(vec4(greaterThan(hgr, DEFECT_ISOLATION * max(max(rr, rgb), rb))),
+			      vec4(greaterThan(dgr, DEFECT_ISOLATION * max(max(fr, fgb), fb)))));
+	gb = mix(gb, mgb, max(vec4(greaterThan(hgb, DEFECT_ISOLATION * max(max(rr, rgr), rb))),
+			      vec4(greaterThan(dgb, DEFECT_ISOLATION * max(max(fr, fgr), fb)))));
+	b = mix(b, mb, max(vec4(greaterThan(hb, DEFECT_ISOLATION * max(max(rr, rgr), rgb))),
+			   vec4(greaterThan(db, DEFECT_ISOLATION * max(max(fr, fgr), fgb)))));
+	return vec3(dot(r, vec4(0.25)), dot(gr + gb, vec4(0.125)), dot(b, vec4(0.25)));
 }
 #else
 /* The mean colour of the QUADS x QUADS quads around c, in samples */
@@ -521,12 +701,16 @@ void main(void)
 	 */
 	vec2 p = floor(gl_FragCoord.xy) * vec2(4.0, 2.0) + out_origin;
 	float g = p.x * 0.25;
+	Line l0 = line_at(g, p.y - 1.0, stride);
+	Line l1 = line_at(g, p.y, stride);
+	Line l2 = line_at(g, p.y + 1.0, stride);
+	Line l3 = line_at(g, p.y + 2.0, stride);
 	vec4 s0, s1, s2, s3;
 	vec2 e0, e1, e2, e3;
-	group_line(g, p.y - 1.0, stride, s0, e0);
-	group_line(g, p.y, stride, s1, e1);
-	group_line(g, p.y + 1.0, stride, s2, e2);
-	group_line(g, p.y + 2.0, stride, s3, e3);
+	fix_line(l0, l1, l1, s0, e0);
+	fix_line(l1, l0, l2, s1, e1);
+	fix_line(l2, l1, l3, s2, e2);
+	fix_line(l3, l2, l2, s3, e3);
 
 	/* Lines 0 and 2 of a box have one colour pair, 1 and 3 the other */
 	vec4 a02 = vec4(e0.x, s0.xyz) + vec4(e2.x, s2.xyz);

@@ -158,8 +158,9 @@ void Agc::queueRequest(IPAContext &context,
  * up to the longest that keeps the frame rate, then analogue gain to the
  * tuning's limit, then exposure stretching the frame as far as the frame
  * duration limits allow, then the ISP's digital gain. The analogue gain is
- * kept to the sensor's steps, the exposure and digital gain take up what
- * the rounding leaves.
+ * kept to the sensor's steps; below its limit what the rounding leaves goes
+ * to the digital gain, not to a longer frame, so the frame rate holds until
+ * the analogue gain is used up.
  */
 void Agc::allocate(IPAContext &context, double total)
 {
@@ -174,7 +175,8 @@ void Agc::allocate(IPAContext &context, double total)
 	if (agc.againQuantum > 0.0)
 		again = againMin + std::floor((again - againMin) / agc.againQuantum + 1e-6) *
 					   agc.againQuantum;
-	exposure = std::clamp<double>(total / again, agc.exposureMin, exposureMax);
+	exposure = std::clamp<double>(total / again, agc.exposureMin,
+				      again < agc.againLimit ? exposureMinFrame : exposureMax);
 	double digitalGain = std::clamp(total / (exposure * again), 1.0, digitalGainMax_);
 
 	state.exposure = std::clamp<int32_t>(std::lround(exposure), agc.exposureMin, exposureMax);

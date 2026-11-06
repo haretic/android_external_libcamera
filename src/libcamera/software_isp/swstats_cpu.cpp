@@ -498,15 +498,16 @@ int SwStatsCpu::configure(const StreamConfiguration &inputCfg, unsigned int stat
 
 	/*
 	 * The line based statistics are gathered on the lines unpacked to 16
-	 * bits per sample by the debayer, only the pattern width differs from
-	 * the unpacked 10-bit format.
+	 * bits per sample by the debayer, which scales them to 12 bits for its
+	 * black level shifts (unpackMtisp10To12()), so they are gathered as
+	 * unpacked 12-bit data; only the pattern width differs.
 	 */
 	if (bitDepth == 10 && bayerFormat.packing == BayerFormat::Packing::MTISP &&
 	    setupStandardBayerOrder(bayerFormat.order) == 0) {
 		patternSize_.width = 4; /* 5 bytes per *4* pixels */
 		processFrame_ = &SwStatsCpu::processMtisp10Frame2;
-		stats0_ = &SwStatsCpu::statsBGGR10Line0;
-		sumShift_ = 2;
+		stats0_ = &SwStatsCpu::statsBGGR12Line0;
+		sumShift_ = 4;
 		return 0;
 	}
 
@@ -630,8 +631,10 @@ void SwStatsCpu::processMtisp10Frame2(MappedFrameBuffer &in)
 			continue;
 		}
 
-		unpackMtisp10(lines[0].data(), src, lines[0].size());
-		unpackMtisp10(lines[1].data(), src + stride_, lines[1].size());
+		/* To 12 bits as the debayer's lines, without its black shifts */
+		static const int noShift[2] = { 0, 0 };
+		unpackMtisp10To12(lines[0].data(), src, lines[0].size(), noShift);
+		unpackMtisp10To12(lines[1].data(), src + stride_, lines[1].size(), noShift);
 
 		/* linePointers[0] is not used by any stats0_ functions */
 		linePointers[1] = reinterpret_cast<const uint8_t *>(lines[0].data());

@@ -96,6 +96,8 @@ private:
 protected:
 	void dmaSyncBegin(std::vector<DmaSyncer> &dmaSyncers, FrameBuffer *input, FrameBuffer *output);
 	static bool isStandardBayerOrder(BayerFormat::Order order);
+	static std::array<float, 4> blackLevelShifts(const DebayerParams &params,
+						     BayerFormat::Order order);
 };
 
 } /* namespace libcamera */

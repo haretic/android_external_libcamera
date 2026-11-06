@@ -318,4 +318,47 @@ bool Debayer::isStandardBayerOrder(BayerFormat::Order order)
 	       order == BayerFormat::GRBG || order == BayerFormat::RGGB;
 }
 
+/**
+ * \brief The shift onto its channel's black level of each position of the
+ * Bayer pattern
+ * \param[in] params The debayer parameters, with blackLevel and blackLevels
+ * \param[in] order The Bayer order of the input
+ *
+ * The shifts are in the order of the pattern's positions, top left, top right,
+ * bottom left, bottom right, in the same units as the black levels: added to a
+ * raw sample at that position it sits at blackLevel's level of its channel,
+ * so sensors whose columns or rows read out with different offsets lose their
+ * stripes. The two greens shift onto their mean. Zero everywhere when
+ * blackLevels is not set.
+ *
+ * \return The four shifts, or zeros for a non-standard order
+ */
+std::array<float, 4> Debayer::blackLevelShifts(const DebayerParams &params,
+					       BayerFormat::Order order)
+{
+	const std::array<float, 4> &levels = params.blackLevels;
+	if (levels[0] == 0.0f && levels[1] == 0.0f &&
+	    levels[2] == 0.0f && levels[3] == 0.0f)
+		return { 0.0f, 0.0f, 0.0f, 0.0f };
+
+	/* Per channel of SensorBlackLevels' R, Gr, Gb, B */
+	const float shiftR = params.blackLevel.r() - levels[0];
+	const float shiftGr = params.blackLevel.g() - levels[1];
+	const float shiftGb = params.blackLevel.g() - levels[2];
+	const float shiftB = params.blackLevel.b() - levels[3];
+
+	switch (order) {
+	case BayerFormat::BGGR:
+		return { shiftB, shiftGb, shiftGr, shiftR };
+	case BayerFormat::GBRG:
+		return { shiftGb, shiftB, shiftR, shiftGr };
+	case BayerFormat::GRBG:
+		return { shiftGr, shiftR, shiftB, shiftGb };
+	case BayerFormat::RGGB:
+		return { shiftR, shiftGr, shiftGb, shiftB };
+	default:
+		return { 0.0f, 0.0f, 0.0f, 0.0f };
+	}
+}
+
 } /* namespace libcamera */

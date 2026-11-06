@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include <array>
 #include <stdint.h>
 
 #include "libcamera/internal/matrix.h"
@@ -22,6 +23,13 @@ struct DebayerParams {
 						 0.0, 1.0, 0.0,
 						 0.0, 0.0, 1.0 } };
 	RGB<float> blackLevel = RGB<float>({ 0.0, 0.0, 0.0 });
+	/*
+	 * The black level of each position of the Bayer pattern, R, Gr, Gb and
+	 * B, where a position's black differs from its channel's in blackLevel:
+	 * the samples are shifted onto the channel's level before anything
+	 * else. All equal to blackLevel's channels (or all zero) is no shift.
+	 */
+	std::array<float, 4> blackLevels = { 0.0, 0.0, 0.0, 0.0 };
 	float gamma = 1.0;
 	float contrastExp = 1.0;
 	RGB<float> gains = RGB<float>({ 1.0, 1.0, 1.0 });

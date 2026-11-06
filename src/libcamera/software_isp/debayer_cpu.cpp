@@ -12,6 +12,7 @@
 #include "debayer_cpu.h"
 
 #include <algorithm>
+#include <cmath>
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <utility>
@@ -72,6 +73,9 @@ private:
 	std::vector<uint8_t> rgbLines_[2];
 	bool enableInputMemcpy_;
 	bool copyInput_;
+	/* The source line of the thread's first row and that row's number */
+	const uint8_t *firstRowSrc_;
+	int firstRow_;
 };
 
 /**
@@ -631,12 +635,14 @@ int DebayerCpu::setDebayerFunctions(PixelFormat inputFormat,
 
 	/*
 	 * MediaTek packed lines are unpacked to 16 bits per sample when they
-	 * are copied to the line buffers, debayer them as unpacked data.
+	 * are copied to the line buffers, scaled to 12 bits so the black level
+	 * shifts of the pattern's positions keep a quarter step: debayer them
+	 * as unpacked 12-bit data.
 	 */
 	if (bayerFormat.bitDepth == 10 &&
 	    bayerFormat.packing == BayerFormat::Packing::MTISP &&
 	    isStandardBayerOrder(bayerFormat.order)) {
-		SET_DEBAYER_METHODS(debayer10_BGBG_BGR888, debayer10_GRGR_BGR888)
+		SET_DEBAYER_METHODS(debayer12_BGBG_BGR888, debayer12_GRGR_BGR888)
 		setupStandardBayerOrder(bayerFormat.order);
 		return 0;
 	}
@@ -704,6 +710,7 @@ int DebayerCpu::configure(const StreamConfiguration &inputCfg,
 	}
 
 	inputConfig_.stride = inputCfg.stride;
+	bayerOrder_ = BayerFormat::fromPixelFormat(inputCfg.pixelFormat).order;
 	unpackMtisp_ = BayerFormat::fromPixelFormat(inputCfg.pixelFormat).packing ==
 		       BayerFormat::Packing::MTISP;
 
@@ -878,13 +885,22 @@ void DebayerCpuThread::copyLine(unsigned int index, const uint8_t *linePointers[
 	const uint8_t *src = linePointers[line] - inputPadding_;
 
 	if (debayer_->unpackMtisp_) {
+		/*
+		 * The row of the frame this line is, for its black level
+		 * shifts: the padding starts a whole group earlier, so the
+		 * column parities of the unpacked samples are the frame's.
+		 */
+		const ptrdiff_t rows = (linePointers[line] - firstRowSrc_) /
+				       static_cast<ptrdiff_t>(debayer_->inputConfig_.stride);
+		const int *shift = debayer_->blackShift_[(firstRow_ + rows) & 1];
+
 		if (!packedLine_.empty()) {
 			memcpy(packedLine_.data(), src, packedLine_.size());
 			src = packedLine_.data();
 		}
 
-		unpackMtisp10(reinterpret_cast<uint16_t *>(buffer), src,
-			      lineBufferLength_ / sizeof(uint16_t));
+		unpackMtisp10To12(reinterpret_cast<uint16_t *>(buffer), src,
+				  lineBufferLength_ / sizeof(uint16_t), shift);
 	} else {
 		memcpy(buffer, src, lineBufferLength_);
 	}
@@ -994,6 +1010,8 @@ void DebayerCpuThread::process(uint32_t frame, const uint8_t *src, uint8_t *dst,
 	/* Adjust src to top left corner of the window */
 	src += (window.y + yStart_) * debayer_->inputConfig_.stride +
 	       window.x * debayer_->inputConfig_.bpp / 8;
+	firstRowSrc_ = src;
+	firstRow_ = window.y + yStart_;
 	/* Adjust dst for yStart_ */
 	dst += yStart_ * debayer_->outputConfig_.stride;
 	if (dstUV)
@@ -1161,6 +1179,17 @@ void DebayerCpu::updateLookupTables(const DebayerParams &params)
 		params.contrastExp != params_.contrastExp;
 	if (gammaUpdateNeeded)
 		updateGammaTable(params);
+
+	/*
+	 * The shifts of the pattern's positions onto their channels' black
+	 * levels, in the 12-bit units the MediaTek packed lines are unpacked
+	 * to, by row then column parity.
+	 */
+	if (unpackMtisp_) {
+		const std::array<float, 4> shifts = blackLevelShifts(params, bayerOrder_);
+		for (unsigned int i = 0; i < 4; i++)
+			blackShift_[i / 2][i % 2] = std::lround(shifts[i] * 4095.0f);
+	}
 
 	/* Processing order: black level -> gains -> gamma */
 	auto matrixChanged = [](const Matrix<float, 3, 3> &m1, const Matrix<float, 3, 3> &m2) -> bool {

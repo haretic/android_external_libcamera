@@ -143,6 +143,7 @@ int DebayerEGL::getShaderVariableLocations(void)
 	awbUniformDataIn_ = glGetUniformLocation(programId_, "awb");
 	ccmUniformDataIn_ = glGetUniformLocation(programId_, "ccm");
 	blackLevelUniformDataIn_ = glGetUniformLocation(programId_, "blacklevel");
+	blackShiftUniformDataIn_ = glGetUniformLocation(programId_, "black_shift");
 	gammaUniformDataIn_ = glGetUniformLocation(programId_, "gamma");
 	contrastExpUniformDataIn_ = glGetUniformLocation(programId_, "contrastExp");
 	noiseUniformDataIn_ = glGetUniformLocation(programId_, "noise");
@@ -633,6 +634,16 @@ void DebayerEGL::setShaderVariableValues(eGLImage &eglImageIn, const Output &out
 	 */
 	glUniform3f(blackLevelUniformDataIn_, params.blackLevel[0], params.blackLevel[1], params.blackLevel[2]);
 	LOG(Debayer, Debug) << " blackLevelUniformDataIn_ " << blackLevelUniformDataIn_ << " data " << params.blackLevel;
+
+	/*
+	 * The shifts of the pattern's positions onto their channels' black
+	 * levels, top left, top right, bottom left, bottom right of the frame.
+	 */
+	if (blackShiftUniformDataIn_ >= 0) {
+		const std::array<float, 4> shift =
+			blackLevelShifts(params, BayerFormat::fromPixelFormat(inputPixelFormat_).order);
+		glUniform4f(blackShiftUniformDataIn_, shift[0], shift[1], shift[2], shift[3]);
+	}
 
 	glUniform3f(awbUniformDataIn_, params.gains[0], params.gains[1], params.gains[2]);
 	LOG(Debayer, Debug) << " awbUniformDataIn_ " << awbUniformDataIn_ << " data " << params.gains;

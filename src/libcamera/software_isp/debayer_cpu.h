@@ -150,6 +150,9 @@ private:
 	LookupTable gammaLut_;
 	bool ccmEnabled_;
 	bool unpackMtisp_;
+	BayerFormat::Order bayerOrder_;
+	/* Black level shifts of the pattern's positions, [row parity][column parity] */
+	int blackShift_[2][2] = { { 0, 0 }, { 0, 0 } };
 	bool yuvOutput_;
 	bool swapUV_;
 	DebayerParams params_;

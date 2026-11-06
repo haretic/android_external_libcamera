@@ -7,6 +7,9 @@
 
 #pragma once
 
+#include <array>
+#include <optional>
+
 #include <optional>
 #include <stdint.h>
 
@@ -35,6 +38,8 @@ public:
 
 private:
 	std::optional<uint8_t> definedLevel_;
+	/* The black level of each position of the pattern, R, Gr, Gb, B, 0..1 */
+	std::optional<std::array<float, 4>> definedLevels_;
 };
 
 } /* namespace ipa::soft::algorithms */

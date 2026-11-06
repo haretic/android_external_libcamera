@@ -196,6 +196,7 @@ private:
 
 	/* Black Level compensation */
 	GLint blackLevelUniformDataIn_;
+	GLint blackShiftUniformDataIn_;
 
 	/* Gamma */
 	GLint gammaUniformDataIn_;

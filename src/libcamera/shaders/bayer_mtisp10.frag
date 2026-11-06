@@ -27,6 +27,14 @@ uniform vec3 awb;
 uniform mat3 ccm;
 uniform vec3 blacklevel;
 /*
+ * Added to the raw samples at the four positions of the Bayer pattern, top
+ * left, top right, bottom left, bottom right of the frame: puts positions
+ * whose black level differs from their channel's on the channel's level, so
+ * columns or rows that read out with different offsets don't stripe. Zero
+ * leaves the samples alone.
+ */
+uniform vec4 black_shift;
+/*
  * The tone curve, the contrast S-curve and the gamma, 1024 steps over 0 to
  * TONE_RANGE indexed by the square root, for finer steps in the shadows
  * (DebayerEGL::updateLut() has the same range).
@@ -68,6 +76,14 @@ float mirror_y(float y)
 	return tex_size.y - 1.0 - abs(tex_size.y - 1.0 - abs(y));
 }
 
+/* The black level shift of the sample at column x of line y of the frame */
+float black_shift_at(float x, float y)
+{
+	vec2 odd = mod(vec2(x, y), 2.0);
+	return odd.y < 1.0 ? (odd.x < 1.0 ? black_shift.x : black_shift.y)
+			   : (odd.x < 1.0 ? black_shift.z : black_shift.w);
+}
+
 /* Byte x of line y, 0 to 255 */
 float byte_at(float x, float y, float stride)
 {
@@ -94,7 +110,7 @@ float fetch(float x, float y, float stride)
 	float hi = byte_at(byte_x + 1.0, y, stride);
 	float shift = exp2(2.0 * k);
 	float value = floor(lo / shift + 0.001) + mod(hi, 4.0 * shift) * (256.0 / shift);
-	return value / 1023.0;
+	return value / 1023.0 + black_shift_at(x, y);
 }
 
 /*
@@ -237,6 +253,12 @@ void group_line(float g, float y, float stride, out vec4 s, out vec2 edge)
 	edge = vec2(floor(p3 / 64.0 + 0.001) + p4 * 4.0,
 		    n0 + mod(n1, 4.0) * 256.0) / 1023.0;
 
+	/* Columns 4g, 4g + 2 and 4g + 4 are even, 4g - 1, 4g + 1 and 4g + 3 odd */
+	float shift_even = black_shift_at(0.0, y);
+	float shift_odd = black_shift_at(1.0, y);
+	s += vec4(shift_even, shift_odd, shift_even, shift_odd);
+	edge += vec2(shift_odd, shift_even);
+
 	/* Beyond the image, the samples of the same colour mirrored in its edge */
 	if (g < 0.5)
 		edge.x = s.y;
@@ -354,7 +376,8 @@ vec2 pair_at(float x, float y, float stride)
 	float s0 = exp2(2.0 * k);
 	float s1 = 4.0 * s0;
 	return vec2(floor(b.x / s0 + 0.001) + mod(b.y, 4.0 * s0) * (256.0 / s0),
-		    floor(b.y / s1 + 0.001) + mod(b.z, 4.0 * s1) * (256.0 / s1)) / 1023.0;
+		    floor(b.y / s1 + 0.001) + mod(b.z, 4.0 * s1) * (256.0 / s1)) / 1023.0 +
+	       vec2(black_shift_at(0.0, y), black_shift_at(1.0, y));
 }
 
 /* The colour of the quad at q, both even: red where first red has it */
@@ -411,10 +434,13 @@ vec4 group_at(float g, float y, float stride)
 	b = floor(b * 255.0 + 0.5);
 	b4 = floor(b4 * 255.0 + 0.5);
 
+	float shift_even = black_shift_at(0.0, y);
+	float shift_odd = black_shift_at(1.0, y);
 	return vec4(b.x + mod(b.y, 4.0) * 256.0,
 		    floor(b.y / 4.0 + 0.001) + mod(b.z, 16.0) * 64.0,
 		    floor(b.z / 16.0 + 0.001) + mod(b.w, 64.0) * 16.0,
-		    floor(b.w / 64.0 + 0.001) + b4 * 4.0) / 1023.0;
+		    floor(b.w / 64.0 + 0.001) + b4 * 4.0) / 1023.0 +
+	       vec4(shift_even, shift_odd, shift_even, shift_odd);
 }
 
 /* The summed colours of the two quads of group g on lines y and y + 1 */
